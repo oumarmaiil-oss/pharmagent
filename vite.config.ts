@@ -6,8 +6,8 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
-    // Ajoutez cette ligne avec le nom exact de votre dépôt GitHub (entre slashes)
-    base: '/nom-de-votre-dépôt/',
+    // URL de base pour GitHub Pages
+    base: '/ateliercosmique/',
 
     plugins: [
       react(),
