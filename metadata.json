@@ -1,0 +1,10 @@
+{
+  "name": "PharmAgent",
+  "description": "Plateforme SaaS centrale de supervision multi-officines pilotant des agents visuels adaptatifs par Gemini Vision, UI Grounding et garde-fou strict au stade Brouillon.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
