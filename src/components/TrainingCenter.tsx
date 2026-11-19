@@ -1,5 +1,5 @@
-import { BookOpen, Download, Loader2, Plus, Trash2, Upload } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { BookOpen, Database, Download, Loader2, Plus, Trash2, Upload } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import type { DashboardSnapshot, OwnerAccount } from '../types/pharmagent.ts';
 
 interface Props {
@@ -9,24 +9,64 @@ interface Props {
   onRefresh: () => void;
 }
 
+const FIELD_LABEL: Record<string, string> = {
+  erpLabel: 'Désignation', cip: 'CIP', purchasePriceFCFA: 'Prix achat', salePriceFCFA: 'Prix vente', stockQty: 'Stock',
+};
+
 export default function TrainingCenter({ token, snapshot, onRefresh }: Props) {
-  const [aliasForm, setAliasForm] = useState({ rawLabel: '', canonicalName: '' });
   const [colForm, setColForm] = useState({ sourceField: '', targetColumn: '' });
   const [saving, setSaving] = useState(false);
   const [importLoading, setImportLoading] = useState(false);
   const [importMsg, setImportMsg] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const memory = snapshot?.learnedMemory;
+  const pharmacies = snapshot?.pharmacies ?? [];
+  const [catalogPharmacy, setCatalogPharmacy] = useState('');
+  const [catalogTotal, setCatalogTotal] = useState<number | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogMsg, setCatalogMsg] = useState('');
+  const catalogRef = useRef<HTMLInputElement>(null);
+  const phId = catalogPharmacy || pharmacies[0]?.id || '';
 
-  const addAlias = async (e: React.FormEvent) => {
-    e.preventDefault(); setSaving(true);
-    await fetch('/api/training/rules', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ type: 'alias', ...aliasForm }),
-    });
-    setAliasForm({ rawLabel: '', canonicalName: '' }); setSaving(false); onRefresh();
+  useEffect(() => {
+    if (!phId) return;
+    setCatalogTotal(null); setCatalogMsg('');
+    fetch(`/api/pharmacies/${phId}/catalog`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => r.json())
+      .then((d: { total?: number }) => setCatalogTotal(d.total ?? 0))
+      .catch(() => setCatalogTotal(null));
+  }, [phId, token]);
+
+  const memory = snapshot?.learnedMemory;
+  const phName = (id?: string) => pharmacies.find((p) => p.id === id)?.name;
+
+  const importCatalog = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !phId) return;
+    setCatalogLoading(true); setCatalogMsg('');
+    try {
+      const fileBase64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+      const r = await fetch(`/api/pharmacies/${phId}/catalog/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ fileBase64 }),
+      });
+      const d = await r.json() as { added?: number; updated?: number; total?: number; columns?: Record<string, string>; error?: string };
+      if (!r.ok) { setCatalogMsg(d.error ?? 'Erreur import.'); return; }
+      const cols = Object.entries(d.columns ?? {}).map(([k, v]) => `${FIELD_LABEL[k]} ← « ${v} »`).join(', ');
+      setCatalogMsg(`✓ ${d.added} ajoutés, ${d.updated} mis à jour. Colonnes : ${cols}`);
+      setCatalogTotal(d.total ?? null);
+    } catch {
+      setCatalogMsg('Fichier illisible.');
+    } finally {
+      setCatalogLoading(false);
+    }
   };
 
   const addColumn = async (e: React.FormEvent) => {
@@ -70,7 +110,42 @@ export default function TrainingCenter({ token, snapshot, onRefresh }: Props) {
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
       <div>
         <h1 className="text-xl font-bold text-white">Mémoire & Entraînement</h1>
-        <p className="text-slate-400 text-sm">Dictionnaire de produits et règles de colonnes apprises par l'agent</p>
+        <p className="text-slate-400 text-sm">Catalogue ERP de chaque officine et correspondances apprises automatiquement</p>
+      </div>
+
+      {/* Catalogue ERP */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <Database size={16} className="text-emerald-400" />
+          <span className="text-sm font-semibold text-white">Catalogue produits ERP</span>
+          <select
+            value={phId}
+            onChange={(e) => setCatalogPharmacy(e.target.value)}
+            className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white outline-none"
+          >
+            {pharmacies.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          <span className="text-xs text-slate-400 ml-auto">
+            {catalogTotal === null ? '…' : `${catalogTotal.toLocaleString('fr-FR')} produits`}
+          </span>
+        </div>
+        <p className="text-xs text-slate-500">
+          Exportez la liste des produits depuis l'ERP (Excel ou CSV) et importez-la une fois. Les colonnes
+          désignation, CIP, prix d'achat, prix de vente et stock sont détectées automatiquement.
+          L'agent local complète ensuite ce catalogue tout seul à chaque recherche dans l'ERP.
+        </p>
+        <input ref={catalogRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={importCatalog} />
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={() => catalogRef.current?.click()}
+            disabled={catalogLoading || !phId}
+            className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm px-4 py-2 rounded-lg disabled:opacity-50"
+          >
+            {catalogLoading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+            Importer le catalogue
+          </button>
+          {catalogMsg && <span className={`text-xs ${catalogMsg.startsWith('✓') ? 'text-emerald-400' : 'text-red-400'}`}>{catalogMsg}</span>}
+        </div>
       </div>
 
       {/* Downloads + Import */}
@@ -119,35 +194,17 @@ export default function TrainingCenter({ token, snapshot, onRefresh }: Props) {
         <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-800 flex items-center gap-2">
             <BookOpen size={15} className="text-emerald-400" />
-            <span className="text-sm font-semibold text-white">Alias Produits</span>
+            <span className="text-sm font-semibold text-white">Correspondances apprises</span>
             <span className="ml-auto text-xs text-slate-500">{memory?.productAliases.length ?? 0} entrées</span>
           </div>
-
-          {/* Formulaire ajout */}
-          <form onSubmit={addAlias} className="p-4 border-b border-slate-800 flex gap-2">
-            <input
-              value={aliasForm.rawLabel}
-              onChange={(e) => setAliasForm({ ...aliasForm, rawLabel: e.target.value })}
-              placeholder="Libellé brut (ex: AMOX 500)"
-              required
-              className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:border-emerald-500 outline-none"
-            />
-            <input
-              value={aliasForm.canonicalName}
-              onChange={(e) => setAliasForm({ ...aliasForm, canonicalName: e.target.value })}
-              placeholder="Nom canonique (ex: Amoxicilline 500mg)"
-              required
-              className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:border-emerald-500 outline-none"
-            />
-            <button type="submit" disabled={saving} className="bg-emerald-600 hover:bg-emerald-500 text-white p-1.5 rounded-lg flex-shrink-0">
-              <Plus size={14} />
-            </button>
-          </form>
+          <div className="px-4 py-2 border-b border-slate-800 text-[11px] text-slate-500">
+            Ajoutées automatiquement quand un brouillon est approuvé ou qu'une ligne est corrigée.
+          </div>
 
           {/* Liste */}
           <div className="max-h-72 overflow-y-auto divide-y divide-slate-800">
             {!memory?.productAliases.length ? (
-              <div className="p-4 text-center text-slate-500 text-xs">Aucun alias. Ajoutez-en ci-dessus.</div>
+              <div className="p-4 text-center text-slate-500 text-xs">Aucune correspondance encore. Elles s'accumulent à chaque brouillon validé.</div>
             ) : (
               memory.productAliases.map((a) => (
                 <div key={a.id} className="flex items-center gap-2 px-4 py-2.5 hover:bg-slate-800/40 group">
@@ -155,6 +212,9 @@ export default function TrainingCenter({ token, snapshot, onRefresh }: Props) {
                     <span className="text-xs font-mono text-amber-300">"{a.rawLabel}"</span>
                     <span className="text-xs text-slate-500 mx-1">→</span>
                     <span className="text-xs text-emerald-300">"{a.canonicalName}"</span>
+                    <div className="text-[10px] text-slate-500 mt-0.5">
+                      {[a.supplier && `Grossiste ${a.supplier}`, phName(a.pharmacyId), a.hits && `${a.hits}×`].filter(Boolean).join(' · ') || 'Toutes officines'}
+                    </div>
                   </div>
                   <button
                     onClick={() => deleteRule(a.id, 'alias')}

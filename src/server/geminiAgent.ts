@@ -4,7 +4,6 @@
 
 import { GoogleGenAI, Type } from '@google/genai';
 import type {
-  AgentLearnedMemory,
   DocumentCategory,
   ExtractedDocumentData,
   GroundingAnalysisResult,
@@ -31,18 +30,8 @@ export async function extractDocumentWithGemini(params: {
   mimeType: string;
   documentHint: DocumentCategory;
   taskPrompt?: string;
-  learnedMemory?: AgentLearnedMemory;
 }): Promise<{ data: ExtractedDocumentData; tokensConsumed: number }> {
   const ai = getClient();
-
-  const memoryClause =
-    params.learnedMemory && params.learnedMemory.productAliases.length > 0
-      ? '\nMémoire produits (normalise vers le nom canonique si correspondance) :\n' +
-        params.learnedMemory.productAliases
-          .slice(0, 40)
-          .map((p) => `- "${p.rawLabel}" => "${p.canonicalName}"`)
-          .join('\n')
-      : '';
 
   const missionClause = params.taskPrompt?.trim()
     ? `\nInstruction spécifique : "${params.taskPrompt.trim()}". Réponds dans agentObservations.`
@@ -58,8 +47,10 @@ export async function extractDocumentWithGemini(params: {
             `Tu es l'agent PharmAgent d'une officine pharmaceutique. ` +
             `Analyse ce document (type probable : ${params.documentHint}). ` +
             `Extrais l'en-tête (numéro, fournisseur/organisme, pharmacie destinataire, date, montant total FCFA) ` +
-            `et chaque ligne (désignation exacte, quantité entière, N° lot, date expiration, prix unitaire FCFA).` +
-            memoryClause + missionClause,
+            `et chaque ligne : désignation recopiée EXACTEMENT comme imprimée (abréviations comprises, ne corrige rien), ` +
+            `code CIP/EAN s'il figure sur la ligne, quantité entière, N° lot, date expiration, ` +
+            `prix unitaire d'achat FCFA, prix public/vente FCFA s'il figure.` +
+            missionClause,
         },
       ],
     },
@@ -82,10 +73,12 @@ export async function extractDocumentWithGemini(params: {
               type: Type.OBJECT,
               properties: {
                 designation: { type: Type.STRING },
+                cip: { type: Type.STRING },
                 quantity: { type: Type.INTEGER },
                 lotNumber: { type: Type.STRING },
                 expiryDate: { type: Type.STRING },
                 unitPriceFCFA: { type: Type.NUMBER },
+                salePriceFCFA: { type: Type.NUMBER },
                 confidence: { type: Type.NUMBER },
               },
               required: ['designation', 'quantity', 'unitPriceFCFA', 'confidence'],
@@ -269,58 +262,70 @@ export async function getRPAActionsFromGemini(params: {
   };
 }
 
-// ─── Mapping vers colonnes cibles ─────────────────────────
+// ─── Correspondance produits ambigus (un seul appel par document) ─
 
-export async function mapToTargetColumnsWithGemini(params: {
-  extractedData: ExtractedDocumentData;
-  targetSoftware: TargetSoftwareType;
-  knownColumns?: string[];
-}): Promise<{ mappings: Array<{ sourceField: string; targetColumn: string; exampleValue: string }>; tokensConsumed: number }> {
+export async function resolveProductMatchesWithGemini(params: {
+  supplier: string;
+  items: Array<{
+    index: number;
+    designation: string;
+    unitPriceFCFA: number;
+    salePriceFCFA?: number;
+    candidates: Array<{ productId: string; erpLabel: string }>;
+  }>;
+}): Promise<{ decisions: Array<{ index: number; productId: string; confidence: number }>; tokensConsumed: number }> {
+  if (!params.items.length) return { decisions: [], tokensConsumed: 0 };
   const ai = getClient();
 
-  const colHint = params.knownColumns?.length
-    ? `\nColonnes connues du logiciel cible : ${params.knownColumns.join(', ')}.`
-    : '';
+  const payload = params.items.map((it) => ({
+    index: it.index,
+    libelle_grossiste: it.designation,
+    prix_achat: it.unitPriceFCFA,
+    prix_vente: it.salePriceFCFA,
+    candidats: it.candidates.map((c) => ({ id: c.productId, libelle_erp: c.erpLabel })),
+  }));
 
   const response = await ai.models.generateContent({
     model: GEMINI_MODEL,
     contents: {
-      parts: [
-        {
-          text:
-            `Tu es l'agent PharmAgent. Voici les données extraites d'un document pharmaceutique :\n` +
-            JSON.stringify(params.extractedData, null, 2) +
-            `\n\nLogiciel cible : ${params.targetSoftware}.${colHint}\n` +
-            `Génère un mapping JSON de chaque champ source vers la colonne cible la plus probable. ` +
-            `Inclus une valeur d'exemple. Ne propose QUE des colonnes de BROUILLON, jamais de validation finale.`,
-        },
-      ],
+      parts: [{
+        text:
+          `Tu es pharmacien expert en nomenclature. Grossiste : "${params.supplier}".\n` +
+          `Pour chaque ligne de bon de livraison, choisis parmi les candidats le produit ERP identique ` +
+          `(même molécule ou marque équivalente, même dosage, même forme, même conditionnement). ` +
+          `Une marque et son générique NE sont PAS le même produit sauf si le libellé ERP est la même marque. ` +
+          `Si aucun candidat n'est identique, renvoie productId vide. confidence entre 0 et 1, sois strict.\n` +
+          JSON.stringify(payload),
+      }],
     },
     config: {
       responseMimeType: 'application/json',
       responseSchema: {
         type: Type.OBJECT,
         properties: {
-          mappings: {
+          decisions: {
             type: Type.ARRAY,
             items: {
               type: Type.OBJECT,
               properties: {
-                sourceField: { type: Type.STRING },
-                targetColumn: { type: Type.STRING },
-                exampleValue: { type: Type.STRING },
+                index: { type: Type.INTEGER },
+                productId: { type: Type.STRING },
+                confidence: { type: Type.NUMBER },
               },
-              required: ['sourceField', 'targetColumn', 'exampleValue'],
+              required: ['index', 'productId', 'confidence'],
             },
           },
         },
-        required: ['mappings'],
+        required: ['decisions'],
       },
     },
   });
 
-  const text = (response.text ?? '').trim();
-  const parsed = JSON.parse(text);
-  const tokens = response.usageMetadata?.totalTokenCount ?? 0;
-  return { mappings: parsed.mappings ?? [], tokensConsumed: tokens };
+  const parsed = JSON.parse((response.text ?? '').trim() || '{"decisions":[]}');
+  const allowed = new Map(params.items.map((it) => [it.index, new Set(it.candidates.map((c) => c.productId))]));
+  // Ne garder que des choix parmi les candidats proposés
+  const decisions = (parsed.decisions ?? []).filter(
+    (d: { index: number; productId: string }) => d.productId && allowed.get(d.index)?.has(d.productId)
+  );
+  return { decisions, tokensConsumed: response.usageMetadata?.totalTokenCount ?? 0 };
 }

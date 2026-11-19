@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import { useRef, useState } from 'react';
 import type { DashboardSnapshot, DraftRecord, OwnerAccount } from '../types/pharmagent.ts';
+import DraftLines, { countToReview } from './DraftLines.tsx';
 
 interface Props {
   token: string;
@@ -137,6 +138,11 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
     }
   };
 
+  const handleDraftUpdated = (d: DraftRecord) => {
+    if (currentDraft?.id === d.id) setCurrentDraft(d);
+    onRefresh();
+  };
+
   const selectedPharmacy = pharmacies.find((p) => p.id === selectedPharmacyId);
 
   return (
@@ -249,7 +255,7 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
           </div>
 
           {/* Résultat du brouillon courant */}
-          {currentDraft && <DraftCard draft={currentDraft} token={token} onApprove={handleApprove} onReject={handleReject} onExecute={handleExecute} approveLoading={approveLoading} executing={executing} execResult={execResult} />}
+          {currentDraft && <DraftCard draft={currentDraft} token={token} onApprove={handleApprove} onReject={handleReject} onExecute={handleExecute} onUpdated={handleDraftUpdated} approveLoading={approveLoading} executing={executing} execResult={execResult} />}
         </div>
 
         {/* Panneau droit : Brouillons en attente */}
@@ -298,33 +304,7 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
                         <br /><span className="font-medium text-slate-300">Total :</span> {d.extractedData.totalAmountFCFA.toLocaleString('fr-FR')} FCFA
                       </div>
 
-                      {/* Lignes */}
-                      <div className="rounded-lg overflow-hidden border border-slate-700">
-                        <table className="w-full text-xs">
-                          <thead className="bg-slate-800 text-slate-400">
-                            <tr>
-                              <th className="text-left px-2 py-1.5">Désignation</th>
-                              <th className="text-right px-2 py-1.5">Qté</th>
-                              <th className="text-right px-2 py-1.5">Prix</th>
-                              <th className="text-right px-2 py-1.5">Conf.</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-800">
-                            {d.extractedData.lineItems.map((item, i) => (
-                              <tr key={i} className="text-slate-300">
-                                <td className="px-2 py-1.5 max-w-32 truncate">{item.designation}</td>
-                                <td className="px-2 py-1.5 text-right">{item.quantity}</td>
-                                <td className="px-2 py-1.5 text-right">{item.unitPriceFCFA.toLocaleString()}</td>
-                                <td className="px-2 py-1.5 text-right">
-                                  <span className={item.confidence >= 0.8 ? 'text-emerald-400' : 'text-amber-400'}>
-                                    {Math.round(item.confidence * 100)}%
-                                  </span>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
+                      <DraftLines draft={d} token={token} onUpdated={handleDraftUpdated} />
 
                       {d.extractedData.agentObservations && (
                         <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg px-3 py-2 text-xs text-blue-300">
@@ -336,10 +316,10 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
                       <div className="flex gap-2">
                         <button
                           onClick={() => handleApprove(d.id)}
-                          disabled={approveLoading}
-                          className="flex-1 flex items-center justify-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium py-2 rounded-lg"
+                          disabled={approveLoading || countToReview(d) > 0}
+                          className="flex-1 flex items-center justify-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-medium py-2 rounded-lg"
                         >
-                          <ThumbsUp size={12} /> Approuver
+                          <ThumbsUp size={12} /> {countToReview(d) > 0 ? `${countToReview(d)} à vérifier` : 'Approuver'}
                         </button>
                         <button
                           onClick={() => handleReject(d.id, 'Rejeté par le pharmacien')}
@@ -368,12 +348,13 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
   );
 }
 
-function DraftCard({ draft, token, onApprove, onReject, onExecute, approveLoading, executing, execResult }: {
+function DraftCard({ draft, token, onApprove, onReject, onExecute, onUpdated, approveLoading, executing, execResult }: {
   draft: DraftRecord;
   token: string;
   onApprove: (id: string) => void;
   onReject: (id: string, reason?: string) => void;
   onExecute: (id: string) => void;
+  onUpdated: (d: DraftRecord) => void;
   approveLoading: boolean;
   executing: boolean;
   execResult: any;
@@ -405,31 +386,8 @@ function DraftCard({ draft, token, onApprove, onReject, onExecute, approveLoadin
         <div><span className="text-slate-500">Total :</span> <span className="text-slate-200">{draft.extractedData.totalAmountFCFA.toLocaleString('fr-FR')} FCFA</span></div>
       </div>
 
-      {/* Lignes extraites */}
-      <div className="rounded-lg overflow-hidden border border-slate-700 mb-3">
-        <div className="bg-slate-800 px-3 py-1.5 text-xs text-slate-400 font-medium">
-          {draft.extractedData.lineItems.length} ligne{draft.extractedData.lineItems.length > 1 ? 's' : ''} extraite{draft.extractedData.lineItems.length > 1 ? 's' : ''}
-        </div>
-        <table className="w-full text-xs">
-          <thead className="bg-slate-800/50 text-slate-500">
-            <tr>
-              <th className="text-left px-3 py-1.5">Désignation</th>
-              <th className="text-right px-3 py-1.5">Qté</th>
-              <th className="text-right px-3 py-1.5">P.U.</th>
-              <th className="text-right px-3 py-1.5">Lot</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-800">
-            {draft.extractedData.lineItems.slice(0, 8).map((item, i) => (
-              <tr key={i} className="text-slate-300 hover:bg-slate-800/50">
-                <td className="px-3 py-1.5 max-w-40 truncate">{item.designation}</td>
-                <td className="px-3 py-1.5 text-right">{item.quantity}</td>
-                <td className="px-3 py-1.5 text-right">{item.unitPriceFCFA.toLocaleString()}</td>
-                <td className="px-3 py-1.5 text-right font-mono">{item.lotNumber ?? '—'}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="mb-3">
+        <DraftLines draft={draft} token={token} onUpdated={onUpdated} />
       </div>
 
       {/* Observations IA */}
@@ -449,10 +407,10 @@ function DraftCard({ draft, token, onApprove, onReject, onExecute, approveLoadin
         <div className="flex gap-2">
           <button
             onClick={() => onApprove(draft.id)}
-            disabled={approveLoading}
+            disabled={approveLoading || countToReview(draft) > 0}
             className="flex-1 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-semibold py-2.5 rounded-lg"
           >
-            <ThumbsUp size={14} /> Approuver
+            <ThumbsUp size={14} /> {countToReview(draft) > 0 ? `${countToReview(draft)} à vérifier` : 'Approuver'}
           </button>
           <button
             onClick={() => onReject(draft.id, 'Données incorrectes')}

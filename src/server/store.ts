@@ -5,10 +5,12 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { normalizeLabel, normalizeSupplier } from './productMatcher.ts';
 import type {
   AgentLearnedMemory,
   AuditLogEntry,
   AuditLevel,
+  CatalogProduct,
   ColumnRule,
   DraftRecord,
   DraftStatus,
@@ -78,7 +80,16 @@ interface Database {
   drafts: DraftRecord[];
   auditLogs: AuditLogEntry[];
   learnedMemory: AgentLearnedMemory;
+  catalog: CatalogProduct[];
   authSecret: string;
+}
+
+export interface CatalogRowInput {
+  erpLabel: string;
+  cip?: string;
+  purchasePriceFCFA?: number;
+  salePriceFCFA?: number;
+  stockQty?: number;
 }
 
 function initialDatabase(): Database {
@@ -137,6 +148,7 @@ function initialDatabase(): Database {
         { id: nanoid(), sourceField: 'documentNumber', targetColumn: 'N° Bon Livraison', createdAt: now() },
       ],
     },
+    catalog: [],
     authSecret: process.env.PHARMAGENT_AUTH_SECRET ?? generateSecret(32),
   };
 }
@@ -196,6 +208,7 @@ class PharmAgentStore {
         productAliases: parsed.learnedMemory?.productAliases ?? def.learnedMemory.productAliases,
         columnRules: parsed.learnedMemory?.columnRules ?? def.learnedMemory.columnRules,
       },
+      catalog: parsed.catalog ?? [],
       authSecret: parsed.authSecret ?? def.authSecret,
     };
   }
@@ -418,6 +431,96 @@ class PharmAgentStore {
 
   removeColumnRule(id: string): void {
     this.db.learnedMemory.columnRules = this.db.learnedMemory.columnRules.filter((r) => r.id !== id);
+    this.persist();
+  }
+
+  getAliasesForPharmacy(pharmacyId: string): ProductAlias[] {
+    return this.db.learnedMemory.productAliases.filter((a) => !a.pharmacyId || a.pharmacyId === pharmacyId);
+  }
+
+  // Mémorise « ce libellé de ce grossiste = ce produit ERP » et enrichit le catalogue
+  learnMatch(params: { pharmacyId: string; supplier: string; rawLabel: string; productId?: string; erpLabel: string; purchasePriceFCFA?: number; salePriceFCFA?: number; cip?: string }): CatalogProduct {
+    const supplier = normalizeSupplier(params.supplier);
+    let product = params.productId
+      ? this.db.catalog.find((p) => p.id === params.productId && p.pharmacyId === params.pharmacyId)
+      : undefined;
+    if (!product) {
+      const key = normalizeLabel(params.erpLabel);
+      product = this.db.catalog.find((p) => p.pharmacyId === params.pharmacyId && normalizeLabel(p.erpLabel) === key);
+    }
+    if (!product) {
+      product = {
+        id: `pr-${nanoid(10)}`, pharmacyId: params.pharmacyId, erpLabel: params.erpLabel.trim(),
+        suppliers: [], source: 'learned', updatedAt: now(),
+      };
+      this.db.catalog.push(product);
+    }
+    if (supplier && !product.suppliers.includes(supplier)) product.suppliers.push(supplier);
+    if (params.purchasePriceFCFA) product.purchasePriceFCFA = params.purchasePriceFCFA;
+    if (params.salePriceFCFA) product.salePriceFCFA = params.salePriceFCFA;
+    if (params.cip && !product.cip) product.cip = params.cip;
+    product.updatedAt = now();
+
+    const rawKey = normalizeLabel(params.rawLabel);
+    const aliases = this.db.learnedMemory.productAliases;
+    const existing = aliases.find((a) => a.pharmacyId === params.pharmacyId && a.supplier === supplier && normalizeLabel(a.rawLabel) === rawKey);
+    if (existing) {
+      existing.productId = product.id;
+      existing.canonicalName = product.erpLabel;
+      existing.hits = (existing.hits ?? 0) + 1;
+    } else {
+      aliases.unshift({
+        id: nanoid(), rawLabel: params.rawLabel, canonicalName: product.erpLabel,
+        pharmacyId: params.pharmacyId, supplier, productId: product.id, hits: 1, createdAt: now(),
+      });
+    }
+    return product;   // l'appelant fait flush() une fois pour tout le lot
+  }
+
+  flush(): void { this.persist(); }
+
+  // ── Catalogue produits ───────────────────────────────
+
+  getCatalog(pharmacyId: string): CatalogProduct[] {
+    return this.db.catalog.filter((p) => p.pharmacyId === pharmacyId);
+  }
+
+  upsertCatalog(pharmacyId: string, rows: CatalogRowInput[], source: CatalogProduct['source']): { added: number; updated: number } {
+    const mine = this.getCatalog(pharmacyId);
+    const byCip = new Map(mine.filter((p) => p.cip).map((p) => [p.cip!, p]));
+    const byLabel = new Map(mine.map((p) => [normalizeLabel(p.erpLabel), p]));
+    let added = 0, updated = 0;
+    for (const r of rows) {
+      const label = r.erpLabel?.trim();
+      if (!label) continue;
+      const cip = r.cip?.replace(/\D/g, '') || undefined;
+      const existing = (cip && byCip.get(cip)) || byLabel.get(normalizeLabel(label));
+      if (existing) {
+        existing.erpLabel = label;
+        if (cip) existing.cip = cip;
+        if (r.purchasePriceFCFA) existing.purchasePriceFCFA = r.purchasePriceFCFA;
+        if (r.salePriceFCFA) existing.salePriceFCFA = r.salePriceFCFA;
+        if (r.stockQty !== undefined) existing.stockQty = r.stockQty;
+        existing.updatedAt = now();
+        updated++;
+      } else {
+        const p: CatalogProduct = {
+          id: `pr-${nanoid(10)}`, pharmacyId, erpLabel: label, cip,
+          purchasePriceFCFA: r.purchasePriceFCFA, salePriceFCFA: r.salePriceFCFA, stockQty: r.stockQty,
+          suppliers: [], source, updatedAt: now(),
+        };
+        this.db.catalog.push(p);
+        byLabel.set(normalizeLabel(label), p);
+        if (cip) byCip.set(cip, p);
+        added++;
+      }
+    }
+    this.persist();
+    return { added, updated };
+  }
+
+  clearCatalog(pharmacyId: string): void {
+    this.db.catalog = this.db.catalog.filter((p) => p.pharmacyId !== pharmacyId);
     this.persist();
   }
 

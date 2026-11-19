@@ -71,7 +71,6 @@ export default function App() {
   const handleLogin = (s: SessionState) => {
     setSession(s);
     try { localStorage.setItem('pharmagent_session', JSON.stringify(s)); } catch {}
-    fetchDashboard(s.token);
   };
 
   const handleLogout = () => {
@@ -84,7 +83,7 @@ export default function App() {
   useEffect(() => {
     if (session) fetchDashboard(session.token);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [session?.token]);
 
   if (!session) {
     return <LoginScreen onLogin={handleLogin} />;

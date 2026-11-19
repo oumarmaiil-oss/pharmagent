@@ -44,9 +44,19 @@ export default function Layout({ tab, onTabChange, owner, onLogout, pendingCount
   ];
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-slate-950">
+    <div className="flex flex-col md:flex-row h-dvh overflow-hidden bg-slate-950">
+      {/* En-tête mobile */}
+      <header className="md:hidden flex items-center gap-2.5 px-4 py-2.5 border-b border-slate-800 bg-slate-900">
+        {LOGO}
+        <span className="font-semibold text-sm text-white">PharmAgent</span>
+        {loading && <Activity size={13} className="text-emerald-400 animate-pulse" />}
+        <button onClick={onLogout} className="ml-auto text-slate-500 hover:text-red-400 p-1.5" title="Déconnexion">
+          <LogOut size={16} />
+        </button>
+      </header>
+
       {/* Sidebar */}
-      <aside className="w-60 flex-shrink-0 flex flex-col border-r border-slate-800 bg-slate-900">
+      <aside className="hidden md:flex w-60 flex-shrink-0 flex-col border-r border-slate-800 bg-slate-900">
         {/* Logo */}
         <div className="flex items-center gap-3 px-4 py-5 border-b border-slate-800">
           {LOGO}
@@ -104,6 +114,25 @@ export default function Layout({ tab, onTabChange, owner, onLogout, pendingCount
           {children}
         </div>
       </main>
+
+      {/* Navigation mobile */}
+      <nav className="md:hidden flex border-t border-slate-800 bg-slate-900 pb-[env(safe-area-inset-bottom)]">
+        {navItems.map((item) => (
+          <button
+            key={item.id}
+            onClick={() => onTabChange(item.id)}
+            title={item.label}
+            className={`relative flex-1 flex justify-center py-3 ${tab === item.id ? 'text-emerald-400' : 'text-slate-500'}`}
+          >
+            {item.icon}
+            {item.badge ? (
+              <span className="absolute top-1.5 right-1/2 translate-x-4 bg-amber-500 text-black text-[10px] font-bold min-w-4 h-4 px-1 rounded-full flex items-center justify-center">
+                {item.badge > 9 ? '9+' : item.badge}
+              </span>
+            ) : null}
+          </button>
+        ))}
+      </nav>
     </div>
   );
 }

@@ -47,12 +47,48 @@ export interface OwnerAccount {
 // ─── Extraction IA ────────────────────────────────────────
 
 export interface ExtractedLineItem {
-  designation: string;
+  designation: string;          // libellé brut du grossiste, jamais normalisé
+  cip?: string;
   quantity: number;
   lotNumber?: string;
   expiryDate?: string;
-  unitPriceFCFA: number;
-  confidence: number;
+  unitPriceFCFA: number;        // prix d'achat
+  salePriceFCFA?: number;
+  confidence: number;           // confiance de lecture OCR
+  match?: ProductMatch;
+}
+
+// ─── Catalogue produits & correspondance ──────────────────
+
+export interface CatalogProduct {
+  id: string;
+  pharmacyId: string;
+  erpLabel: string;             // libellé exact tel qu'affiché dans l'ERP
+  cip?: string;
+  purchasePriceFCFA?: number;
+  salePriceFCFA?: number;
+  stockQty?: number;
+  suppliers: string[];          // grossistes déjà vus pour ce produit
+  source: 'import' | 'erp_capture' | 'learned';
+  updatedAt: string;
+}
+
+export type MatchMethod = 'cip' | 'memory' | 'score' | 'ai' | 'manual' | 'none';
+export type MatchStatus = 'auto' | 'to_review' | 'confirmed' | 'new_product';
+
+export interface MatchCandidate {
+  productId: string;
+  erpLabel: string;
+  score: number;
+}
+
+export interface ProductMatch {
+  status: MatchStatus;
+  method: MatchMethod;
+  score: number;                // 0..1
+  productId?: string;
+  erpLabel?: string;            // ce que l'agent tape/sélectionne dans l'ERP
+  candidates: MatchCandidate[];
 }
 
 export interface ExtractedDocumentData {
@@ -99,6 +135,9 @@ export interface ProductAlias {
   rawLabel: string;
   canonicalName: string;
   pharmacyId?: string;
+  supplier?: string;            // alias spécifique à un grossiste
+  productId?: string;
+  hits?: number;
   createdAt: string;
 }
 

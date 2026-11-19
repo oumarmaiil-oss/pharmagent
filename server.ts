@@ -11,13 +11,16 @@ import * as XLSX from 'xlsx';
 import {
   extractDocumentWithGemini,
   groundTargetInterfaceWithGemini,
-  mapToTargetColumnsWithGemini,
+  resolveProductMatchesWithGemini,
 } from './src/server/geminiAgent.ts';
 import { SafetyViolationError, guardrail } from './src/server/guardrail.ts';
-import { store } from './src/server/store.ts';
+import { AUTO_THRESHOLD, matchLines, normalizeSupplier } from './src/server/productMatcher.ts';
+import { store, type CatalogRowInput } from './src/server/store.ts';
 import type {
   DocumentCategory,
   DraftRecord,
+  ExtractedDocumentData,
+  ExtractedLineItem,
   TargetSoftwareType,
 } from './src/types/pharmagent.ts';
 
@@ -129,6 +132,117 @@ function resolveImage(
     return { mimeType: rel.endsWith('.png') ? 'image/png' : 'image/jpeg', base64: buffer.toString('base64') };
   }
   throw new Error('Aucune image fournie.');
+}
+
+// ─── Correspondance produits ──────────────────────────────
+
+const isLocked = (l: ExtractedLineItem) => l.match?.status === 'confirmed' || l.match?.status === 'new_product';
+
+async function matchDocumentLines(pharmacyId: string, data: ExtractedDocumentData): Promise<{ lines: ExtractedLineItem[]; tokensConsumed: number }> {
+  const supplier = normalizeSupplier(data.supplierOrOrg);
+  const { lines, pendingAI } = matchLines(data.lineItems, {
+    catalog: store.getCatalog(pharmacyId),
+    aliases: store.getAliasesForPharmacy(pharmacyId),
+    supplier,
+  });
+  // Les choix déjà faits par le pharmacien ne sont jamais écrasés
+  data.lineItems.forEach((orig, i) => { if (isLocked(orig)) lines[i] = orig; });
+
+  const ambiguous = pendingAI.filter((p) => !isLocked(data.lineItems[p.index]));
+  let tokensConsumed = 0;
+  if (ambiguous.length) {
+    try {
+      const { decisions, tokensConsumed: t } = await resolveProductMatchesWithGemini({
+        supplier: data.supplierOrOrg,
+        items: ambiguous.map((p) => ({
+          index: p.index,
+          designation: lines[p.index].designation,
+          unitPriceFCFA: lines[p.index].unitPriceFCFA,
+          salePriceFCFA: lines[p.index].salePriceFCFA,
+          candidates: p.candidates,
+        })),
+      });
+      tokensConsumed = t;
+      for (const d of decisions) {
+        const m = lines[d.index].match!;
+        const pick = m.candidates.find((c) => c.productId === d.productId)!;
+        const conf = Math.max(0, Math.min(1, d.confidence));
+        lines[d.index].match = {
+          status: conf >= AUTO_THRESHOLD ? 'auto' : 'to_review',
+          method: 'ai',
+          score: conf,
+          productId: pick.productId,
+          erpLabel: pick.erpLabel,
+          candidates: [pick, ...m.candidates.filter((c) => c.productId !== pick.productId)],
+        };
+      }
+    } catch (err) {
+      // Sans IA les lignes restent « à vérifier » : on ne devine jamais
+      console.warn('[PharmAgent] Correspondance IA indisponible :', (err as Error).message);
+    }
+  }
+  return { lines, tokensConsumed };
+}
+
+function saveDraftExcel(draft: DraftRecord): void {
+  const data = draft.extractedData;
+  const statusLabel: Record<string, string> = { auto: 'Auto', confirmed: 'Confirmé', to_review: 'À VÉRIFIER', new_product: 'Nouveau produit' };
+  const rows = data.lineItems.map((item) => ({
+    'Date Réception': data.documentDate,
+    'N° Document': data.documentNumber,
+    'Fournisseur': data.supplierOrOrg,
+    'Libellé Grossiste': item.designation,
+    'Produit ERP': item.match?.erpLabel ?? '',
+    'Correspondance': item.match ? `${statusLabel[item.match.status]} (${Math.round(item.match.score * 100)}%)` : '',
+    'CIP': item.cip ?? '',
+    'Quantité Reçue': item.quantity,
+    'N° Lot': item.lotNumber ?? '',
+    'Date Péremption': item.expiryDate ?? '',
+    'Prix Achat Unitaire (FCFA)': item.unitPriceFCFA,
+    'Prix Vente (FCFA)': item.salePriceFCFA ?? '',
+    'Total Ligne (FCFA)': item.quantity * item.unitPriceFCFA,
+    'Statut': 'BROUILLON — EN ATTENTE VALIDATION PHARMACIEN',
+  }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Brouillon_Stock');
+  store.saveDraftFile(draft.id, `Brouillon_${draft.id}.xlsx`, XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }));
+}
+
+// Repère les colonnes d'un export ERP quel que soit leur intitulé exact
+const CATALOG_HEADERS: Array<[keyof CatalogRowInput, RegExp]> = [
+  ['cip', /^(cip|cip ?13|cip ?7|ean|ean ?13|code ?(cip|ean|barre|barres|produit)?)$/],
+  ['purchasePriceFCFA', /(prix.*achat|^p\.? ?a\.?( ?ht)?$|^pa ?(ht|ttc)?$|cout|^achat$|pamp)/],
+  ['salePriceFCFA', /(prix.*vente|prix.*public|^p\.? ?v\.?( ?ttc)?$|^ppv$|^pv ?(ttc)?$|^vente$|tarif)/],
+  ['stockQty', /(stock|^qte|quantite|^qty)/],
+  ['erpLabel', /(designation|libelle|produit|denomination|article|^nom)/],
+];
+
+function parseCatalogFile(base64: string): { rows: CatalogRowInput[]; columns: Partial<Record<keyof CatalogRowInput, string>> } {
+  const wb = XLSX.read(Buffer.from(base64.replace(/^data:[^,]+,/, ''), 'base64'), { type: 'buffer' });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' });
+  if (!raw.length) return { rows: [], columns: {} };
+
+  const norm = (h: string) => h.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+  const headers = Object.keys(raw[0]);
+  const columns: Partial<Record<keyof CatalogRowInput, string>> = {};
+  const used = new Set<string>();
+  for (const [field, re] of CATALOG_HEADERS) {
+    const h = headers.find((x) => !used.has(x) && re.test(norm(x)));
+    if (h) { columns[field] = h; used.add(h); }
+  }
+  const num = (v: unknown) => {
+    const n = parseFloat(String(v).replace(/\s| /g, '').replace(',', '.'));
+    return Number.isFinite(n) ? n : undefined;
+  };
+  const rows = raw.map((r) => ({
+    erpLabel: columns.erpLabel ? String(r[columns.erpLabel]).trim() : '',
+    cip: columns.cip ? String(r[columns.cip]).trim() || undefined : undefined,
+    purchasePriceFCFA: columns.purchasePriceFCFA ? num(r[columns.purchasePriceFCFA]) : undefined,
+    salePriceFCFA: columns.salePriceFCFA ? num(r[columns.salePriceFCFA]) : undefined,
+    stockQty: columns.stockQty ? num(r[columns.stockQty]) : undefined,
+  })).filter((r) => r.erpLabel);
+  return { rows, columns };
 }
 
 // ─── Routes santé ─────────────────────────────────────────
@@ -517,8 +631,105 @@ app.post('/api/drafts/:draftId/approve', (req, res) => {
   if (draft.status !== 'pending') { res.status(400).json({ error: "Ce brouillon n'est plus en attente." }); return; }
   const actor = requireApprover(req, res, draft.pharmacyId);
   if (!actor) return;
+  const toReview = draft.extractedData.lineItems.filter((l) => l.match?.status === 'to_review').length;
+  if (toReview) {
+    res.status(400).json({ error: `${toReview} ligne(s) à vérifier : choisissez le produit ERP avant d'approuver.` });
+    return;
+  }
+  // Approuver = confirmer les correspondances automatiques → mémorisées pour la prochaine fois
+  let learned = 0;
+  for (const l of draft.extractedData.lineItems) {
+    const m = l.match;
+    const isNewAuto = m?.status === 'auto' && m.method !== 'memory' && m.method !== 'cip';
+    if (!m?.erpLabel || !(isNewAuto || m.status === 'new_product')) continue;
+    store.learnMatch({
+      pharmacyId: draft.pharmacyId, supplier: draft.extractedData.supplierOrOrg, rawLabel: l.designation,
+      productId: m.productId, erpLabel: m.erpLabel, purchasePriceFCFA: l.unitPriceFCFA, salePriceFCFA: l.salePriceFCFA, cip: l.cip,
+    });
+    learned++;
+  }
   store.updateDraftStatus(req.params.draftId, 'approved', actor.displayName);
-  store.addAuditLog({ pharmacyId: draft.pharmacyId, actorId: actor.actor.id, actorName: actor.displayName, action: `Brouillon ${req.params.draftId} approuvé`, level: 'approved' });
+  store.addAuditLog({ pharmacyId: draft.pharmacyId, actorId: actor.actor.id, actorName: actor.displayName, action: `Brouillon ${req.params.draftId} approuvé${learned ? ` — ${learned} correspondance(s) mémorisée(s)` : ''}`, level: 'approved' });
+  res.json({ ok: true });
+});
+
+// Le pharmacien tranche une ligne : choisit un produit, saisit le libellé ERP, ou marque « nouveau produit »
+app.post('/api/drafts/:draftId/lines/:index/match', (req, res) => {
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
+  if (!requirePharmacyOrOwner(req, res, draft.pharmacyId)) return;
+  if (draft.status !== 'pending') { res.status(400).json({ error: "Ce brouillon n'est plus en attente." }); return; }
+  const index = parseInt(req.params.index, 10);
+  const line = draft.extractedData.lineItems[index];
+  if (!line) { res.status(404).json({ error: 'Ligne introuvable.' }); return; }
+
+  const { productId, erpLabel, newProduct } = req.body as { productId?: string; erpLabel?: string; newProduct?: boolean };
+  const prev = line.match ?? { candidates: [] };
+
+  if (newProduct) {
+    line.match = { status: 'new_product', method: 'manual', score: 1, erpLabel: erpLabel?.trim() || line.designation, candidates: prev.candidates };
+  } else {
+    const fromCatalog = productId ? store.getCatalog(draft.pharmacyId).find((p) => p.id === productId) : undefined;
+    const label = fromCatalog?.erpLabel ?? erpLabel?.trim();
+    if (!label) { res.status(400).json({ error: 'productId ou erpLabel requis.' }); return; }
+    const product = store.learnMatch({
+      pharmacyId: draft.pharmacyId, supplier: draft.extractedData.supplierOrOrg, rawLabel: line.designation,
+      productId: fromCatalog?.id, erpLabel: label, purchasePriceFCFA: line.unitPriceFCFA, salePriceFCFA: line.salePriceFCFA, cip: line.cip,
+    });
+    line.match = { status: 'confirmed', method: 'manual', score: 1, productId: product.id, erpLabel: product.erpLabel, candidates: prev.candidates };
+  }
+
+  store.updateDraftItems(draft.id, draft.extractedData.lineItems);   // persiste aussi learnMatch
+  try { saveDraftExcel(draft); } catch {}
+  res.json({ draft: store.getDraft(draft.id) });
+});
+
+// Relance la correspondance (ex. après import du catalogue) sans toucher aux choix du pharmacien
+app.post('/api/drafts/:draftId/rematch', async (req, res) => {
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
+  if (!requirePharmacyOrOwner(req, res, draft.pharmacyId)) return;
+  if (draft.status !== 'pending') { res.status(400).json({ error: "Ce brouillon n'est plus en attente." }); return; }
+  try {
+    const { lines } = await matchDocumentLines(draft.pharmacyId, draft.extractedData);
+    store.updateDraftItems(draft.id, lines);
+    try { saveDraftExcel(draft); } catch {}
+    res.json({ draft: store.getDraft(draft.id) });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// ─── Catalogue produits de l'officine ─────────────────────
+
+app.get('/api/pharmacies/:id/catalog', (req, res) => {
+  if (!requirePharmacyOrOwner(req, res, req.params.id)) return;
+  const products = store.getCatalog(req.params.id);
+  res.json({ total: products.length, products: products.slice(0, 2000) });
+});
+
+app.post('/api/pharmacies/:id/catalog/import', (req, res) => {
+  const actor = requirePharmacyOrOwner(req, res, req.params.id);
+  if (!actor) return;
+  const { fileBase64 } = req.body as { fileBase64?: string };
+  if (!fileBase64) { res.status(400).json({ error: 'Fichier requis (Excel ou CSV).' }); return; }
+  try {
+    const { rows, columns } = parseCatalogFile(fileBase64);
+    if (!columns.erpLabel) {
+      res.status(400).json({ error: 'Colonne « Désignation / Libellé / Produit » introuvable dans le fichier.' });
+      return;
+    }
+    const result = store.upsertCatalog(req.params.id, rows, 'import');
+    store.addAuditLog({ pharmacyId: req.params.id, actorId: actor.actor.id, actorName: actor.displayName, action: `Import catalogue : ${result.added} ajoutés, ${result.updated} mis à jour`, level: 'info' });
+    res.json({ ...result, columns, total: store.getCatalog(req.params.id).length });
+  } catch (err) {
+    res.status(400).json({ error: `Fichier illisible : ${(err as Error).message}` });
+  }
+});
+
+app.delete('/api/pharmacies/:id/catalog', (req, res) => {
+  if (!requireOwner(req, res)) return;
+  store.clearCatalog(req.params.id);
   res.json({ ok: true });
 });
 
@@ -564,23 +775,26 @@ app.post('/api/agent/extract', async (req, res) => {
   const effPharmacyId = pharmacyId ?? pharmacyUser?.pharmacyId;
   if (!effPharmacyId) { res.status(400).json({ error: 'pharmacyId requis.' }); return; }
 
+  if (pharmacyUser && pharmacyUser.pharmacyId !== effPharmacyId) { res.status(403).json({ error: 'Accès interdit à une autre officine.' }); return; }
+
   try {
     const { base64, mimeType } = resolveImage(imageBase64, sampleAssetPath);
-    const memory = store.getMemory();
-    const { data, tokensConsumed } = await extractDocumentWithGemini({
-      imageBase64: base64, mimeType, documentHint: documentHint ?? 'bon_livraison',
-      taskPrompt, learnedMemory: memory,
+    const extraction = await extractDocumentWithGemini({
+      imageBase64: base64, mimeType, documentHint: documentHint ?? 'bon_livraison', taskPrompt,
     });
+    const data = extraction.data;
 
-    // Mapping vers colonnes cibles
-    const ph = store.getPharmacy(effPharmacyId);
-    const { mappings } = await mapToTargetColumnsWithGemini({
-      extractedData: data,
-      targetSoftware: ph?.targetSoftware ?? 'ERP Officine Intégré',
-      knownColumns: memory.columnRules.map((r) => r.targetColumn),
-    });
+    const matched = await matchDocumentLines(effPharmacyId, data);
+    data.lineItems = matched.lines;
 
-    // Création du brouillon
+    // Colonnes cibles : règles apprises, sans appel IA supplémentaire
+    const sample: Record<string, unknown> = { ...data, ...Object.fromEntries(Object.entries(data.lineItems[0] ?? {}).map(([k, v]) => [`item.${k}`, v])) };
+    const columnMapping = store.getMemory().columnRules.map((r) => ({
+      sourceField: r.sourceField,
+      targetColumn: r.targetColumn,
+      exampleValue: String(sample[r.sourceField] ?? ''),
+    }));
+
     const actorId = owner?.id ?? pharmacyUser!.id;
     const actorName = owner?.fullName ?? pharmacyUser!.fullName;
 
@@ -589,35 +803,20 @@ app.post('/api/agent/extract', async (req, res) => {
       status: 'pending',
       documentCategory: documentHint ?? 'bon_livraison',
       extractedData: data,
-      columnMapping: mappings,
+      columnMapping,
       actorId, actorName,
-      tokensConsumed,
+      tokensConsumed: extraction.tokensConsumed + matched.tokensConsumed,
       hasExcelFile: false,
     });
+    try { saveDraftExcel(draft); } catch {}
 
-    // Génération du fichier Excel brouillon
-    try {
-      const wb = XLSX.utils.book_new();
-      const rows = data.lineItems.map((item) => ({
-        'Date Réception': data.documentDate,
-        'N° Document': data.documentNumber,
-        'Fournisseur': data.supplierOrOrg,
-        'Désignation Médicament': item.designation,
-        'Quantité Reçue': item.quantity,
-        'N° Lot': item.lotNumber ?? '',
-        'Date Péremption': item.expiryDate ?? '',
-        'Prix Unitaire (FCFA)': item.unitPriceFCFA,
-        'Total Ligne (FCFA)': item.quantity * item.unitPriceFCFA,
-        'Confiance IA': `${Math.round(item.confidence * 100)}%`,
-        'Statut': 'BROUILLON — EN ATTENTE VALIDATION PHARMACIEN',
-      }));
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Brouillon_Stock');
-      const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-      store.saveDraftFile(draft.id, `Brouillon_${draft.id}.xlsx`, buffer);
-    } catch {}
-
-    store.addAuditLog({ pharmacyId: effPharmacyId, actorId, actorName, action: `Extraction ${documentHint} — ${data.lineItems.length} lignes — Brouillon ${draft.id}`, level: 'info' });
-    res.json({ draft });
+    const toReview = data.lineItems.filter((l) => l.match?.status === 'to_review').length;
+    store.addAuditLog({
+      pharmacyId: effPharmacyId, actorId, actorName,
+      action: `Extraction ${documentHint} — ${data.lineItems.length} lignes (${data.lineItems.length - toReview} reconnues, ${toReview} à vérifier) — Brouillon ${draft.id}`,
+      level: 'info',
+    });
+    res.json({ draft: store.getDraft(draft.id) });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Erreur extraction.';
     res.status(500).json({ error: msg });
@@ -707,6 +906,18 @@ app.post('/api/agent-client/report', (req, res) => {
   if (!ph) { res.status(403).json({ error: 'Clé agent invalide.' }); return; }
   store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent Local', action: `Rapport tâche ${taskId} : ${success ? 'succès' : 'échec'} — ${message}`, level: success ? 'info' : 'warning' });
   res.json({ ok: true });
+});
+
+// L'agent local envoie les produits lus dans l'ERP (réponses de la recherche produit)
+app.post('/api/agent-client/catalog', (req, res) => {
+  const agentKey = req.headers['x-agent-key'] as string;
+  if (!agentKey) { res.status(400).json({ error: 'X-Agent-Key manquant.' }); return; }
+  const ph = store.getPharmacyByAgentKey(agentKey);
+  if (!ph) { res.status(403).json({ error: 'Clé agent invalide.' }); return; }
+  const { products } = req.body as { products?: CatalogRowInput[] };
+  if (!Array.isArray(products)) { res.status(400).json({ error: 'products doit être un tableau.' }); return; }
+  const result = store.upsertCatalog(ph.id, products.slice(0, 20000), 'erp_capture');
+  res.json({ ...result, total: store.getCatalog(ph.id).length });
 });
 
 // ─── RPA : actions sur l'écran ────────────────────────────
