@@ -2,7 +2,7 @@
 // PharmAgent — Agent Gemini Vision
 // ============================================================
 
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import type {
   DocumentCategory,
   ExtractedDocumentData,
@@ -25,13 +25,14 @@ async function generate(ai: GoogleGenAI, params: GenerateParams) {
       try {
         const ATTEMPT_TIMEOUT_MS = 90_000;
         const res = await Promise.race([
-          ai.models.generateContent({ ...params, model }),
+          // Sans réglage, Gemini 3 réfléchit longuement : lecture d'un bon > 60 s
+          ai.models.generateContent({ ...params, model, config: { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW }, ...params.config } }),
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error('TIMEOUT_503')), ATTEMPT_TIMEOUT_MS)
           ),
         ]);
         if (model !== activeModel) {
-          console.warn(`[PharmAgent] Modèle Gemini « ${activeModel} » indisponible : bascule sur « ${model } ».`);
+          console.warn(`[PharmAgent] Modèle Gemini « ${activeModel} » indisponible : bascule sur « ${model} ».`);
           activeModel = model;
         }
         return res;
@@ -39,7 +40,7 @@ async function generate(ai: GoogleGenAI, params: GenerateParams) {
         lastErr = err;
         const msg = err instanceof Error ? err.message : String(err);
         if (/NOT_FOUND|no longer available|is not found|not supported for generateContent/i.test(msg)) break;
-        // Surcharge passagère côté Google : une seule tentative avant bascule modèle suivant
+        // Surcharge passagère côté Google : on réessaie une fois, puis modèle suivant
         if (/UNAVAILABLE|overloaded|high demand|RESOURCE_EXHAUSTED|TIMEOUT_503|\b(429|500|503)\b/i.test(msg)) {
           if (attempt < 1) { await new Promise((r) => setTimeout(r, 500)); continue; }
           break;
