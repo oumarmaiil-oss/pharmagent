@@ -5,6 +5,7 @@
 import 'dotenv/config';
 import crypto from 'crypto';
 import express from 'express';
+import sharp from 'sharp';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -129,6 +130,19 @@ function publicBaseUrl(req: express.Request): string {
   const host = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? '').split(',')[0].trim();
   const safeHost = /^[A-Za-z0-9.:-]+$/.test(host) ? host : 'pharmagent.onrender.com';
   return `${proto === 'http' ? 'http' : 'https'}://${safeHost}`;
+}
+
+async function downscaleImage(base64: string, mimeType: string): Promise<{ base64: string; mimeType: string }> {
+  if (!mimeType.startsWith('image/')) return { base64, mimeType };
+  try {
+    const buf = Buffer.from(base64, 'base64');
+    // Réduction uniquement si > 300 KB
+    if (buf.byteLength <= 300_000) return { base64, mimeType };
+    const out = await sharp(buf).resize(1000, 1400, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 65 }).toBuffer();
+    return { base64: out.toString('base64'), mimeType: 'image/jpeg' };
+  } catch {
+    return { base64, mimeType };
+  }
 }
 
 function resolveDocument(base64Input?: string, sampleAssetPath?: string): { base64: string; mimeType: string } {
@@ -734,11 +748,12 @@ app.post('/api/agent/extract', async (req, res) => {
   if (pharmacyUser && pharmacyUser.pharmacyId !== effPharmacyId) { res.status(403).json({ error: 'Accès interdit à une autre officine.' }); return; }
 
   try {
-    const { base64, mimeType } = resolveDocument(imageBase64, sampleAssetPath);
-    if (!/^(image\/(jpeg|png|webp|heic|heif)|application\/pdf)$/.test(mimeType)) {
+    const resolved = resolveDocument(imageBase64, sampleAssetPath);
+    if (!/^(image\/(jpeg|png|webp|heic|heif)|application\/pdf)$/.test(resolved.mimeType)) {
       res.status(400).json({ error: 'Format non pris en charge : utilisez une photo (JPG, PNG) ou un PDF.' });
       return;
     }
+    const { base64, mimeType } = await downscaleImage(resolved.base64, resolved.mimeType);
     const extraction = await extractDocumentWithGemini({
       imageBase64: base64, mimeType, documentHint: documentHint ?? 'bon_livraison', taskPrompt,
     });
