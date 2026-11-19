@@ -23,7 +23,13 @@ async function generate(ai: GoogleGenAI, params: GenerateParams) {
   for (const model of MODEL_CHAIN.slice(start)) {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const res = await ai.models.generateContent({ ...params, model });
+        const ATTEMPT_TIMEOUT_MS = 35_000;
+        const res = await Promise.race([
+          ai.models.generateContent({ ...params, model }),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('TIMEOUT_503')), ATTEMPT_TIMEOUT_MS)
+          ),
+        ]);
         if (model !== activeModel) {
           console.warn(`[PharmAgent] Modèle Gemini « ${activeModel} » indisponible : bascule sur « ${model} ».`);
           activeModel = model;
