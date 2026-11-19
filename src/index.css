@@ -3,40 +3,73 @@
 :root {
   --brand: #10b981;
   --brand-dim: #059669;
-  --brand-glow: rgba(16, 185, 129, 0.15);
-  --surface: #0f172a;
-  --surface-2: #1e293b;
-  --surface-3: #334155;
-  --border: #1e293b;
+  --surface: #060c18;
   --text: #f1f5f9;
   --text-muted: #94a3b8;
-  font-family: 'Inter', system-ui, sans-serif;
+  /* Motifs : croix de pharmacie + gélule, et réseau moléculaire */
+  --motif-cross: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cg fill='none'%3E%3Cpath d='M26 18h8v8h8v8h-8v8h-8v-8h-8v-8h8z' fill='%2310b981' fill-opacity='.07'/%3E%3Crect x='72' y='74' width='30' height='12' rx='6' transform='rotate(-35 87 80)' stroke='%2360a5fa' stroke-opacity='.12' stroke-width='1.5'/%3E%3Cpath d='M87 74v12' transform='rotate(-35 87 80)' stroke='%2360a5fa' stroke-opacity='.12' stroke-width='1.5'/%3E%3Ccircle cx='96' cy='22' r='1.6' fill='%2394a3b8' fill-opacity='.18'/%3E%3Ccircle cx='14' cy='96' r='1.6' fill='%2394a3b8' fill-opacity='.18'/%3E%3C/g%3E%3C/svg%3E");
+  --motif-molecule: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='84' height='96'%3E%3Cg fill='none' stroke='%2310b981' stroke-opacity='.16' stroke-width='1.2'%3E%3Cpath d='M42 8l26 15v30L42 68 16 53V23z'/%3E%3Cpath d='M42 68v20M68 23l14-8M16 23L2 15'/%3E%3C/g%3E%3Cg fill='%2310b981' fill-opacity='.28'%3E%3Ccircle cx='42' cy='8' r='2.5'/%3E%3Ccircle cx='68' cy='53' r='2.5'/%3E%3Ccircle cx='16' cy='23' r='2.5'/%3E%3C/g%3E%3C/svg%3E");
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
-body { background: var(--surface); color: var(--text); min-height: 100dvh; }
+body {
+  color: var(--text);
+  min-height: 100dvh;
+  background-color: var(--surface);
+  background-image:
+    radial-gradient(55rem 28rem at 92% -8%, rgba(16, 185, 129, 0.16), transparent 62%),
+    radial-gradient(45rem 30rem at -12% 105%, rgba(59, 130, 246, 0.12), transparent 60%),
+    var(--motif-cross);
+  background-attachment: fixed;
+}
 
-/* Scrollbar */
+/* Les cartes laissent deviner les motifs du fond */
+.bg-slate-900 { background-color: rgb(15 23 42 / 0.80); backdrop-filter: blur(6px); }
+.bg-slate-950 { background-color: rgb(2 6 23 / 0.55); }
+
+.motif-molecule { background-image: var(--motif-molecule); }
+.motif-hero {
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(120deg, rgba(5, 150, 105, 0.22), rgba(15, 23, 42, 0.2) 55%, rgba(59, 130, 246, 0.14)),
+    var(--motif-molecule);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+}
+.motif-hero::after {
+  content: '';
+  position: absolute;
+  right: -40px;
+  top: -40px;
+  width: 180px;
+  height: 180px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(52, 211, 153, 0.28), transparent 70%);
+  pointer-events: none;
+}
+
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 3px; }
+::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--brand-dim); }
 
-/* Code mono */
-code, pre, .mono { font-family: 'JetBrains Mono', monospace; }
-
-/* Focus rings */
+code, pre, .mono { font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace; }
 :focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: 4px; }
-
-/* Transition globale */
 button, a, input, select, textarea { transition: all 0.15s ease; }
 
-/* Badge guardrail */
 .badge-draft { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
 .badge-forbidden { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
 .badge-pending { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
 
-/* Animations */
 @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 .animate-in { animation: fadeIn 0.25s ease forwards; }
+
+/* Guide imprimable */
+@media print {
+  body { background: #fff !important; color: #000 !important; }
+  .no-print { display: none !important; }
+  .print-clean, .print-clean * { color: #000 !important; background: transparent !important; border-color: #bbb !important; box-shadow: none !important; backdrop-filter: none !important; }
+}

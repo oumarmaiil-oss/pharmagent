@@ -1,17 +1,21 @@
 // ============================================================
-// PharmAgent — Persistance des données (JSON file + mémoire)
+// PharmAgent — Persistance (mémoire + fichier JSON + Postgres optionnel)
 // ============================================================
 
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import pg from 'pg';
 import { normalizeLabel, normalizeSupplier } from './productMatcher.ts';
 import type {
   AgentLearnedMemory,
+  AgentPresence,
+  AgentProfile,
   AuditLogEntry,
   AuditLevel,
   CatalogProduct,
   ColumnRule,
+  DraftExecution,
   DraftRecord,
   DraftStatus,
   OwnerAccount,
@@ -33,7 +37,9 @@ function hashPassword(pw: string): string {
 }
 
 function checkPassword(pw: string, hash: string): boolean {
-  return hashPassword(pw) === hash;
+  const a = Buffer.from(hashPassword(pw));
+  const b = Buffer.from(hash);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 function generateSecret(len = 16): string {
@@ -45,17 +51,14 @@ function now(): string {
   return new Date().toISOString();
 }
 
-// ─── Dossier de données ───────────────────────────────────
+// ─── Emplacements ─────────────────────────────────────────
 
-function resolveDataDir(): string {
-  const env = process.env.DATA_DIR;
-  if (env) return path.resolve(env);
-  return path.resolve(process.cwd(), 'data');
-}
-
-const DATA_DIR = resolveDataDir();
+const DATA_DIR = path.resolve(process.env.DATA_DIR ?? path.join(process.cwd(), 'data'));
 const DB_PATH = path.join(DATA_DIR, 'pharmagent-db.json');
-const DRAFTS_DIR = path.join(DATA_DIR, 'drafts');
+const DATABASE_URL = process.env.DATABASE_URL;
+
+// Une tâche « en saisie » depuis plus longtemps est considérée comme abandonnée
+const RUNNING_TIMEOUT_MS = 30 * 60 * 1000;
 
 // ─── Mots de passe provisoires ────────────────────────────
 
@@ -81,6 +84,7 @@ interface Database {
   auditLogs: AuditLogEntry[];
   learnedMemory: AgentLearnedMemory;
   catalog: CatalogProduct[];
+  agentProfiles: AgentProfile[];
   authSecret: string;
 }
 
@@ -90,6 +94,13 @@ export interface CatalogRowInput {
   purchasePriceFCFA?: number;
   salePriceFCFA?: number;
   stockQty?: number;
+}
+
+export interface ExecutionResultInput {
+  status: 'done' | 'failed';
+  message?: string;
+  durationMs?: number;
+  lines?: DraftExecution['lines'];
 }
 
 function initialDatabase(): Database {
@@ -115,7 +126,7 @@ function initialDatabase(): Database {
         subscription: 'trial',
         monthlyQuota: 50,
         usedThisMonth: 0,
-        agentKey: `ak-${nanoid(20)}`,
+        agentKey: `ak-${nanoid(24)}`,
       },
     ],
     users: [
@@ -132,11 +143,7 @@ function initialDatabase(): Database {
     drafts: [],
     auditLogs: [],
     learnedMemory: {
-      productAliases: [
-        { id: nanoid(), rawLabel: 'AMOX 500', canonicalName: 'Amoxicilline 500mg', createdAt: now() },
-        { id: nanoid(), rawLabel: 'PARACE 1G', canonicalName: 'Paracétamol 1000mg', createdAt: now() },
-        { id: nanoid(), rawLabel: 'IBU 400', canonicalName: 'Ibuprofène 400mg', createdAt: now() },
-      ],
+      productAliases: [],
       columnRules: [
         { id: nanoid(), sourceField: 'item.designation', targetColumn: 'Désignation Médicament', createdAt: now() },
         { id: nanoid(), sourceField: 'item.quantity', targetColumn: 'Quantité Reçue', createdAt: now() },
@@ -149,15 +156,16 @@ function initialDatabase(): Database {
       ],
     },
     catalog: [],
+    agentProfiles: [],
     authSecret: process.env.PHARMAGENT_AUTH_SECRET ?? generateSecret(32),
   };
 }
 
-// ─── Token de session (simple, sans lib externe) ──────────
+// ─── Token de session (HMAC, sans dépendance) ─────────────
 
 function makeToken(payload: object, secret: string): string {
   const header = Buffer.from(JSON.stringify({ alg: 'HS256' })).toString('base64url');
-  const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + 24 * 3600 * 1000 })).toString('base64url');
+  const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + 7 * 24 * 3600 * 1000 })).toString('base64url');
   const sig = crypto.createHmac('sha256', secret).update(`${header}.${body}`).digest('base64url');
   return `${header}.${body}.${sig}`;
 }
@@ -166,7 +174,7 @@ function verifyToken<T>(token: string, secret: string): T | null {
   try {
     const [header, body, sig] = token.split('.');
     const expected = crypto.createHmac('sha256', secret).update(`${header}.${body}`).digest('base64url');
-    if (sig !== expected) return null;
+    if (!sig || sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString()) as T & { exp: number };
     if (Date.now() > payload.exp) return null;
     return payload;
@@ -179,24 +187,50 @@ function verifyToken<T>(token: string, secret: string): T | null {
 
 class PharmAgentStore {
   private db: Database;
+  private pool?: pg.Pool;
+  private pgTimer?: NodeJS.Timeout;
+  private presence = new Map<string, AgentPresence>();
 
   constructor() {
     fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.mkdirSync(DRAFTS_DIR, { recursive: true });
-
+    let loaded: Database | undefined;
     if (fs.existsSync(DB_PATH)) {
-      try {
-        const raw = fs.readFileSync(DB_PATH, 'utf-8');
-        const parsed = JSON.parse(raw) as Database;
-        this.db = this.migrate(parsed);
-      } catch {
-        this.db = initialDatabase();
-        this.persist();
-      }
-    } else {
-      this.db = initialDatabase();
-      this.persist();
+      try { loaded = this.migrate(JSON.parse(fs.readFileSync(DB_PATH, 'utf-8')) as Database); } catch { /* fichier corrompu */ }
     }
+    this.db = loaded ?? initialDatabase();
+    if (!loaded) this.writeFile();
+  }
+
+  // Charge l'état depuis Postgres si DATABASE_URL est défini (survit aux redémarrages Render)
+  async init(): Promise<void> {
+    if (!DATABASE_URL) {
+      console.warn('[PharmAgent] DATABASE_URL absent : données sur disque local uniquement (perdues au redéploiement sur Render gratuit).');
+      return;
+    }
+    const needsSsl = /\.render\.com|sslmode=require/.test(DATABASE_URL);
+    this.pool = new pg.Pool({ connectionString: DATABASE_URL, max: 3, ssl: needsSsl ? { rejectUnauthorized: false } : undefined });
+    await this.pool.query(
+      'CREATE TABLE IF NOT EXISTS pharmagent_state (id INT PRIMARY KEY, data JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())'
+    );
+    const r = await this.pool.query<{ data: Database }>('SELECT data FROM pharmagent_state WHERE id = 1');
+    if (r.rows[0]) {
+      this.db = this.migrate(r.rows[0].data);
+      this.writeFile();
+      console.log('[PharmAgent] État chargé depuis Postgres.');
+    } else {
+      await this.flushPg();
+      console.log('[PharmAgent] Postgres initialisé.');
+    }
+  }
+
+  async shutdown(): Promise<void> {
+    if (this.pgTimer) { clearTimeout(this.pgTimer); this.pgTimer = undefined; }
+    await this.flushPg();
+    await this.pool?.end();
+  }
+
+  get persistence(): 'postgres' | 'disk' {
+    return this.pool ? 'postgres' : 'disk';
   }
 
   private migrate(parsed: Database): Database {
@@ -205,25 +239,48 @@ class PharmAgentStore {
       ...def,
       ...parsed,
       learnedMemory: {
-        productAliases: parsed.learnedMemory?.productAliases ?? def.learnedMemory.productAliases,
+        productAliases: parsed.learnedMemory?.productAliases ?? [],
         columnRules: parsed.learnedMemory?.columnRules ?? def.learnedMemory.columnRules,
       },
       catalog: parsed.catalog ?? [],
+      agentProfiles: parsed.agentProfiles ?? [],
       authSecret: parsed.authSecret ?? def.authSecret,
     };
   }
 
+  private writeFile(): void {
+    const tmp = `${DB_PATH}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(this.db), 'utf-8');
+    fs.renameSync(tmp, DB_PATH);
+  }
+
   private persist(): void {
-    fs.writeFileSync(DB_PATH, JSON.stringify(this.db, null, 2), 'utf-8');
+    this.writeFile();
+    if (this.pool && !this.pgTimer) {
+      this.pgTimer = setTimeout(() => { this.pgTimer = undefined; void this.flushPg(); }, 400);
+    }
+  }
+
+  private async flushPg(): Promise<void> {
+    if (!this.pool) return;
+    try {
+      await this.pool.query(
+        'INSERT INTO pharmagent_state (id, data, updated_at) VALUES (1, $1, now()) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()',
+        [JSON.stringify(this.db)]
+      );
+    } catch (err) {
+      console.error('[PharmAgent] Écriture Postgres échouée, nouvel essai dans 5 s :', (err as Error).message);
+      if (!this.pgTimer) this.pgTimer = setTimeout(() => { this.pgTimer = undefined; void this.flushPg(); }, 5000);
+    }
   }
 
   // ── Auth ──────────────────────────────────────────────
 
   loginOwner(loginId: string, password: string): string | null {
     const o = this.db.owner;
-    if (o.loginId !== loginId && (o as any).legacyLoginId !== loginId) return null;
+    if (o.loginId !== loginId) return null;
     if (!checkPassword(password, o.passwordHash)) return null;
-    return makeToken({ kind: 'owner', sub: o.id, loginId: o.loginId, role: o.role }, this.db.authSecret);
+    return makeToken({ kind: 'owner', sub: o.id }, this.db.authSecret);
   }
 
   verifyOwnerToken(token: string): OwnerAccount | null {
@@ -255,14 +312,11 @@ class PharmAgentStore {
     return true;
   }
 
-  changePharmacyUserPassword(userId: string, newPassword: string): void {
-    const user = this.db.users.find((u) => u.id === userId);
-    if (user) { user.passwordHash = hashPassword(newPassword); this.persist(); }
-  }
-
   // ── Pharmacies ────────────────────────────────────────
 
-  getPharmacies(): Pharmacy[] { return this.db.pharmacies; }
+  getPharmacies(): Pharmacy[] {
+    return this.db.pharmacies.map((p) => ({ ...p, agent: this.presence.get(p.id) }));
+  }
 
   getPharmacy(id: string): Pharmacy | undefined {
     return this.db.pharmacies.find((p) => p.id === id);
@@ -280,10 +334,9 @@ class PharmAgentStore {
       subscription: 'trial',
       monthlyQuota: 50,
       usedThisMonth: 0,
-      agentKey: `ak-${nanoid(20)}`,
+      agentKey: `ak-${nanoid(24)}`,
     };
     this.db.pharmacies.push(pharmacy);
-    // Crée les 3 comptes par défaut
     for (const role of ['titulaire', 'adjoint', 'assistant'] as const) {
       this.db.users.push({
         id: `usr-${nanoid(8)}`,
@@ -307,15 +360,32 @@ class PharmAgentStore {
     this.persist();
   }
 
-  resetMonthlyUsage(): void {
-    this.db.pharmacies.forEach((p) => { p.usedThisMonth = 0; });
-    this.persist();
-  }
-
-  // ── Utilisateurs officine ─────────────────────────────
-
   getPharmacyUsers(pharmacyId: string): PharmacyUser[] {
     return this.db.users.filter((u) => u.pharmacyId === pharmacyId);
+  }
+
+  // ── Agent local ───────────────────────────────────────
+
+  getPharmacyByAgentKey(key: string): Pharmacy | undefined {
+    if (!key) return undefined;
+    return this.db.pharmacies.find((p) => p.agentKey === key);
+  }
+
+  touchAgent(pharmacyId: string, info: Partial<AgentPresence>): void {
+    const prev = this.presence.get(pharmacyId);
+    this.presence.set(pharmacyId, { ...prev, ...info, lastSeen: now() });
+  }
+
+  getProfile(pharmacyId: string): AgentProfile | undefined {
+    return this.db.agentProfiles.find((p) => p.pharmacyId === pharmacyId);
+  }
+
+  saveProfile(profile: Omit<AgentProfile, 'updatedAt'>): AgentProfile {
+    const full: AgentProfile = { ...profile, updatedAt: now() };
+    this.db.agentProfiles = this.db.agentProfiles.filter((p) => p.pharmacyId !== profile.pharmacyId);
+    this.db.agentProfiles.push(full);
+    this.persist();
+    return full;
   }
 
   // ── Brouillons ────────────────────────────────────────
@@ -343,7 +413,10 @@ class PharmAgentStore {
     if (!draft) return undefined;
     draft.status = status;
     draft.updatedAt = now();
-    if (status === 'approved') draft.approvedBy = actorName;
+    if (status === 'approved') {
+      draft.approvedBy = actorName;
+      draft.execution = { status: 'queued', queuedAt: now(), attempts: 0 };
+    }
     if (status === 'rejected') draft.rejectionReason = reason ?? '';
     this.persist();
     return draft;
@@ -357,29 +430,70 @@ class PharmAgentStore {
     this.persist();
   }
 
-  // ── Artéfacts Excel brouillons ────────────────────────
-
-  saveDraftFile(draftId: string, fileName: string, buffer: Buffer): void {
-    const safe = `${draftId}__${fileName.replace(/[^a-zA-Z0-9_.-]/g, '_')}`;
-    fs.writeFileSync(path.join(DRAFTS_DIR, safe), buffer);
-    const draft = this.db.drafts.find((d) => d.id === draftId);
-    if (draft) { draft.hasExcelFile = true; this.persist(); }
+  // Attribue atomiquement la plus ancienne saisie en attente : un bon n'est jamais saisi deux fois
+  claimNextExecution(pharmacyId: string): DraftRecord | undefined {
+    const mine = this.db.drafts.filter((d) => d.pharmacyId === pharmacyId && d.status === 'approved' && d.execution);
+    let changed = false;
+    for (const d of mine) {
+      const ex = d.execution!;
+      if (ex.status === 'running' && ex.startedAt && Date.now() - Date.parse(ex.startedAt) > RUNNING_TIMEOUT_MS) {
+        ex.status = 'failed';
+        ex.finishedAt = now();
+        ex.message = "Délai dépassé : l'agent ne s'est pas manifesté. Vérifiez l'ERP puis relancez.";
+        changed = true;
+      }
+    }
+    // Une seule saisie à la fois par officine
+    if (mine.some((d) => d.execution!.status === 'running')) {
+      if (changed) this.persist();
+      return undefined;
+    }
+    const next = mine
+      .filter((d) => d.execution!.status === 'queued')
+      .sort((a, b) => a.execution!.queuedAt.localeCompare(b.execution!.queuedAt))[0];
+    if (!next) {
+      if (changed) this.persist();
+      return undefined;
+    }
+    const ex = next.execution!;
+    ex.status = 'running';
+    ex.startedAt = now();
+    ex.finishedAt = undefined;
+    ex.message = undefined;
+    ex.lines = undefined;
+    ex.attempts += 1;
+    next.updatedAt = now();
+    this.persist();
+    return next;
   }
 
-  getDraftFile(draftId: string): { fileName: string; buffer: Buffer } | undefined {
-    try {
-      const files = fs.readdirSync(DRAFTS_DIR);
-      const match = files.find((f) => f.startsWith(`${draftId}__`));
-      if (!match) return undefined;
-      return { fileName: match.slice(`${draftId}__`.length), buffer: fs.readFileSync(path.join(DRAFTS_DIR, match)) };
-    } catch { return undefined; }
+  finishExecution(draftId: string, pharmacyId: string, result: ExecutionResultInput): DraftRecord | undefined {
+    const d = this.db.drafts.find((x) => x.id === draftId && x.pharmacyId === pharmacyId);
+    if (!d?.execution || d.execution.status !== 'running') return undefined;
+    d.execution.status = result.status;
+    d.execution.finishedAt = now();
+    d.execution.message = result.message?.slice(0, 500);
+    d.execution.durationMs = result.durationMs;
+    d.execution.lines = result.lines?.slice(0, 500);
+    d.updatedAt = now();
+    this.persist();
+    return d;
+  }
+
+  requeueExecution(draftId: string): DraftRecord | undefined {
+    const d = this.db.drafts.find((x) => x.id === draftId);
+    if (!d || d.status !== 'approved') return undefined;
+    d.execution = { status: 'queued', queuedAt: now(), attempts: d.execution?.attempts ?? 0 };
+    d.updatedAt = now();
+    this.persist();
+    return d;
   }
 
   // ── Audit ─────────────────────────────────────────────
 
   addAuditLog(params: { pharmacyId: string; actorId: string; actorName: string; action: string; level: AuditLevel; details?: string }): void {
     const ph = this.db.pharmacies.find((p) => p.id === params.pharmacyId);
-    const entry: AuditLogEntry = {
+    this.db.auditLogs.unshift({
       id: `al-${nanoid(10)}`,
       pharmacyId: params.pharmacyId,
       pharmacyName: ph?.name ?? 'Superviseur',
@@ -389,9 +503,8 @@ class PharmAgentStore {
       level: params.level,
       details: params.details,
       timestamp: now(),
-    };
-    this.db.auditLogs.unshift(entry);
-    if (this.db.auditLogs.length > 500) this.db.auditLogs = this.db.auditLogs.slice(0, 500);
+    });
+    if (this.db.auditLogs.length > 1000) this.db.auditLogs = this.db.auditLogs.slice(0, 1000);
     this.persist();
   }
 
@@ -404,9 +517,13 @@ class PharmAgentStore {
 
   getMemory(): AgentLearnedMemory { return this.db.learnedMemory; }
 
+  getAliasesForPharmacy(pharmacyId: string): ProductAlias[] {
+    return this.db.learnedMemory.productAliases.filter((a) => !a.pharmacyId || a.pharmacyId === pharmacyId);
+  }
+
   addProductAlias(rawLabel: string, canonicalName: string, pharmacyId?: string): ProductAlias {
     const existing = this.db.learnedMemory.productAliases.find(
-      (a) => a.rawLabel.toLowerCase() === rawLabel.toLowerCase()
+      (a) => a.rawLabel.toLowerCase() === rawLabel.toLowerCase() && a.pharmacyId === pharmacyId && !a.supplier
     );
     if (existing) { existing.canonicalName = canonicalName; this.persist(); return existing; }
     const alias: ProductAlias = { id: nanoid(), rawLabel, canonicalName, pharmacyId, createdAt: now() };
@@ -434,11 +551,8 @@ class PharmAgentStore {
     this.persist();
   }
 
-  getAliasesForPharmacy(pharmacyId: string): ProductAlias[] {
-    return this.db.learnedMemory.productAliases.filter((a) => !a.pharmacyId || a.pharmacyId === pharmacyId);
-  }
-
-  // Mémorise « ce libellé de ce grossiste = ce produit ERP » et enrichit le catalogue
+  // Mémorise « ce libellé de ce grossiste = ce produit ERP » et enrichit le catalogue.
+  // Ne persiste pas : l'appelant enchaîne avec une écriture (lot de lignes).
   learnMatch(params: { pharmacyId: string; supplier: string; rawLabel: string; productId?: string; erpLabel: string; purchasePriceFCFA?: number; salePriceFCFA?: number; cip?: string }): CatalogProduct {
     const supplier = normalizeSupplier(params.supplier);
     let product = params.productId
@@ -458,7 +572,7 @@ class PharmAgentStore {
     if (supplier && !product.suppliers.includes(supplier)) product.suppliers.push(supplier);
     if (params.purchasePriceFCFA) product.purchasePriceFCFA = params.purchasePriceFCFA;
     if (params.salePriceFCFA) product.salePriceFCFA = params.salePriceFCFA;
-    if (params.cip && !product.cip) product.cip = params.cip;
+    if (params.cip && !product.cip) product.cip = params.cip.replace(/\D/g, '') || undefined;
     product.updatedAt = now();
 
     const rawKey = normalizeLabel(params.rawLabel);
@@ -474,10 +588,19 @@ class PharmAgentStore {
         pharmacyId: params.pharmacyId, supplier, productId: product.id, hits: 1, createdAt: now(),
       });
     }
-    return product;   // l'appelant fait flush() une fois pour tout le lot
+    return product;
   }
 
   flush(): void { this.persist(); }
+
+  importMemoryFromJson(json: { productAliases?: ProductAlias[]; columnRules?: ColumnRule[] }): void {
+    for (const a of json.productAliases ?? []) {
+      if (a.rawLabel && a.canonicalName) this.addProductAlias(a.rawLabel, a.canonicalName, a.pharmacyId);
+    }
+    for (const r of json.columnRules ?? []) {
+      if (r.sourceField && r.targetColumn) this.addColumnRule(r.sourceField, r.targetColumn, r.pharmacyId);
+    }
+  }
 
   // ── Catalogue produits ───────────────────────────────
 
@@ -491,22 +614,23 @@ class PharmAgentStore {
     const byLabel = new Map(mine.map((p) => [normalizeLabel(p.erpLabel), p]));
     let added = 0, updated = 0;
     for (const r of rows) {
-      const label = r.erpLabel?.trim();
+      const label = typeof r.erpLabel === 'string' ? r.erpLabel.trim().slice(0, 200) : '';
       if (!label) continue;
-      const cip = r.cip?.replace(/\D/g, '') || undefined;
+      const cip = (typeof r.cip === 'string' || typeof r.cip === 'number') ? String(r.cip).replace(/\D/g, '') || undefined : undefined;
+      const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
       const existing = (cip && byCip.get(cip)) || byLabel.get(normalizeLabel(label));
       if (existing) {
         existing.erpLabel = label;
         if (cip) existing.cip = cip;
-        if (r.purchasePriceFCFA) existing.purchasePriceFCFA = r.purchasePriceFCFA;
-        if (r.salePriceFCFA) existing.salePriceFCFA = r.salePriceFCFA;
-        if (r.stockQty !== undefined) existing.stockQty = r.stockQty;
+        if (num(r.purchasePriceFCFA)) existing.purchasePriceFCFA = num(r.purchasePriceFCFA);
+        if (num(r.salePriceFCFA)) existing.salePriceFCFA = num(r.salePriceFCFA);
+        if (num(r.stockQty) !== undefined) existing.stockQty = num(r.stockQty);
         existing.updatedAt = now();
         updated++;
       } else {
         const p: CatalogProduct = {
           id: `pr-${nanoid(10)}`, pharmacyId, erpLabel: label, cip,
-          purchasePriceFCFA: r.purchasePriceFCFA, salePriceFCFA: r.salePriceFCFA, stockQty: r.stockQty,
+          purchasePriceFCFA: num(r.purchasePriceFCFA), salePriceFCFA: num(r.salePriceFCFA), stockQty: num(r.stockQty),
           suppliers: [], source, updatedAt: now(),
         };
         this.db.catalog.push(p);
@@ -515,7 +639,7 @@ class PharmAgentStore {
         added++;
       }
     }
-    this.persist();
+    if (added || updated) this.persist();
     return { added, updated };
   }
 
@@ -524,23 +648,10 @@ class PharmAgentStore {
     this.persist();
   }
 
-  importMemoryFromJson(json: { productAliases?: ProductAlias[]; columnRules?: ColumnRule[] }): void {
-    if (json.productAliases) {
-      for (const a of json.productAliases) {
-        if (a.rawLabel && a.canonicalName) this.addProductAlias(a.rawLabel, a.canonicalName, a.pharmacyId);
-      }
-    }
-    if (json.columnRules) {
-      for (const r of json.columnRules) {
-        if (r.sourceField && r.targetColumn) this.addColumnRule(r.sourceField, r.targetColumn, r.pharmacyId);
-      }
-    }
-  }
-
   // ── Dashboard ────────────────────────────────────────
 
   getDashboard() {
-    const pharmacies = this.db.pharmacies;
+    const pharmacies = this.getPharmacies();
     const thisMonth = new Date().toISOString().slice(0, 7);
 
     const stats = pharmacies.map((ph) => {
@@ -563,18 +674,14 @@ class PharmAgentStore {
     return {
       pharmacies,
       stats,
-      pendingDrafts: this.db.drafts.filter((d) => d.status === 'pending').slice(0, 20),
+      pendingDrafts: this.db.drafts.filter((d) => d.status === 'pending').slice(0, 30),
+      recentDrafts: this.db.drafts.filter((d) => d.status === 'approved').slice(0, 30),
       recentAudit: this.db.auditLogs.slice(0, 20),
       totalDraftsToday: this.db.drafts.filter((d) => d.createdAt.startsWith(todayStr)).length,
       totalApprovedMonth: this.db.drafts.filter((d) => d.status === 'approved' && d.updatedAt.startsWith(thisMonth)).length,
       learnedMemory: this.db.learnedMemory,
+      persistence: this.persistence,
     };
-  }
-
-  // ── Agent clé ────────────────────────────────────────
-
-  getPharmacyByAgentKey(key: string): Pharmacy | undefined {
-    return this.db.pharmacies.find((p) => p.agentKey === key);
   }
 
   getOwner(): OwnerAccount { return this.db.owner; }

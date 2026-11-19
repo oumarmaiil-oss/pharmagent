@@ -23,6 +23,59 @@ export interface Pharmacy {
   monthlyQuota: number;        // brouillons autorisés par mois
   usedThisMonth: number;
   agentKey: string;            // clé secrète pour l'agent Python local
+  agent?: AgentPresence;
+}
+
+// ─── Agent local ──────────────────────────────────────────
+
+export interface AgentPresence {
+  lastSeen: string;
+  hostname?: string;
+  os?: string;
+  version?: string;
+  state?: string;              // ex. « En attente », « Saisie en cours »
+}
+
+export type ErpMode = 'web' | 'desktop';
+
+// Étape d'une recette enregistrée pendant la démo (interprétée par l'agent)
+export interface RecipeStep {
+  kind: 'fill' | 'pick' | 'click' | 'press' | 'select' | 'type' | 'key' | 'wait';
+  field?: string;
+  value?: string;
+  selectors?: string[];
+  text?: string;
+  key?: string;
+  format?: string;
+  label?: string;
+  ms?: number;
+  frame?: string;              // « name:xxx » ou « url:/chemin » si le champ est dans une iframe
+  via?: 'key' | 'mouse';       // champ atteint au clavier (Tab) ou à la souris pendant la démo
+}
+
+export interface AgentProfile {
+  pharmacyId: string;
+  mode: ErpMode;
+  erpUrl?: string;
+  formUrl?: string;            // écran de saisie où la démo a été faite
+  windowTitle?: string;
+  headerSteps: RecipeStep[];
+  lineSteps: RecipeStep[];
+  recordedAt?: string;
+  updatedAt: string;
+}
+
+export type ExecutionStatus = 'queued' | 'running' | 'done' | 'failed';
+
+export interface DraftExecution {
+  status: ExecutionStatus;
+  queuedAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  attempts: number;
+  message?: string;
+  durationMs?: number;
+  lines?: Array<{ index: number; ok: boolean; message?: string }>;
 }
 
 export interface PharmacyUser {
@@ -125,7 +178,7 @@ export interface DraftRecord {
   approvedBy?: string;
   rejectionReason?: string;
   tokensConsumed: number;
-  hasExcelFile: boolean;
+  execution?: DraftExecution;
 }
 
 // ─── Mémoire apprise ──────────────────────────────────────
@@ -207,27 +260,11 @@ export interface DashboardSnapshot {
   pharmacies: Pharmacy[];
   stats: PharmacyStats[];
   pendingDrafts: DraftRecord[];
+  recentDrafts: DraftRecord[];
+  persistence: 'postgres' | 'disk';
   recentAudit: AuditLogEntry[];
   totalDraftsToday: number;
   totalApprovedMonth: number;
   learnedMemory: AgentLearnedMemory;
 }
 
-// ─── Exécution locale ─────────────────────────────────────
-
-export interface ExecutionStepLog {
-  stepIndex: number;
-  action: string;
-  status: 'pending' | 'done' | 'blocked' | 'error';
-  message?: string;
-  timestamp: string;
-}
-
-export interface ExecutionRunResult {
-  draftId: string;
-  success: boolean;
-  steps: ExecutionStepLog[];
-  blockedReason?: string;
-  excelFileName?: string;
-  tokensConsumed: number;
-}

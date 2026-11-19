@@ -40,22 +40,22 @@ export default function LoginScreen({ onLogin }: { onLogin: (s: SessionState) =>
   };
 
   return (
-    <div className="min-h-dvh bg-slate-950 flex items-center justify-center p-4">
-      {/* Background glow */}
+    <div className="min-h-dvh flex items-center justify-center p-4">
+      <div className="fixed inset-0 pointer-events-none motif-molecule opacity-60 [mask-image:radial-gradient(ellipse_at_center,black_20%,transparent_70%)]" />
       <div className="fixed inset-0 pointer-events-none">
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-emerald-500/5 rounded-full blur-3xl" />
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[28rem] h-[28rem] bg-emerald-500/10 rounded-full blur-3xl" />
       </div>
 
-      <div className="w-full max-w-sm animate-in">
+      <div className="relative w-full max-w-sm animate-in">
         {/* Logo + titre */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center mb-4">{LOGO}</div>
           <h1 className="text-2xl font-bold text-white">PharmAgent</h1>
-          <p className="text-slate-400 text-sm mt-1">Supervision Multi-Officines</p>
+          <p className="text-slate-400 text-sm mt-1">Saisie automatique des bons de livraison</p>
         </div>
 
         {/* Formulaire */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl shadow-black/40">
           <h2 className="text-base font-semibold text-white mb-5">Accès Superviseur</h2>
           <form onSubmit={handleSubmit} className="space-y-4">
             {/* Identifiant */}
@@ -110,8 +110,8 @@ export default function LoginScreen({ onLogin }: { onLogin: (s: SessionState) =>
           </form>
         </div>
 
-        <p className="text-center text-xs text-slate-600 mt-4">
-          Les identifiants provisoires sont affichés dans les logs serveur.
+        <p className="text-center text-xs text-slate-500 mt-5">
+          <a href="/guide" className="text-emerald-400 hover:text-emerald-300">Guide d'installation et d'utilisation</a>
         </p>
       </div>
     </div>

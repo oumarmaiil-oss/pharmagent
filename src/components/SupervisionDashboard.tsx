@@ -68,6 +68,13 @@ export default function SupervisionDashboard({ snapshot, onRefresh, selectedPhar
         </button>
       </div>
 
+      {snapshot.persistence === 'disk' && (
+        <div className="bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs rounded-xl px-4 py-3">
+          Stockage temporaire : sur l'hébergement gratuit, les données sont effacées à chaque redéploiement.
+          Ajoutez une base Postgres (variable <span className="font-mono">DATABASE_URL</span> sur Render) pour les conserver.
+        </div>
+      )}
+
       {/* Statistiques globales */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard label="Officines" value={totalPharmacies} icon={<Building2 size={18} />} />
@@ -103,7 +110,10 @@ export default function SupervisionDashboard({ snapshot, onRefresh, selectedPhar
                           {PLAN_LABEL[ph.subscription]}
                         </span>
                       </div>
-                      <div className="text-xs text-slate-500 mt-0.5">{ph.city} · {ph.targetSoftware}</div>
+                      <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5">
+                        <span className={`w-1.5 h-1.5 rounded-full ${ph.agent && Date.now() - Date.parse(ph.agent.lastSeen) < 70000 ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                        {ph.city} · agent {ph.agent ? (Date.now() - Date.parse(ph.agent.lastSeen) < 70000 ? (ph.agent.state ?? 'en ligne').toLowerCase() : 'hors ligne') : 'non installé'}
+                      </div>
                     </div>
                     <div className="flex items-center gap-3 flex-shrink-0 text-xs">
                       {(stat?.pendingDrafts ?? 0) > 0 && (

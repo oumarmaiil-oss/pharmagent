@@ -1,228 +1,229 @@
-import { ChevronDown, ChevronUp, Download, ExternalLink, Monitor, Terminal } from 'lucide-react';
-import { useState } from 'react';
-import type { DashboardSnapshot } from '../types/pharmagent.ts';
+import { Apple, BookOpen, Check, Copy, Download, Globe, Laptop, Link2, Loader2, Monitor, ShieldCheck, Wifi, WifiOff } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import type { AgentPresence, DashboardSnapshot, DraftExecution } from '../types/pharmagent.ts';
+import { ExecutionDetail } from './ExecutionStatus.tsx';
 
 interface Props {
   token: string;
   snapshot: DashboardSnapshot | null;
+  selectedPharmacyId: string;
+  onSelectPharmacy: (id: string) => void;
 }
 
-const PYTHON_AGENT = `#!/usr/bin/env python3
-"""
-PharmAgent — Agent Local Officine
-Se connecte au SaaS PharmAgent, envoie des images de documents
-et crée des brouillons pour validation pharmacien.
+interface AgentInfo {
+  presence: AgentPresence | null;
+  profile: { mode: 'web' | 'desktop'; erpUrl?: string; windowTitle?: string; recordedAt?: string; headerSteps: number; lineSteps: number; fields: string[] } | null;
+  queue: Array<{ id: string; documentNumber: string; supplier: string; lines: number; execution: DraftExecution }>;
+}
 
-GUARDRAIL ABSOLU : cet agent ne valide, ne soumet, ne confirme JAMAIS.
-Il crée uniquement des brouillons (statut 'pending').
-"""
-import os, sys, base64, json, time
-from pathlib import Path
-import requests
+const FIELD_LABEL: Record<string, string> = {
+  supplier: 'Fournisseur', documentNumber: 'N° bon', documentDate: 'Date', totalAmount: 'Total', product: 'Produit', cip: 'CIP',
+  designation: 'Libellé grossiste', quantity: 'Quantité', lotNumber: 'Lot', expiryDate: 'Péremption', purchasePrice: 'Prix achat',
+  salePrice: 'Prix vente', lineTotal: 'Total ligne', const: 'Texte fixe',
+};
 
-SAAS_URL  = os.environ.get("PHARMAGENT_URL", "https://pharmagent.onrender.com")
-AGENT_KEY = os.environ.get("PHARMAGENT_AGENT_KEY", "")
-WATCH_DIR = Path(os.environ.get("PHARMAGENT_WATCH_DIR", "./documents"))
+function since(iso?: string): string {
+  if (!iso) return '';
+  const s = Math.round((Date.now() - Date.parse(iso)) / 1000);
+  if (s < 60) return `il y a ${s} s`;
+  if (s < 3600) return `il y a ${Math.round(s / 60)} min`;
+  return new Date(iso).toLocaleString('fr-FR');
+}
 
-def send_document(image_path: Path, doc_type: str = "bon_livraison") -> dict:
-    with open(image_path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode()
-    r = requests.post(
-        f"{SAAS_URL}/api/agent-client/extract",
-        headers={"X-Agent-Key": AGENT_KEY, "Content-Type": "application/json"},
-        json={"imageBase64": b64, "documentCategory": doc_type, "mimeType": "image/jpeg"},
-        timeout=60
-    )
-    r.raise_for_status()
-    return r.json()
+function CopyLine({ text }: { text: string }) {
+  const [ok, setOk] = useState(false);
+  return (
+    <div className="flex items-stretch gap-2">
+      <code className="flex-1 min-w-0 text-[11px] sm:text-xs bg-slate-950/80 border border-slate-700 rounded-lg px-3 py-2 text-emerald-200 overflow-x-auto whitespace-nowrap">{text}</code>
+      <button
+        onClick={() => { navigator.clipboard?.writeText(text).then(() => { setOk(true); setTimeout(() => setOk(false), 1500); }); }}
+        className="flex-shrink-0 px-3 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 hover:text-white"
+        title="Copier"
+      >
+        {ok ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+      </button>
+    </div>
+  );
+}
 
-def watch_folder():
-    WATCH_DIR.mkdir(parents=True, exist_ok=True)
-    processed = set()
-    print(f"[PharmAgent] Surveillance : {WATCH_DIR}")
-    while True:
-        for f in WATCH_DIR.glob("*.jpg"):
-            if f.name not in processed:
-                try:
-                    print(f"[PharmAgent] Traitement : {f.name}")
-                    result = send_document(f)
-                    draft_id = result.get("draftId", "?")
-                    print(f"[PharmAgent] Brouillon créé : {draft_id} (en attente validation)")
-                    processed.add(f.name)
-                except Exception as e:
-                    print(f"[PharmAgent] Erreur {f.name}: {e}", file=sys.stderr)
-        time.sleep(10)
-
-if __name__ == "__main__":
-    if not AGENT_KEY:
-        print("ERREUR: définissez PHARMAGENT_AGENT_KEY", file=sys.stderr)
-        sys.exit(1)
-    watch_folder()
-`;
-
-const MAC_GUIDE = `# Installation PharmAgent — macOS
-
-## 1. Prérequis
-\`\`\`bash
-brew install python@3.12
-pip3 install requests
-\`\`\`
-
-## 2. Configurer les variables d'environnement
-Ajoutez dans ~/.zshrc (ou ~/.bashrc) :
-\`\`\`bash
-export PHARMAGENT_URL="https://pharmagent.onrender.com"
-export PHARMAGENT_AGENT_KEY="votre_cle_agent_ici"
-export PHARMAGENT_WATCH_DIR="$HOME/Desktop/PharmAgent_Docs"
-\`\`\`
-
-## 3. Lancer l'agent
-\`\`\`bash
-source ~/.zshrc
-python3 pharmagent_agent.py
-\`\`\`
-
-## 4. Utilisation
-Déposez vos photos de bons de livraison dans ~/Desktop/PharmAgent_Docs/
-L'agent les envoie automatiquement et crée des brouillons côté SaaS.`;
-
-const WIN_GUIDE = `# Installation PharmAgent — Windows (PC Officine)
-
-## 1. Prérequis
-Téléchargez Python 3.12+ sur python.org, cochez "Add to PATH".
-\`\`\`
-pip install requests
-\`\`\`
-
-## 2. Configurer les variables d'environnement
-Panneau de configuration → Système → Variables d'environnement :
-- PHARMAGENT_URL = https://pharmagent.onrender.com
-- PHARMAGENT_AGENT_KEY = votre_cle_agent_ici
-- PHARMAGENT_WATCH_DIR = C:\\PharmAgent_Docs
-
-## 3. Lancer l'agent
-\`\`\`
-python pharmagent_agent.py
-\`\`\`
-
-## 4. Automatiser au démarrage
-Créez un raccourci vers pharmagent_agent.py dans :
-C:\\Users\\VotreNom\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup`;
-
-export default function AgentDeployment({ token, snapshot }: Props) {
-  const [openGuide, setOpenGuide] = useState<'mac' | 'win' | null>(null);
-  const [showCode, setShowCode] = useState(false);
-
+export default function AgentDeployment({ token, snapshot, selectedPharmacyId, onSelectPharmacy }: Props) {
   const pharmacies = snapshot?.pharmacies ?? [];
+  const phId = selectedPharmacyId || pharmacies[0]?.id || '';
+  const [info, setInfo] = useState<AgentInfo | null>(null);
+  const [code, setCode] = useState('');
+  const [pairing, setPairing] = useState(false);
+  const [pairMsg, setPairMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+
+  const load = useCallback(async () => {
+    if (!phId) return;
+    try {
+      const r = await fetch(`/api/pharmacies/${phId}/agent`, { headers: { Authorization: `Bearer ${token}` } });
+      if (r.ok) setInfo(await r.json() as AgentInfo);
+    } catch { /* réseau : on réessaie au prochain tour */ }
+  }, [phId, token]);
+
+  useEffect(() => {
+    setInfo(null); setPairMsg(null);
+    load();
+    const t = setInterval(load, 4000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  const pair = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPairing(true); setPairMsg(null);
+    try {
+      const r = await fetch(`/api/pharmacies/${phId}/pair`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ code }),
+      });
+      const d = await r.json() as { hostname?: string; error?: string };
+      if (!r.ok) { setPairMsg({ ok: false, text: d.error ?? 'Erreur.' }); return; }
+      setPairMsg({ ok: true, text: `Ordinateur « ${d.hostname ?? '?'} » relié. Continuez sur cet ordinateur : choix de l'ERP puis démo.` });
+      setCode('');
+      setTimeout(load, 2500);
+    } finally {
+      setPairing(false);
+    }
+  };
+
+  const p = info?.presence;
+  const online = !!p && Date.now() - Date.parse(p.lastSeen) < 70_000;
 
   return (
-    <div className="p-6 space-y-6 max-w-5xl mx-auto">
-      <div>
-        <h1 className="text-xl font-bold text-white">Déploiement Agent</h1>
-        <p className="text-slate-400 text-sm">Installez l'agent local Python sur chaque PC officine pour automatiser l'envoi des documents</p>
-      </div>
-
-      {/* Guardrail notice */}
-      <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-4 flex gap-3">
-        <Monitor size={18} className="text-emerald-400 flex-shrink-0 mt-0.5" />
-        <div className="text-sm text-emerald-200/80">
-          <span className="font-semibold text-emerald-300">Guardrail Draft-Only.</span>{' '}
-          L'agent local ne fait que scanner des documents et envoyer les données au SaaS. Il crée uniquement des{' '}
-          <strong className="text-white">brouillons en attente</strong> — jamais de validation, jamais de soumission définitive.
-          Le pharmacien valide ou rejette chaque brouillon depuis l'interface web.
+    <div className="p-4 sm:p-6 space-y-5 max-w-5xl mx-auto">
+      <div className="motif-hero rounded-2xl p-5 sm:p-6">
+        <div className="flex flex-wrap items-center gap-3 relative z-10">
+          <div className="w-11 h-11 rounded-xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center"><Laptop size={22} className="text-emerald-300" /></div>
+          <div className="flex-1 min-w-0">
+            <h1 className="text-xl font-bold text-white">Agent local</h1>
+            <p className="text-sm text-slate-300">Le petit programme installé sur le PC de l'officine qui saisit les bons approuvés dans l'ERP.</p>
+          </div>
+          <select
+            value={phId}
+            onChange={(e) => onSelectPharmacy(e.target.value)}
+            className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-emerald-500"
+          >
+            {pharmacies.map((ph) => <option key={ph.id} value={ph.id}>{ph.name}</option>)}
+          </select>
         </div>
       </div>
 
-      {/* Téléchargements par officine */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-        <div className="px-4 py-3 border-b border-slate-800">
-          <span className="text-sm font-semibold text-white">Scripts personnalisés par officine</span>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        {/* État */}
+        <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+          <h2 className="text-sm font-semibold text-white mb-3 flex items-center gap-2"><Monitor size={15} className="text-emerald-400" /> Ordinateur de l'officine</h2>
+          {!info ? (
+            <div className="text-sm text-slate-500 flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> Chargement…</div>
+          ) : !p ? (
+            <div className="text-sm text-slate-400">
+              <div className="flex items-center gap-2 text-slate-300 font-medium mb-1"><WifiOff size={15} className="text-slate-500" /> Aucun ordinateur relié</div>
+              Installez l'agent sur le PC de l'officine (ci-dessous), puis saisissez le code affiché.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <span className={`w-2.5 h-2.5 rounded-full ${online ? 'bg-emerald-400 shadow-[0_0_10px_#34d399]' : 'bg-slate-600'}`} />
+                <span className={`text-sm font-semibold ${online ? 'text-emerald-300' : 'text-slate-400'}`}>{online ? 'En ligne' : 'Hors ligne'}</span>
+                <span className="text-xs text-slate-500">· vu {since(p.lastSeen)}</span>
+                {online ? <Wifi size={14} className="text-emerald-400 ml-auto" /> : <WifiOff size={14} className="text-slate-500 ml-auto" />}
+              </div>
+              <div className="text-xs text-slate-400">
+                <b className="text-slate-200">{p.hostname ?? '—'}</b> · {p.os ?? '—'} · agent v{p.version ?? '?'}
+                {p.state && <div className="mt-1">État : <span className="text-slate-200">{p.state}</span></div>}
+              </div>
+              {info.profile ? (
+                <div className="rounded-xl bg-slate-950/60 border border-slate-800 p-3 text-xs space-y-1.5">
+                  <div className="flex items-center gap-1.5 text-slate-200 font-medium">
+                    {info.profile.mode === 'web' ? <Globe size={13} className="text-sky-300" /> : <Monitor size={13} className="text-sky-300" />}
+                    {info.profile.mode === 'web' ? 'ERP web' : 'Logiciel installé'}
+                    <span className="text-slate-500 font-normal truncate">· {info.profile.erpUrl ?? info.profile.windowTitle}</span>
+                  </div>
+                  <div className="text-slate-500">Démo enregistrée {info.profile.recordedAt ? new Date(info.profile.recordedAt).toLocaleString('fr-FR') : ''} · {info.profile.lineSteps} étapes par ligne</div>
+                  <div className="flex flex-wrap gap-1">
+                    {info.profile.fields.filter((f) => f !== 'const').map((f) => (
+                      <span key={f} className="px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-300">{FIELD_LABEL[f] ?? f}</span>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
+                  Démo pas encore faite : sur le PC de l'officine, suivez les étapes du panneau PharmAgent.
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+
+        {/* Appairage */}
+        <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+          <h2 className="text-sm font-semibold text-white mb-1 flex items-center gap-2"><Link2 size={15} className="text-emerald-400" /> Appairer un ordinateur</h2>
+          <p className="text-xs text-slate-400 mb-3">Saisissez le code à 6 chiffres affiché par l'agent sur l'ordinateur de l'officine.</p>
+          <form onSubmit={pair} className="flex gap-2">
+            <input
+              value={code}
+              onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              inputMode="numeric"
+              placeholder="123 456"
+              className="flex-1 min-w-0 bg-slate-950/70 border border-slate-700 rounded-xl px-4 py-3 text-2xl tracking-[0.3em] font-mono text-center text-emerald-200 placeholder-slate-700 outline-none focus:border-emerald-500"
+            />
+            <button disabled={code.length !== 6 || pairing || !phId} className="px-5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-semibold text-sm flex items-center gap-2">
+              {pairing ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} Relier
+            </button>
+          </form>
+          {pairMsg && (
+            <div className={`mt-3 text-xs rounded-lg px-3 py-2 border ${pairMsg.ok ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30' : 'text-red-300 bg-red-500/10 border-red-500/30'}`}>{pairMsg.text}</div>
+          )}
+          <div className="mt-4 flex items-start gap-2 text-[11px] text-slate-500">
+            <ShieldCheck size={14} className="text-emerald-400 flex-shrink-0 mt-0.5" />
+            L'agent remplit l'écran de saisie puis s'arrête : il ne clique jamais sur Valider, Confirmer ou Clôturer.
+          </div>
+        </section>
+      </div>
+
+      {/* Installation */}
+      <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          <h2 className="text-sm font-semibold text-white flex items-center gap-2"><Download size={15} className="text-emerald-400" /> Installer l'agent sur un ordinateur</h2>
+          <a href="/guide" target="_blank" rel="noreferrer" className="ml-auto text-xs text-emerald-300 hover:text-emerald-200 flex items-center gap-1"><BookOpen size={13} /> Guide pas à pas</a>
         </div>
-        {pharmacies.length === 0 ? (
-          <div className="px-4 py-8 text-center text-slate-500 text-sm">Aucune officine. Créez-en une depuis l'onglet "Mes Officines".</div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-4 space-y-3">
+            <div className="flex items-center gap-2 text-sm font-semibold text-white"><Monitor size={16} className="text-sky-300" /> Windows 10 / 11</div>
+            <a href="/install/windows" className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-sm font-semibold">
+              <Download size={15} /> Télécharger l'installeur
+            </a>
+            <p className="text-[11px] text-slate-400">Double-cliquez sur <b>PharmAgent-Installer.bat</b>. Si Windows affiche « Windows a protégé votre ordinateur » : <b>Informations complémentaires › Exécuter quand même</b>.</p>
+            <p className="text-[11px] text-slate-500">Ou dans PowerShell :</p>
+            <CopyLine text={`irm ${origin}/install/windows.ps1 | iex`} />
+          </div>
+          <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-4 space-y-3">
+            <div className="flex items-center gap-2 text-sm font-semibold text-white"><Apple size={16} className="text-slate-200" /> macOS</div>
+            <p className="text-[11px] text-slate-400">Ouvrez <b>Terminal</b> (Launchpad › Autres › Terminal), collez cette ligne puis appuyez sur Entrée :</p>
+            <CopyLine text={`curl -fsSL ${origin}/install/install.sh | bash`} />
+            <p className="text-[11px] text-slate-500">Rien d'autre à installer : Python et le navigateur sont gérés automatiquement (1 à 3 minutes).</p>
+          </div>
+        </div>
+      </section>
+
+      {/* File des saisies */}
+      <section className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+        <div className="px-5 py-3 border-b border-slate-800 text-sm font-semibold text-white">Saisies envoyées à l'agent</div>
+        {!info?.queue.length ? (
+          <div className="px-5 py-6 text-sm text-slate-500">Aucun bon approuvé pour l'instant. Dès qu'un bon est approuvé, il apparaît ici.</div>
         ) : (
           <div className="divide-y divide-slate-800">
-            {pharmacies.map((ph) => (
-              <div key={ph.id} className="flex items-center gap-4 px-4 py-3 hover:bg-slate-800/40">
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-white">{ph.name}</div>
-                  <div className="text-xs text-slate-500">{ph.city} · clé : <span className="font-mono">{ph.agentKey.slice(0, 16)}…</span></div>
-                </div>
-                <a
-                  href={`/api/pharmacies/${ph.id}/installer?token=${token}`}
-                  className="flex items-center gap-1.5 text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 px-3 py-1.5 rounded-lg whitespace-nowrap"
-                >
-                  <Download size={12} />
-                  pharmagent_agent.py
-                </a>
+            {info.queue.map((q) => (
+              <div key={q.id} className="px-5 py-3">
+                <div className="text-sm text-white font-medium">{q.documentNumber || q.id} <span className="text-xs text-slate-500 font-normal">· {q.supplier} · {q.lines} ligne(s)</span></div>
+                <div className="mt-1.5"><ExecutionDetail draftId={q.id} execution={q.execution} token={token} onChanged={load} /></div>
               </div>
             ))}
           </div>
         )}
-      </div>
-
-      {/* Code source */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-        <button
-          onClick={() => setShowCode(!showCode)}
-          className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-800/40"
-        >
-          <div className="flex items-center gap-2">
-            <Terminal size={15} className="text-slate-400" />
-            <span className="text-sm font-semibold text-white">Code source de l'agent</span>
-          </div>
-          {showCode ? <ChevronUp size={16} className="text-slate-500" /> : <ChevronDown size={16} className="text-slate-500" />}
-        </button>
-        {showCode && (
-          <div className="border-t border-slate-800">
-            <pre className="p-4 text-xs font-mono text-slate-300 overflow-x-auto leading-relaxed bg-slate-950/50 max-h-96 overflow-y-auto">
-              {PYTHON_AGENT}
-            </pre>
-          </div>
-        )}
-      </div>
-
-      {/* Guides installation */}
-      <div className="space-y-3">
-        <h2 className="text-sm font-semibold text-slate-300">Guides d'installation</h2>
-
-        {([
-          { key: 'mac' as const, label: 'macOS', icon: '🍎', content: MAC_GUIDE },
-          { key: 'win' as const, label: 'Windows', icon: '🪟', content: WIN_GUIDE },
-        ]).map(({ key, label, icon, content }) => (
-          <div key={key} className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-            <button
-              onClick={() => setOpenGuide(openGuide === key ? null : key)}
-              className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-800/40"
-            >
-              <div className="flex items-center gap-2">
-                <span>{icon}</span>
-                <span className="text-sm font-medium text-white">Guide installation {label}</span>
-              </div>
-              {openGuide === key ? <ChevronUp size={16} className="text-slate-500" /> : <ChevronDown size={16} className="text-slate-500" />}
-            </button>
-            {openGuide === key && (
-              <div className="border-t border-slate-800">
-                <pre className="p-4 text-xs font-mono text-slate-300 whitespace-pre-wrap leading-relaxed bg-slate-950/50">
-                  {content}
-                </pre>
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {/* Lien FastAPI */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex items-center gap-4">
-        <div className="flex-1">
-          <div className="text-sm font-medium text-white">Version FastAPI (avancée)</div>
-          <div className="text-xs text-slate-500 mt-0.5">Serveur local avec API REST complète pour intégration ERP</div>
-        </div>
-        <a href="/api/guide/mac-pc" className="flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 px-3 py-1.5 rounded-lg whitespace-nowrap">
-          <ExternalLink size={12} />
-          Guide FastAPI
-        </a>
-      </div>
+      </section>
     </div>
   );
 }

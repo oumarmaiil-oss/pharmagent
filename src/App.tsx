@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { DashboardSnapshot, OwnerAccount } from './types/pharmagent.ts';
 import AgentDeployment from './components/AgentDeployment.tsx';
 import AuditLog from './components/AuditLog.tsx';
+import GuideCenter from './components/GuideCenter.tsx';
 import Layout from './components/Layout.tsx';
 import LoginScreen from './components/LoginScreen.tsx';
 import PharmacistWorkspace from './components/PharmacistWorkspace.tsx';
@@ -17,7 +18,8 @@ export type AppTab =
   | 'training'
   | 'grounding'
   | 'audit'
-  | 'deployment';
+  | 'deployment'
+  | 'guide';
 
 export interface SessionState {
   token: string;
@@ -52,15 +54,15 @@ export default function App() {
     } catch {}
   }, []);
 
-  const fetchDashboard = async (token: string) => {
-    setLoading(true);
+  const fetchDashboard = async (token: string, silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const r = await fetch('/api/dashboard', { headers: { Authorization: `Bearer ${token}` } });
       if (r.ok) {
         const data = await r.json() as DashboardSnapshot;
         setSnapshot(data);
-        if (!selectedPharmacyId && data.pharmacies.length > 0) {
-          setSelectedPharmacyId(data.pharmacies[0].id);
+        if (data.pharmacies.length > 0) {
+          setSelectedPharmacyId((prev) => prev || data.pharmacies[0].id);
         }
       }
     } finally {
@@ -81,9 +83,17 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (session) fetchDashboard(session.token);
+    if (!session) return;
+    fetchDashboard(session.token);
+    // Rafraîchit l'état des saisies (agent) sans recharger la page
+    const t = setInterval(() => { if (document.visibilityState === 'visible') fetchDashboard(session.token, true); }, 8000);
+    return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.token]);
+
+  if (window.location.pathname.replace(/\/+$/, '') === '/guide') {
+    return <GuideCenter standalone />;
+  }
 
   if (!session) {
     return <LoginScreen onLogin={handleLogin} />;
@@ -113,7 +123,8 @@ export default function App() {
       {tab === 'training' && <TrainingCenter {...commonProps} />}
       {tab === 'grounding' && <UIGrounding token={session.token} />}
       {tab === 'audit' && <AuditLog token={session.token} />}
-      {tab === 'deployment' && <AgentDeployment token={session.token} snapshot={snapshot} />}
+      {tab === 'deployment' && <AgentDeployment token={session.token} snapshot={snapshot} selectedPharmacyId={selectedPharmacyId} onSelectPharmacy={setSelectedPharmacyId} />}
+      {tab === 'guide' && <GuideCenter />}
     </Layout>
   );
 }

@@ -154,7 +154,7 @@ export default function PharmacyManagement({ token, snapshot, onRefresh }: Props
                       <div><span className="text-slate-500">ID :</span> <span className="font-mono text-slate-300">{ph.id}</span></div>
                       <div><span className="text-slate-500">Région :</span> <span className="text-slate-300">{ph.region}</span></div>
                       <div><span className="text-slate-500">Créé le :</span> <span className="text-slate-300">{new Date(ph.createdAt).toLocaleDateString('fr-FR')}</span></div>
-                      <div><span className="text-slate-500">Clé agent :</span> <span className="font-mono text-slate-400 truncate">{ph.agentKey.slice(0, 16)}…</span></div>
+                      <div><span className="text-slate-500">Agent :</span> <span className={ph.agent && Date.now() - Date.parse(ph.agent.lastSeen) < 70000 ? 'text-emerald-300' : 'text-slate-400'}>{ph.agent ? (Date.now() - Date.parse(ph.agent.lastSeen) < 70000 ? `en ligne (${ph.agent.hostname ?? 'PC'})` : 'hors ligne') : 'non installé'}</span></div>
                     </div>
 
                     {/* Changer le plan */}
@@ -169,15 +169,10 @@ export default function PharmacyManagement({ token, snapshot, onRefresh }: Props
                       </select>
                     </div>
 
-                    {/* Télécharger installeur */}
-                    <div className="flex gap-2">
-                      <a
-                        href={`/api/pharmacies/${ph.id}/installer?token=${token}`}
-                        className="flex items-center gap-1.5 text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 px-3 py-1.5 rounded-lg"
-                      >
-                        ⬇ Script agent Python
-                      </a>
-                    </div>
+                    <p className="text-xs text-slate-500">
+                      Installation et appairage de l'ordinateur : onglet <b className="text-slate-300">Agent local</b>.
+                      Identifiants de l'officine : titulaire / adjoint / assistant.
+                    </p>
                   </div>
                 )}
               </div>

@@ -1,8 +1,8 @@
 import {
   Activity,
   BookOpen,
+  CircleHelp,
   Building2,
-  FileSearch,
   HardDrive,
   LayoutDashboard,
   LogOut,
@@ -40,7 +40,8 @@ export default function Layout({ tab, onTabChange, owner, onLogout, pendingCount
     { id: 'training', label: 'Mémoire & Entraînement', icon: <BookOpen size={18} /> },
     { id: 'grounding', label: 'Inspecteur UI', icon: <Monitor size={18} /> },
     { id: 'audit', label: 'Journal Garde-Fou', icon: <ShieldAlert size={18} /> },
-    { id: 'deployment', label: 'Agent Local', icon: <HardDrive size={18} /> },
+    { id: 'deployment', label: 'Agent local', icon: <HardDrive size={18} /> },
+    { id: 'guide', label: 'Guide', icon: <CircleHelp size={18} /> },
   ];
 
   return (
@@ -56,7 +57,7 @@ export default function Layout({ tab, onTabChange, owner, onLogout, pendingCount
       </header>
 
       {/* Sidebar */}
-      <aside className="hidden md:flex w-60 flex-shrink-0 flex-col border-r border-slate-800 bg-slate-900">
+      <aside className="hidden md:flex w-60 flex-shrink-0 flex-col border-r border-slate-800 bg-slate-900 motif-molecule">
         {/* Logo */}
         <div className="flex items-center gap-3 px-4 py-5 border-b border-slate-800">
           {LOGO}

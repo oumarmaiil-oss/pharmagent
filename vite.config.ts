@@ -32,7 +32,8 @@ export default defineConfig({
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
-        navigateFallbackDenylist: [/^\/api\//],
+        // Téléchargements de l'installeur et de l'agent : jamais remplacés par la page de l'application
+        navigateFallbackDenylist: [/^\/api\//, /^\/install\//, /^\/agent\//],
       },
     }),
     {

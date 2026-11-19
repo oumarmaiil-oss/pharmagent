@@ -32,19 +32,17 @@ export default function UIGrounding({ token }: Props) {
   };
 
   const handleAnalyze = async () => {
-    if (!imageFile) return;
+    if (!imageFile || !imagePreview) return;
     setLoading(true); setError(''); setResult(null);
     try {
-      const fd = new FormData();
-      fd.append('image', imageFile);
       const r = await fetch('/api/agent/ground-interface', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: fd,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ imageBase64: imagePreview, targetSoftware: 'ERP Officine Intégré' }),
       });
-      const data = await r.json() as GroundingAnalysisResult & { error?: string };
-      if (!r.ok) { setError(data.error ?? 'Erreur analyse.'); return; }
-      setResult(data);
+      const data = await r.json() as { result?: GroundingAnalysisResult; error?: string };
+      if (!r.ok || !data.result) { setError(data.error ?? 'Erreur analyse.'); return; }
+      setResult(data.result);
     } catch {
       setError('Erreur réseau.');
     } finally {
