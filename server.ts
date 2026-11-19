@@ -318,61 +318,118 @@ app.get('/api/pharmacies/:id/installer', (req, res) => {
   const appUrl = host ? `${proto}://${host}` : (process.env.APP_URL ?? 'http://localhost:3000');
 
   const script = `#!/usr/bin/env python3
-# PharmAgent — Script de démarrage agent local
-# Officine : ${ph.name} | Clé : ${ph.agentKey}
-# Généré le ${new Date().toLocaleDateString('fr-FR')}
+"""
+PharmAgent RPA — Agent Local Robotique
+Officine  : ${ph.name}
+Généré le : ${new Date().toLocaleDateString('fr-FR')}
 
-import os, sys, subprocess, time
+GUARDRAIL ABSOLU : ne valide, ne soumet, ne confirme JAMAIS.
+Le pharmacien approuve chaque brouillon depuis l'interface web.
+"""
+import os, sys, time, base64, subprocess
+from io import BytesIO
 
-AGENT_KEY = "${ph.agentKey}"
-SERVER_URL = "${appUrl}"
-PHARMACY_ID = "${ph.id}"
-
-def check_requirements():
-    missing = []
-    for pkg in ["requests", "pyautogui", "Pillow"]:
+# ── Vérification dépendances ──────────────────────────────────────────────────
+def _install_missing():
+    for pkg, imp in [("requests","requests"),("pyautogui","pyautogui"),("Pillow","PIL")]:
         try:
-            __import__(pkg if pkg != "Pillow" else "PIL")
+            __import__(imp)
         except ImportError:
-            missing.append(pkg)
-    if missing:
-        print(f"Installation des dépendances manquantes : {', '.join(missing)}")
-        subprocess.check_call([sys.executable, "-m", "pip", "install"] + missing)
+            print(f"[Setup] Installation de {pkg}...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
+_install_missing()
 
-def get_next_task():
-    import requests
-    r = requests.get(f"{SERVER_URL}/api/agent-client/next-task",
-                     headers={"X-Agent-Key": AGENT_KEY}, timeout=10)
-    if r.status_code == 200:
-        return r.json().get("task")
-    return None
+import requests
+import pyautogui
+from PIL import ImageGrab
 
-def report_result(task_id, success, message, steps=None):
-    import requests
-    requests.post(f"{SERVER_URL}/api/agent-client/report",
-                  json={"taskId": task_id, "agentKey": AGENT_KEY,
-                        "success": success, "message": message, "steps": steps or []},
-                  timeout=10)
+SAAS_URL   = "${appUrl}"
+AGENT_KEY  = "${ph.agentKey}"
+PHARMACY_ID = "${ph.id}"
+DELAY      = float(os.environ.get("PHARMAGENT_DELAY", "0.5"))
+POLL_SEC   = int(os.environ.get("PHARMAGENT_POLL", "15"))
+pyautogui.FAILSAFE = True
 
-def main():
-    print(f"[PharmAgent] Agent local démarré — Officine {PHARMACY_ID}")
-    print(f"[PharmAgent] Connexion au serveur : {SERVER_URL}")
-    check_requirements()
+def screenshot_b64() -> str:
+    img = ImageGrab.grab()
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+def execute_action(action: dict) -> bool:
+    kind, label, safety = action.get("action"), action.get("fieldLabel","?"), action.get("safetyStatus","UNKNOWN")
+    if safety == "FORBIDDEN_BY_GUARDRAIL":
+        print(f"  [BLOQUÉ-GUARDRAIL] {label}")
+        return False
+    x, y, text, keys = action.get("x"), action.get("y"), action.get("text",""), action.get("keys",[])
+    if kind == "click" and x and y:
+        print(f"  [CLIC] {label} ({x},{y})")
+        pyautogui.click(x, y)
+    elif kind == "type" and text:
+        print(f"  [SAISIE] {label} = {text!r}")
+        pyautogui.typewrite(str(text), interval=0.05)
+    elif kind == "hotkey" and keys:
+        print(f"  [TOUCHE] {'+'.join(keys)}")
+        pyautogui.hotkey(*keys)
+    elif kind == "screenshot_verify":
+        print(f"  [VÉRIF] Capture intermédiaire")
+    time.sleep(DELAY)
+    return True
+
+def process_task(task: dict) -> None:
+    draft, draft_id = task["draft"], task["id"]
+    lines = draft["extractedData"]["lineItems"]
+    headers = {"X-Agent-Key": AGENT_KEY}
+    print(f"\\n[RPA] Brouillon {draft_id} — {len(lines)} ligne(s)")
+    print("      Ouvrez le logiciel cible et positionnez-le sur l'écran.\\n")
+    time.sleep(3)
+    for i, line in enumerate(lines):
+        print(f"\\n── Ligne {i+1}/{len(lines)} : {line.get('designation','?')} ──")
+        ss = screenshot_b64()
+        try:
+            r = requests.post(
+                f"{SAAS_URL}/api/agent-client/rpa-actions",
+                headers={**headers, "Content-Type": "application/json"},
+                json={"screenshotBase64": ss, "mimeType": "image/png",
+                      "draftId": draft_id, "lineIndex": i},
+                timeout=60
+            )
+            r.raise_for_status()
+            result = r.json()
+        except Exception as e:
+            print(f"  [ERREUR] {e}")
+            continue
+        if not result.get("allSafe"):
+            print(f"  [ALERTE] {result.get('observations','')}")
+        for action in result.get("actions", []):
+            execute_action(action)
+        time.sleep(0.5)
+    requests.post(f"{SAAS_URL}/api/agent-client/report",
+                  headers={**headers, "Content-Type": "application/json"},
+                  json={"taskId": draft_id, "agentKey": AGENT_KEY,
+                        "success": True, "message": f"{len(lines)} ligne(s) saisies en brouillon"},
+                  timeout=15)
+    print("\\n[RPA] Saisie terminée. Validez depuis l'interface web PharmAgent.")
+
+def main() -> None:
+    print(f"[RPA] PharmAgent démarré — {SAAS_URL}")
+    print(f"[RPA] Vérification des tâches toutes les {POLL_SEC}s\\n")
     while True:
         try:
-            task = get_next_task()
+            r = requests.get(f"{SAAS_URL}/api/agent-client/next-task",
+                             headers={"X-Agent-Key": AGENT_KEY}, timeout=15)
+            r.raise_for_status()
+            task = r.json().get("task")
             if task:
-                print(f"[PharmAgent] Tâche reçue : {task.get('type', 'unknown')}")
-                # TODO: traitement réel de la tâche
-                report_result(task["id"], True, "Tâche traitée (simulation)")
+                process_task(task)
             else:
-                time.sleep(5)
+                print(f"[RPA] Aucune tâche. Prochaine vérification dans {POLL_SEC}s...")
         except KeyboardInterrupt:
-            print("[PharmAgent] Agent arrêté.")
-            break
+            print("\\n[RPA] Arrêt.")
+            sys.exit(0)
         except Exception as e:
-            print(f"[PharmAgent] Erreur : {e}")
-            time.sleep(10)
+            print(f"[RPA] Erreur : {e}")
+        time.sleep(POLL_SEC)
 
 if __name__ == "__main__":
     main()
@@ -650,6 +707,43 @@ app.post('/api/agent-client/report', (req, res) => {
   if (!ph) { res.status(403).json({ error: 'Clé agent invalide.' }); return; }
   store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent Local', action: `Rapport tâche ${taskId} : ${success ? 'succès' : 'échec'} — ${message}`, level: success ? 'info' : 'warning' });
   res.json({ ok: true });
+});
+
+// ─── RPA : actions sur l'écran ────────────────────────────
+
+app.post('/api/agent-client/rpa-actions', async (req, res) => {
+  const agentKey = req.headers['x-agent-key'] as string;
+  const { screenshotBase64, mimeType, draftId, lineIndex } =
+    req.body as { screenshotBase64: string; mimeType: string; draftId: string; lineIndex: number };
+
+  if (!agentKey) { res.status(400).json({ error: 'X-Agent-Key manquant.' }); return; }
+  const ph = store.getPharmacyByAgentKey(agentKey);
+  if (!ph) { res.status(403).json({ error: 'Clé agent invalide.' }); return; }
+
+  const draft = store.getDraft(draftId);
+  if (!draft || draft.pharmacyId !== ph.id) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
+  if (draft.status !== 'approved') { res.status(400).json({ error: 'Brouillon non approuvé.' }); return; }
+
+  try {
+    const { getRPAActionsFromGemini } = await import('./src/server/geminiAgent.ts');
+    const result = await getRPAActionsFromGemini({
+      screenshotBase64,
+      mimeType: mimeType ?? 'image/png',
+      targetSoftware: ph.targetSoftware,
+      extractedData: draft.extractedData,
+      currentLineIndex: lineIndex ?? 0,
+    });
+
+    store.addAuditLog({
+      pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent RPA',
+      action: `RPA ligne ${(lineIndex ?? 0) + 1}/${draft.extractedData.lineItems.length} — ${result.actions.length} actions — ${result.allSafe ? 'sûr' : 'alerte'}`,
+      level: result.allSafe ? 'info' : 'warning',
+    });
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
 });
 
 // ─── Logs d'audit ─────────────────────────────────────────
