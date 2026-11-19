@@ -1,0 +1,21 @@
+# Déploiement Render (plan gratuit, pour tests). Les données (data/) sont perdues à chaque redéploiement.
+services:
+  - type: web
+    name: pharmagent
+    runtime: node
+    plan: free
+    branch: corrections-securite   # remplacer par "main" après fusion
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: GEMINI_API_KEY
+        sync: false            # saisie dans Render, jamais dans GitHub
+      - key: PHARMAGENT_OWNER_PASSWORD
+        sync: false            # mot de passe du propriétaire (dr.oumar)
+      - key: PHARMAGENT_PHARMACY_DEFAULT_PASSWORD
+        sync: false            # mot de passe provisoire des comptes d'officine
+      - key: PHARMAGENT_AUTH_SECRET
+        generateValue: true    # secret de signature des sessions
