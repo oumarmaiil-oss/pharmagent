@@ -10,8 +10,32 @@ import type {
   TargetSoftwareType,
 } from '../types/pharmagent.ts';
 
-// Modèle configurable via GEMINI_MODEL, défaut gemini-2.0-flash (multimodal, rapide)
-const GEMINI_MODEL = process.env.GEMINI_MODEL ?? 'gemini-2.0-flash';
+// Modèle configurable via GEMINI_MODEL. Google retire régulièrement des modèles :
+// en cas de « modèle introuvable », on bascule sur le suivant et on le retient.
+const MODEL_CHAIN = [...new Set([process.env.GEMINI_MODEL, 'gemini-3.8-flash', 'gemini-flash-latest'].filter((m): m is string => !!m))];
+let activeModel = MODEL_CHAIN[0];
+
+type GenerateParams = Omit<Parameters<GoogleGenAI['models']['generateContent']>[0], 'model'>;
+
+async function generate(ai: GoogleGenAI, params: GenerateParams) {
+  const start = MODEL_CHAIN.indexOf(activeModel);
+  let lastErr: unknown;
+  for (const model of MODEL_CHAIN.slice(start)) {
+    try {
+      const res = await ai.models.generateContent({ ...params, model });
+      if (model !== activeModel) {
+        console.warn(`[PharmAgent] Modèle Gemini « ${activeModel} » indisponible : bascule sur « ${model} ».`);
+        activeModel = model;
+      }
+      return res;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/NOT_FOUND|no longer available|is not found|not supported for generateContent/i.test(msg)) throw err;
+      lastErr = err;
+    }
+  }
+  throw lastErr;
+}
 
 function getClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -37,8 +61,7 @@ export async function extractDocumentWithGemini(params: {
     ? `\nInstruction spécifique : "${params.taskPrompt.trim()}". Réponds dans agentObservations.`
     : '';
 
-  const response = await ai.models.generateContent({
-    model: GEMINI_MODEL,
+  const response = await generate(ai, {
     contents: {
       parts: [
         { inlineData: { mimeType: params.mimeType, data: params.imageBase64 } },
@@ -113,8 +136,7 @@ export async function groundTargetInterfaceWithGemini(params: {
 }): Promise<GroundingAnalysisResult> {
   const ai = getClient();
 
-  const response = await ai.models.generateContent({
-    model: GEMINI_MODEL,
+  const response = await generate(ai, {
     contents: {
       parts: [
         { inlineData: { mimeType: params.mimeType, data: params.imageBase64 } },
@@ -194,8 +216,7 @@ export async function resolveProductMatchesWithGemini(params: {
     candidats: it.candidates.map((c) => ({ id: c.productId, libelle_erp: c.erpLabel })),
   }));
 
-  const response = await ai.models.generateContent({
-    model: GEMINI_MODEL,
+  const response = await generate(ai, {
     contents: {
       parts: [{
         text:
