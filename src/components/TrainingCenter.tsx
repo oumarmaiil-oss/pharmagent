@@ -185,7 +185,7 @@ export const TrainingCenter: React.FC<TrainingCenterProps> = ({
             </div>
             <div className="mt-5 flex flex-wrap items-center gap-2">
               <a
-                href="/api/training/download/memory"
+                href={`/api/training/download/memory?token=${encodeURIComponent(ownerToken)}`}
                 download="PharmAgent_1_Memoire_Agent.xlsx"
                 className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-medium text-slate-200 hover:border-emerald-500 hover:text-emerald-400 transition-colors"
               >

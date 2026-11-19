@@ -8,6 +8,9 @@ import type {
 } from '../types/pharmagent.ts';
 import { guardrail } from './guardrail.ts';
 
+// Modèle Gemini configurable sans redéploiement de code (variable GEMINI_MODEL).
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-4-hydrogen';
+
 function getGeminiClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -62,7 +65,7 @@ export async function extractDocumentWithGemini(params: {
       : '';
 
   const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
+    model: GEMINI_MODEL,
     contents: {
       parts: [
         {
@@ -184,7 +187,7 @@ export async function mapToRealExcelColumnsWithGemini(params: {
     .join('\n');
 
   const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
+    model: GEMINI_MODEL,
     contents:
       `Voici les en-têtes réels d'un fichier Excel créé par l'utilisateur :\n` +
       `${JSON.stringify(params.excelColumns)}\n` +
@@ -258,7 +261,7 @@ export async function groundTargetInterfaceWithGemini(params: {
   };
 
   const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
+    model: GEMINI_MODEL,
     contents: {
       parts: [
         {

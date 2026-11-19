@@ -790,6 +790,9 @@ app.delete('/api/pharmacies/:id/users/:userId', (req, res) => {
  */
 app.get('/api/training/download/:templateType', (req, res) => {
   const { templateType } = req.params;
+  // La mémoire apprise (alias produits, règles de colonnes) est une donnée privée
+  // des officines : son export est réservé aux superviseurs connectés.
+  if (templateType === 'memory' && !requireOwnerSession(req, res)) return;
   const memory = store.getMemory();
   const wb = XLSX.utils.book_new();
   let fileName = 'PharmAgent.xlsx';

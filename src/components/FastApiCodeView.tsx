@@ -383,7 +383,7 @@ npx cap open ios       # Xcode -> Product -> Archive -> Distribute App`;
               </a>
 
               <a
-                href="/api/training/download/memory"
+                href={`/api/training/download/memory?token=${encodeURIComponent(ownerToken)}`}
                 download="PharmAgent_1_Memoire_Agent.xlsx"
                 className="flex w-full items-center justify-between rounded-lg border border-slate-700 bg-slate-950 px-4 py-2.5 text-xs font-medium text-slate-200 hover:border-emerald-500 transition-colors"
               >
