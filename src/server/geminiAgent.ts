@@ -23,7 +23,7 @@ async function generate(ai: GoogleGenAI, params: GenerateParams) {
   for (const model of MODEL_CHAIN.slice(start)) {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const ATTEMPT_TIMEOUT_MS = 40_000;
+        const ATTEMPT_TIMEOUT_MS = 90_000;
         const res = await Promise.race([
           ai.models.generateContent({ ...params, model }),
           new Promise<never>((_, reject) =>

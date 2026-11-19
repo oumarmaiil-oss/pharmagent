@@ -55,7 +55,7 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
     if (!local) return d;
     return Date.parse(local.updatedAt) >= Date.parse(d.updatedAt) ? local : d;
   };
-  const pending = (snapshot?.pendingDrafts ?? []).filter((d) => d.pharmacyId === selectedPharmacyId).map(fresh);
+  const pending = (snapshot?.pendingDrafts ?? []).filter((d) => d.pharmacyId === selectedPharmacyId).map(fresh).filter((d) => d.extractionStatus !== 'processing');
   const sent = (snapshot?.recentDrafts ?? []).filter((d) => d.pharmacyId === selectedPharmacyId).map(fresh);
   const allKnown = [...pending, ...sent];
   const current = currentId ? (allKnown.find((d) => d.id === currentId) ?? localDrafts[currentId] ?? null) : null;
@@ -101,10 +101,13 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
         const poll = async () => {
           for (let i = 0; i < 45; i++) {
             await new Promise((res) => setTimeout(res, 4000));
-            const pr = await fetch(`/api/drafts/${pollId}`, { headers: { Authorization: `Bearer ${token}` } });
-            if (!pr.ok) break;
-            const pd = await pr.json() as { draft?: DraftRecord };
-            if (!pd.draft) break;
+            let pd: { draft?: DraftRecord };
+            try {
+              const pr = await fetch(`/api/drafts/${pollId}`, { headers: { Authorization: `Bearer ${token}` } });
+              if (!pr.ok) continue;
+              pd = await pr.json() as { draft?: DraftRecord };
+            } catch { continue; }
+            if (!pd.draft) continue;
             remember(pd.draft);
             setCurrentId(pd.draft.id);
             onRefresh();

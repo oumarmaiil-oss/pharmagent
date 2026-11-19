@@ -5,7 +5,6 @@
 import 'dotenv/config';
 import crypto from 'crypto';
 import express from 'express';
-import sharp from 'sharp';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -130,19 +129,6 @@ function publicBaseUrl(req: express.Request): string {
   const host = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? '').split(',')[0].trim();
   const safeHost = /^[A-Za-z0-9.:-]+$/.test(host) ? host : 'pharmagent.onrender.com';
   return `${proto === 'http' ? 'http' : 'https'}://${safeHost}`;
-}
-
-async function downscaleImage(base64: string, mimeType: string): Promise<{ base64: string; mimeType: string }> {
-  if (!mimeType.startsWith('image/')) return { base64, mimeType };
-  try {
-    const buf = Buffer.from(base64, 'base64');
-    // Réduction uniquement si > 300 KB
-    if (buf.byteLength <= 300_000) return { base64, mimeType };
-    const out = await sharp(buf).resize(1000, 1400, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 65 }).toBuffer();
-    return { base64: out.toString('base64'), mimeType: 'image/jpeg' };
-  } catch {
-    return { base64, mimeType };
-  }
 }
 
 function resolveDocument(base64Input?: string, sampleAssetPath?: string): { base64: string; mimeType: string } {
@@ -611,7 +597,7 @@ app.get('/api/pharmacies/:id/drafts', (req, res) => {
 app.get('/api/drafts/:draftId', (req, res) => {
   const draft = store.getDraft(req.params.draftId);
   if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
-  if (!getOwnerSession(req) && !getPharmacySession(req)) { res.status(401).json({ error: 'Connexion requise.' }); return; }
+  if (!requirePharmacyOrOwner(req, res, draft.pharmacyId)) return;
   res.json({ draft });
 });
 
@@ -619,6 +605,7 @@ app.post('/api/drafts/:draftId/approve', (req, res) => {
   const draft = store.getDraft(req.params.draftId);
   if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
   if (draft.status !== 'pending') { res.status(400).json({ error: "Ce brouillon n'est plus en attente." }); return; }
+  if (draft.extractionStatus === 'processing' || draft.extractionStatus === 'error') { res.status(400).json({ error: "Analyse non terminée ou en échec : rien à approuver." }); return; }
   const actor = requireApprover(req, res, draft.pharmacyId);
   if (!actor) return;
   const toReview = draft.extractedData.lineItems.filter((l) => l.match?.status === 'to_review').length;
@@ -647,6 +634,7 @@ app.post('/api/drafts/:draftId/reject', (req, res) => {
   const draft = store.getDraft(req.params.draftId);
   if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
   if (draft.status !== 'pending') { res.status(400).json({ error: "Ce brouillon n'est plus en attente." }); return; }
+  if (draft.extractionStatus === 'processing' || draft.extractionStatus === 'error') { res.status(400).json({ error: "Analyse non terminée ou en échec : rien à approuver." }); return; }
   const actor = requireApprover(req, res, draft.pharmacyId);
   if (!actor) return;
   const { reason } = req.body as { reason?: string };
@@ -772,7 +760,7 @@ app.post('/api/agent/extract', async (req, res) => {
   const draft = store.createDraft({
     pharmacyId: effPharmacyId, status: 'pending', extractionStatus: 'processing',
     documentCategory: category,
-    extractedData: { lineItems: [], supplierOrOrg: '', documentDate: '', documentNumber: '', totalAmountHT: undefined, totalAmountTTC: undefined },
+    extractedData: { documentType: category, documentNumber: '', supplierOrOrg: '', recipientPharmacy: '', documentDate: '', currency: 'FCFA', totalAmountFCFA: 0, lineItems: [] },
     columnMapping: [], actorId, actorName, tokensConsumed: 0,
   });
   res.json({ draft });
@@ -780,8 +768,7 @@ app.post('/api/agent/extract', async (req, res) => {
   // Traitement Gemini en arrière-plan (ne bloque plus la réponse HTTP)
   (async () => {
     try {
-      const { base64, mimeType } = await downscaleImage(resolved.base64, resolved.mimeType);
-      const extraction = await extractDocumentWithGemini({ imageBase64: base64, mimeType, documentHint: category, taskPrompt });
+      const extraction = await extractDocumentWithGemini({ imageBase64: resolved.base64, mimeType: resolved.mimeType, documentHint: category, taskPrompt });
       const data = extraction.data;
       data.lineItems = (data.lineItems ?? []).filter((l) => l.designation?.trim());
       const matched = await matchDocumentLines(effPharmacyId, data);

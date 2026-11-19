@@ -235,6 +235,14 @@ class PharmAgentStore {
 
   private migrate(parsed: Database): Database {
     const def = initialDatabase();
+    for (const d of parsed.drafts ?? []) {
+      if (d.extractionStatus === 'processing') {
+        d.extractionStatus = 'error';
+        d.extractionError = "Analyse interrompue par un redémarrage du serveur. Relancez l'analyse.";
+        d.status = 'rejected';
+        d.rejectionReason = d.extractionError;
+      }
+    }
     return {
       ...def,
       ...parsed,
@@ -424,6 +432,10 @@ class PharmAgentStore {
     if (!draft) return;
     draft.extractionStatus = 'error';
     draft.extractionError = error;
+    draft.status = 'rejected';
+    draft.rejectionReason = error;
+    const ph = this.db.pharmacies.find((p) => p.id === draft.pharmacyId);
+    if (ph && ph.usedThisMonth > 0) ph.usedThisMonth -= 1;
     draft.updatedAt = now();
     this.persist();
   }
