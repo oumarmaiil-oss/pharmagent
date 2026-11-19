@@ -4,6 +4,7 @@ import { BrandLogo } from './BrandLogo';
 import { LegalContactFooter } from './LegalContactFooter';
 import { PWAInstallButton } from './PWAInstallButton';
 import { OwnerAuthSession } from '../types/pharmagent';
+import { BottomArt, PanelIllustration } from './Illustrations';
 
 interface OwnerLoginScreenProps {
   onOwnerAuthenticated: (session: OwnerAuthSession) => void;
@@ -55,7 +56,8 @@ export const OwnerLoginScreen: React.FC<OwnerLoginScreenProps> = ({
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+    <div className="relative isolate min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+      <BottomArt />
       <header className="border-b border-slate-800/80 bg-slate-900/95 backdrop-blur-md px-6 h-16 flex items-center justify-between gap-6">
         <div className="flex items-center gap-2.5 text-lg font-bold tracking-tight text-slate-100 whitespace-nowrap shrink-0">
           <BrandLogo className="h-7 w-7 shrink-0" />
@@ -76,13 +78,7 @@ export const OwnerLoginScreen: React.FC<OwnerLoginScreenProps> = ({
           {/* Left Panel: Crisp Dark Pharmacy Supervision Visual */}
           <div className="relative lg:col-span-6 min-h-[260px] lg:min-h-[520px] bg-slate-950 overflow-hidden">
             {!imgFailed ? (
-              <img
-                src="/src/assets/images/bg_login_pharmacy_1795079795400.jpg"
-                alt="Centre de supervision pharmaceutique PharmAgent"
-                referrerPolicy="no-referrer"
-                onError={() => setImgFailed(true)}
-                className="h-full w-full object-cover opacity-90"
-              />
+              <PanelIllustration variant="login" label="Centre de supervision pharmaceutique PharmAgent" />
             ) : (
               <div className="h-full w-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-slate-950 to-emerald-950/40 p-8 text-center">
                 <BrandLogo className="h-14 w-14 mb-4" />

@@ -11,6 +11,7 @@ import {
   Users,
 } from 'lucide-react';
 import { OwnerAccount } from '../types/pharmagent';
+import { PanelIllustration } from './Illustrations';
 
 interface SupervisorTeamPanelProps {
   currentSupervisor: OwnerAccount;
@@ -193,13 +194,7 @@ export const SupervisorTeamPanel: React.FC<SupervisorTeamPanelProps> = ({
 
         <div className="lg:col-span-5 relative min-h-[170px] bg-slate-950 overflow-hidden border-t lg:border-t-0 lg:border-l border-slate-800">
           {!bannerImgFailed ? (
-            <img
-              src="/src/assets/images/banner_audit_security_1795081857803.jpg"
-              alt="Contrôle d'accès supervision PharmAgent"
-              referrerPolicy="no-referrer"
-              onError={() => setBannerImgFailed(true)}
-              className="h-full w-full object-cover opacity-90"
-            />
+            <PanelIllustration variant="audit" label="Contrôle d'accès supervision PharmAgent" />
           ) : (
             <div className="h-full w-full flex items-center justify-center bg-slate-950 text-slate-500 text-xs">
               Contrôle d’accès Supervision

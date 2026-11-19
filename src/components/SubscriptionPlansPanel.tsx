@@ -21,6 +21,7 @@ import {
   SubscriptionPlanId,
   SubscriptionPlanSpec,
 } from '../types/pharmagent';
+import { PanelIllustration } from './Illustrations';
 
 interface SubscriptionPlansPanelProps {
   pharmacies: OfficineRecord[];
@@ -220,12 +221,7 @@ export const SubscriptionPlansPanel: React.FC<SubscriptionPlansPanelProps> = ({
         </div>
 
         <div className="lg:col-span-4 relative min-h-[180px] bg-slate-950 border-t lg:border-t-0 lg:border-l border-slate-800 overflow-hidden">
-          <img
-            src="/src/assets/images/banner_subscription_tiers_1795079793429.jpg"
-            alt="Niveaux d'abonnements et capacité IA en pourcentage PharmAgent"
-            referrerPolicy="no-referrer"
-            className="h-full w-full object-cover opacity-90"
-          />
+          <PanelIllustration variant="subscription" label="Niveaux d'abonnements et capacité IA en pourcentage PharmAgent" />
         </div>
       </section>
 

@@ -14,6 +14,7 @@ import {
 import { OfficineRecord } from '../types/pharmagent';
 import { DesktopAgentSetupGuide } from './DesktopAgentSetupGuide';
 import { PWAInstallButton } from './PWAInstallButton';
+import { PanelIllustration } from './Illustrations';
 
 interface FastApiSourceFile {
   path: string;
@@ -191,13 +192,7 @@ npx cap open ios       # Xcode -> Product -> Archive -> Distribute App`;
 
           <div className="lg:col-span-4 relative min-h-[180px] border-t lg:border-t-0 lg:border-l border-slate-800 bg-slate-950 overflow-hidden">
             {!bannerImgError ? (
-              <img
-                src="/src/assets/images/banner_mobile_deploy_1795081856917.jpg"
-                alt="Déploiement mobile et poste officinal PharmAgent"
-                referrerPolicy="no-referrer"
-                onError={() => setBannerImgError(true)}
-                className="h-full w-full object-cover opacity-90"
-              />
+              <PanelIllustration variant="mobile" label="Déploiement mobile et poste officinal PharmAgent" />
             ) : (
               <div className="h-full w-full flex items-center justify-center bg-slate-950 p-6">
                 <Store className="h-10 w-10 text-emerald-500/40" />

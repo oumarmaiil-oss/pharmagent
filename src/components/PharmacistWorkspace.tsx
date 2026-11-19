@@ -54,6 +54,7 @@ import {
   StockItemRecord,
   TargetExecutionMode,
 } from '../types/pharmagent';
+import { PanelIllustration } from './Illustrations';
 
 interface PharmacistWorkspaceProps {
   pharmacies: OfficineRecord[];
@@ -1381,15 +1382,7 @@ export const PharmacistWorkspace: React.FC<PharmacistWorkspaceProps> = ({
           </div>
 
           <div className="lg:col-span-4 relative min-h-[175px] border-t lg:border-t-0 lg:border-l border-slate-800 bg-slate-950 overflow-hidden">
-            <img
-              src="/src/assets/images/banner_workspace_vision_1795079794620.jpg"
-              alt="Numérisation et contrôle des réceptions officinales PharmAgent"
-              referrerPolicy="no-referrer"
-              onError={(e) => {
-                e.currentTarget.style.display = 'none';
-              }}
-              className="h-full w-full object-cover opacity-90"
-            />
+            <PanelIllustration variant="workspace" label="Espace de travail PharmAgent" />
             <div className="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-transparent to-transparent flex items-end p-4">
               <div className="text-[11px] text-slate-200 leading-snug">
                 <div className="font-semibold text-emerald-300">Poste Officine PharmAgent</div>

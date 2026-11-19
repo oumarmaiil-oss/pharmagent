@@ -16,6 +16,7 @@ import {
   X,
 } from 'lucide-react';
 import { BrandLogo } from './components/BrandLogo';
+import { BottomArt } from './components/Illustrations';
 import { LegalContactFooter } from './components/LegalContactFooter';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { OwnerLoginScreen } from './components/OwnerLoginScreen';
@@ -359,7 +360,8 @@ export default function App() {
       portalAuthSession?.token && portalAuthSession.user.role === 'titulaire'
     );
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+      <div className="relative isolate min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+        <BottomArt />
         <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-4 border-b border-slate-800 bg-slate-900/95 backdrop-blur px-6">
           <div className="flex items-center gap-3 min-w-0">
             <BrandLogo className="h-7 w-7 shrink-0" />
@@ -442,7 +444,8 @@ export default function App() {
   // Checking existing owner session
   if (ownerAuthChecking) {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-6">
+      <div className="relative isolate min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-6">
+        <BottomArt />
         <div className="w-full max-w-md rounded-xl border border-slate-800 bg-slate-900 p-8 text-center space-y-3">
           <BrandLogo className="h-8 w-8 mx-auto" />
           <p className="text-xs text-slate-400">Vérification de votre session PharmAgent...</p>
@@ -495,7 +498,8 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex">
+    <div className="relative isolate min-h-screen bg-slate-950 text-slate-100 flex">
+      <BottomArt />
       {/* Desktop Sidebar */}
       <aside className="hidden lg:flex lg:w-64 lg:flex-col lg:fixed lg:inset-y-0 border-r border-slate-800 bg-slate-900">
         <div className="flex h-16 items-center px-5 border-b border-slate-800">

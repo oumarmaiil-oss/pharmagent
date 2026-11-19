@@ -12,6 +12,7 @@ import {
   Upload,
 } from 'lucide-react';
 import { AgentLearnedMemory } from '../types/pharmagent';
+import { PanelIllustration } from './Illustrations';
 
 interface TrainingCenterProps {
   memory: AgentLearnedMemory;
@@ -144,12 +145,7 @@ export const TrainingCenter: React.FC<TrainingCenterProps> = ({
         </div>
 
         <div className="lg:col-span-5 relative min-h-[160px] bg-slate-950 border-t lg:border-t-0 lg:border-l border-slate-800 overflow-hidden">
-          <img
-            src="/src/assets/images/banner_training_memory_1795081857389.jpg"
-            alt="Mémoire d'entraînement IA et tableaux pharmaceutiques"
-            referrerPolicy="no-referrer"
-            className="h-full w-full object-cover opacity-90"
-          />
+          <PanelIllustration variant="training" label="Mémoire d'entraînement IA et tableaux pharmaceutiques" />
         </div>
       </section>
 

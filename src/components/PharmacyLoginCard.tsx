@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { KeyRound, Shield, UserCheck, Users } from 'lucide-react';
 import { OfficineRecord, PharmacyAuthSession } from '../types/pharmagent';
+import { PanelIllustration } from './Illustrations';
 
 interface PharmacyLoginCardProps {
   pharmacy?: OfficineRecord;
@@ -64,12 +65,7 @@ export const PharmacyLoginCard: React.FC<PharmacyLoginCardProps> = ({
     <div className="space-y-6">
       <section className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900 grid grid-cols-1 lg:grid-cols-12 items-stretch">
         <div className="lg:col-span-5 relative min-h-[180px] bg-slate-950 overflow-hidden">
-          <img
-            src="/src/assets/images/banner_workspace_vision_1795079794620.jpg"
-            alt={`Portail Officine ${pharmacy?.name || 'PharmAgent'}`}
-            referrerPolicy="no-referrer"
-            className="h-full w-full object-cover opacity-90"
-          />
+          <PanelIllustration variant="workspace" label={`Portail Officine ${pharmacy?.name || 'PharmAgent'}`} />
           <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/90 via-slate-950/40 to-transparent px-5 py-3.5">
             <div className="text-[11px] font-medium text-emerald-400">
               Espace dédié · Clé {pharmacy?.agentKey || 'Officine'}

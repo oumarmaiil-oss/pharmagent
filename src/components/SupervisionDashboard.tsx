@@ -25,6 +25,7 @@ import {
   TargetSoftwareType,
 } from '../types/pharmagent';
 import { SupervisionAnalyticsChart } from './SupervisionAnalyticsChart';
+import { PanelIllustration } from './Illustrations';
 
 interface SupervisionDashboardProps {
   snapshot: DashboardSnapshot | null;
@@ -258,12 +259,7 @@ export const SupervisionDashboard: React.FC<SupervisionDashboardProps> = ({
         </div>
 
         <div className="lg:col-span-5 relative min-h-[180px] bg-slate-950 border-t lg:border-t-0 lg:border-l border-slate-800 overflow-hidden">
-          <img
-            src="/src/assets/images/banner_supervision_network_1795079795033.jpg"
-            alt="Réseau de supervision multi-officines PharmAgent"
-            referrerPolicy="no-referrer"
-            className="h-full w-full object-cover opacity-90"
-          />
+          <PanelIllustration variant="network" label="Réseau de supervision multi-officines PharmAgent" />
           <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/90 via-slate-950/35 to-transparent px-4 py-3 text-[11px] font-medium text-slate-200">
             Supervision centralisée · {summary.activeAgents} officine(s) active(s)
           </div>

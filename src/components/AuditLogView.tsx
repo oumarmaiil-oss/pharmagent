@@ -12,6 +12,7 @@ import {
   UserCheck,
 } from 'lucide-react';
 import { AuditLogEntry, OfficineRecord } from '../types/pharmagent';
+import { PanelIllustration } from './Illustrations';
 
 interface AuditLogViewProps {
   logs: AuditLogEntry[];
@@ -241,12 +242,7 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({
         </div>
 
         <div className="lg:col-span-4 relative min-h-[160px] bg-slate-950 border-t lg:border-t-0 lg:border-l border-slate-800 overflow-hidden">
-          <img
-            src="/src/assets/images/banner_audit_security_1795081857803.jpg"
-            alt="Contrôle et sécurité d'audit PharmAgent"
-            referrerPolicy="no-referrer"
-            className="h-full w-full object-cover opacity-90"
-          />
+          <PanelIllustration variant="audit" label="Contrôle et sécurité d'audit PharmAgent" />
         </div>
       </section>
 
