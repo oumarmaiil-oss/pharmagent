@@ -21,18 +21,30 @@ async function generate(ai: GoogleGenAI, params: GenerateParams) {
   const start = MODEL_CHAIN.indexOf(activeModel);
   let lastErr: unknown;
   for (const model of MODEL_CHAIN.slice(start)) {
-    try {
-      const res = await ai.models.generateContent({ ...params, model });
-      if (model !== activeModel) {
-        console.warn(`[PharmAgent] Modèle Gemini « ${activeModel} » indisponible : bascule sur « ${model} ».`);
-        activeModel = model;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await ai.models.generateContent({ ...params, model });
+        if (model !== activeModel) {
+          console.warn(`[PharmAgent] Modèle Gemini « ${activeModel} » indisponible : bascule sur « ${model} ».`);
+          activeModel = model;
+        }
+        return res;
+      } catch (err) {
+        lastErr = err;
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/NOT_FOUND|no longer available|is not found|not supported for generateContent/i.test(msg)) break;
+        // Surcharge passagère côté Google : on réessaie, puis on passe au modèle suivant
+        if (/UNAVAILABLE|overloaded|high demand|RESOURCE_EXHAUSTED|\b(429|500|503)\b/i.test(msg)) {
+          if (attempt < 2) { await new Promise((r) => setTimeout(r, 1500 * (attempt + 1))); continue; }
+          break;
+        }
+        throw err;
       }
-      return res;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!/NOT_FOUND|no longer available|is not found|not supported for generateContent/i.test(msg)) throw err;
-      lastErr = err;
     }
+  }
+  const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+  if (/UNAVAILABLE|overloaded|high demand|RESOURCE_EXHAUSTED|429|503/i.test(msg)) {
+    throw new Error("Le service d'IA de Google est momentanément surchargé. Réessayez dans une minute.");
   }
   throw lastErr;
 }
