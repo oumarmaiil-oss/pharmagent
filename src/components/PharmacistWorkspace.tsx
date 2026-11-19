@@ -18,6 +18,27 @@ interface Props {
 
 type DocType = 'bon_livraison' | 'facture' | 'mutuelle';
 
+const readAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(reader.result as string);
+  reader.onerror = () => reject(reader.error);
+  reader.readAsDataURL(file);
+});
+
+async function shrinkImage(file: File, maxSide = 1600): Promise<string | null> {
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bmp.width * scale);
+    canvas.height = Math.round(bmp.height * scale);
+    canvas.getContext('2d')!.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/jpeg', 0.85);
+  } catch {
+    return null;
+  }
+}
+
 const DOC_LABELS: Record<DocType, string> = {
   bon_livraison: 'Bon de livraison',
   facture: 'Facture fournisseur',
@@ -62,18 +83,17 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
 
   const remember = (d: DraftRecord) => setLocalDrafts((m) => ({ ...m, [d.id]: d }));
 
-  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
     if (file.size > MAX_BYTES) { setError('Fichier trop lourd (20 Mo maximum).'); return; }
-    const reader = new FileReader();
-    reader.onload = () => {
-      setDoc({ dataUrl: reader.result as string, name: file.name, isPdf: file.type === 'application/pdf' });
-      setSamplePath('');
-      setError('');
-    };
-    reader.readAsDataURL(file);
+    const isPdf = file.type === 'application/pdf';
+    // Photo réduite sur le téléphone : envoi plus rapide, et sous la limite de 5 Mo de l'IA
+    const dataUrl = (!isPdf && await shrinkImage(file)) || await readAsDataUrl(file);
+    setDoc({ dataUrl, name: file.name, isPdf });
+    setSamplePath('');
+    setError('');
   };
 
   const handleExtract = async () => {
@@ -95,7 +115,7 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
       setCurrentId(data.draft.id);
       setDoc(null); setSamplePath('');
       onRefresh();
-      // Si l'extraction est en cours (Gemini asynchrone), on poll toutes les 4s
+      // Si l'extraction est en cours (IA asynchrone), on poll toutes les 4s
       if (data.draft.extractionStatus === 'processing') {
         const pollId = data.draft.id;
         const poll = async () => {
@@ -243,7 +263,7 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
           {current?.extractionStatus === 'processing' && (
             <div className="flex items-center gap-3 p-4 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 text-sm">
               <Loader2 size={18} className="animate-spin text-emerald-400 shrink-0" />
-              <span>Analyse en cours… Gemini lit le document, cela peut prendre une minute.</span>
+              <span>Analyse en cours… L'IA lit le document, cela peut prendre quelques secondes.</span>
             </div>
           )}
           {current?.extractionStatus === 'error' && (

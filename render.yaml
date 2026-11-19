@@ -10,7 +10,7 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
-      - key: GEMINI_API_KEY
+      - key: ANTHROPIC_API_KEY
         sync: false
       - key: PHARMAGENT_OWNER_PASSWORD
         sync: false

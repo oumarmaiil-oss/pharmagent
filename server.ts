@@ -10,10 +10,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import * as XLSX from 'xlsx';
 import {
-  extractDocumentWithGemini,
-  groundTargetInterfaceWithGemini,
-  resolveProductMatchesWithGemini,
-} from './src/server/geminiAgent.ts';
+  extractDocument,
+  groundTargetInterface,
+  resolveProductMatches,
+} from './src/server/aiAgent.ts';
 import { checkTextSafety } from './src/server/guardrail.ts';
 import { AUTO_THRESHOLD, matchLines, normalizeSupplier } from './src/server/productMatcher.ts';
 import { store, type CatalogRowInput } from './src/server/store.ts';
@@ -189,7 +189,7 @@ async function matchDocumentLines(pharmacyId: string, data: ExtractedDocumentDat
   let tokensConsumed = 0;
   if (ambiguous.length) {
     try {
-      const { decisions, tokensConsumed: t } = await resolveProductMatchesWithGemini({
+      const { decisions, tokensConsumed: t } = await resolveProductMatches({
         supplier: data.supplierOrOrg,
         items: ambiguous.map((p) => ({
           index: p.index,
@@ -748,7 +748,7 @@ app.post('/api/agent/extract', async (req, res) => {
   } catch (err: unknown) {
     res.status(400).json({ error: err instanceof Error ? err.message : 'Document invalide.' }); return;
   }
-  if (!/^(image\/(jpeg|png|webp|heic|heif)|application\/pdf)$/.test(resolved.mimeType)) {
+  if (!/^(image\/(jpeg|png|webp)|application\/pdf)$/.test(resolved.mimeType)) {
     res.status(400).json({ error: 'Format non pris en charge : utilisez une photo (JPG, PNG) ou un PDF.' }); return;
   }
 
@@ -765,10 +765,10 @@ app.post('/api/agent/extract', async (req, res) => {
   });
   res.json({ draft });
 
-  // Traitement Gemini en arrière-plan (ne bloque plus la réponse HTTP)
+  // Traitement IA en arrière-plan (ne bloque plus la réponse HTTP)
   (async () => {
     try {
-      const extraction = await extractDocumentWithGemini({ imageBase64: resolved.base64, mimeType: resolved.mimeType, documentHint: category, taskPrompt });
+      const extraction = await extractDocument({ imageBase64: resolved.base64, mimeType: resolved.mimeType, documentHint: category, taskPrompt });
       const data = extraction.data;
       data.lineItems = (data.lineItems ?? []).filter((l) => l.designation?.trim());
       const matched = await matchDocumentLines(effPharmacyId, data);
@@ -786,7 +786,7 @@ app.post('/api/agent/extract', async (req, res) => {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Erreur extraction.';
       console.error('[PharmAgent] Extraction async :', msg);
-      store.failExtraction(draft.id, msg.includes('API key') ? 'Clé Gemini invalide ou absente.' : msg);
+      store.failExtraction(draft.id, msg);
     }
   })();
 });
@@ -798,7 +798,7 @@ app.post('/api/agent/ground-interface', async (req, res) => {
   const { imageBase64, targetSoftware } = req.body as { imageBase64?: string; targetSoftware?: TargetSoftwareType };
   try {
     const { base64, mimeType } = resolveDocument(imageBase64);
-    const result = await groundTargetInterfaceWithGemini({ imageBase64: base64, mimeType, targetSoftware: targetSoftware ?? 'ERP Officine Intégré' });
+    const result = await groundTargetInterface({ imageBase64: base64, mimeType, targetSoftware: targetSoftware ?? 'ERP Officine Intégré' });
     store.addAuditLog({ pharmacyId: 'OWNER', actorId: 'OWNER-01', actorName: store.getOwner().fullName, action: `Inspection d'interface — ${result.overallSafe ? 'SÉCURISÉ' : 'ALERTE'}`, level: result.overallSafe ? 'info' : 'warning', details: result.observations });
     res.json({ result });
   } catch (err: unknown) {

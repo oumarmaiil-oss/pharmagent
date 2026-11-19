@@ -89,7 +89,7 @@ export default function UIGrounding({ token }: Props) {
                 className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-semibold px-4 py-1.5 rounded-lg"
               >
                 {loading ? <Loader2 size={14} className="animate-spin" /> : null}
-                {loading ? 'Analyse…' : '→ Analyser avec Gemini'}
+                {loading ? 'Analyse…' : '→ Analyser avec l’IA'}
               </button>
             </div>
           </div>
