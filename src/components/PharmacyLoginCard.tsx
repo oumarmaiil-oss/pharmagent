@@ -63,20 +63,18 @@ export const PharmacyLoginCard: React.FC<PharmacyLoginCardProps> = ({
 
   return (
     <div className="space-y-6">
-      <section className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900 grid grid-cols-1 lg:grid-cols-12 items-stretch">
-        <div className="lg:col-span-5 relative min-h-[180px] bg-slate-950 overflow-hidden">
-          <PanelIllustration variant="workspace" label={`Portail Officine ${pharmacy?.name || 'PharmAgent'}`} />
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/90 via-slate-950/40 to-transparent px-5 py-3.5">
-            <div className="text-[11px] font-medium text-emerald-400">
-              Espace dédié · Clé {pharmacy?.agentKey || 'Officine'}
-            </div>
-            <div className="text-sm font-semibold text-slate-100">
-              {pharmacy?.name || 'Portail Officine PharmAgent'}
-            </div>
-          </div>
+      <section className="relative overflow-hidden rounded-xl border border-slate-800 bg-slate-900 grid grid-cols-1 lg:grid-cols-12 items-stretch">
+        <div className="pointer-events-none absolute inset-y-0 right-0 hidden w-[42%] lg:block [mask-image:linear-gradient(to_left,black_30%,transparent)]">
+          <PanelIllustration bare variant="workspace" label={`Portail Officine ${pharmacy?.name || 'PharmAgent'}`} />
         </div>
 
         <div className="lg:col-span-7 p-6 flex flex-col justify-center space-y-2">
+          <div className="text-[11px] font-medium text-emerald-400">
+            Espace dédié · Clé {pharmacy?.agentKey || 'Officine'}
+          </div>
+          <div className="text-sm font-semibold text-slate-100">
+            {pharmacy?.name || 'Portail Officine PharmAgent'}
+          </div>
           <h2 className="text-base font-semibold text-slate-100">
             Réception des bons de livraison &amp; contrôle avant entrée en stock
           </h2>

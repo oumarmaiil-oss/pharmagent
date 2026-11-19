@@ -19,8 +19,8 @@ export default defineConfig(() => {
           short_name: 'PharmAgent',
           description:
             'Plateforme centrale multi-officines et assistant d’entrée en stock pharmaceutique par vision IA et garde-fou Brouillon.',
-          theme_color: '#020617',
-          background_color: '#020617',
+          theme_color: '#08110f',
+          background_color: '#08110f',
           display: 'standalone',
           start_url: '/',
           scope: '/',

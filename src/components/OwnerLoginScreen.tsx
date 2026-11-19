@@ -4,7 +4,7 @@ import { BrandLogo } from './BrandLogo';
 import { LegalContactFooter } from './LegalContactFooter';
 import { PWAInstallButton } from './PWAInstallButton';
 import { OwnerAuthSession } from '../types/pharmagent';
-import { BottomArt, PanelIllustration } from './Illustrations';
+import { BottomArt, PanelIllustration, SideArt } from './Illustrations';
 
 interface OwnerLoginScreenProps {
   onOwnerAuthenticated: (session: OwnerAuthSession) => void;
@@ -56,8 +56,9 @@ export const OwnerLoginScreen: React.FC<OwnerLoginScreenProps> = ({
   };
 
   return (
-    <div className="relative isolate min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+    <div className="relative isolate min-h-screen bg-transparent text-slate-100 flex flex-col">
       <BottomArt />
+        <SideArt />
       <header className="border-b border-slate-800/80 bg-slate-900/95 backdrop-blur-md px-6 h-16 flex items-center justify-between gap-6">
         <div className="flex items-center gap-2.5 text-lg font-bold tracking-tight text-slate-100 whitespace-nowrap shrink-0">
           <BrandLogo className="h-7 w-7 shrink-0" />

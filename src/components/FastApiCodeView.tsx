@@ -123,7 +123,7 @@ npx cap open ios       # Xcode -> Product -> Archive -> Distribute App`;
     <div className="space-y-6">
       {/* Crisp Split Visual Header & Section Switcher */}
       <section className="rounded-xl border border-slate-800 bg-slate-900 overflow-hidden">
-        <div className="grid grid-cols-1 lg:grid-cols-12">
+        <div className="relative grid grid-cols-1 lg:grid-cols-12">
           <div className="lg:col-span-8 p-6 flex flex-col justify-between gap-4">
             <div className="space-y-1.5">
               <div className="text-xs font-semibold uppercase tracking-wider text-emerald-400">
@@ -190,20 +190,14 @@ npx cap open ios       # Xcode -> Product -> Archive -> Distribute App`;
             </div>
           </div>
 
-          <div className="lg:col-span-4 relative min-h-[180px] border-t lg:border-t-0 lg:border-l border-slate-800 bg-slate-950 overflow-hidden">
+          <div className="pointer-events-none absolute inset-y-0 right-0 hidden w-[42%] lg:block [mask-image:linear-gradient(to_left,black_30%,transparent)]">
             {!bannerImgError ? (
-              <PanelIllustration variant="mobile" label="Déploiement mobile et poste officinal PharmAgent" />
+              <PanelIllustration bare variant="mobile" label="Déploiement mobile et poste officinal PharmAgent" />
             ) : (
               <div className="h-full w-full flex items-center justify-center bg-slate-950 p-6">
                 <Store className="h-10 w-10 text-emerald-500/40" />
               </div>
             )}
-            <div className="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-transparent to-transparent flex items-end p-4">
-              <div className="text-[11px] text-slate-200 leading-snug">
-                <div className="font-semibold text-emerald-300">Packager Multi-Plateformes</div>
-                <div className="text-slate-300">Desktop Auto-Start · PWA Mobile · Capacitor Store Kit</div>
-              </div>
-            </div>
           </div>
         </div>
       </section>

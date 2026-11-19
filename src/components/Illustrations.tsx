@@ -17,20 +17,21 @@ export type IllustrationVariant =
 
 const STROKE = 'stroke-emerald-400';
 
-const Backdrop: React.FC = () => {
+const Backdrop: React.FC<{ bare?: boolean }> = ({ bare }) => {
+  if (bare) return null;
   const uid = React.useId().replace(/:/g, '');
   return (
   <>
     <defs>
       <radialGradient id={`pa-glow-${uid}`} cx="50%" cy="45%" r="65%">
         <stop offset="0%" stopColor="#10b981" stopOpacity="0.18" />
-        <stop offset="100%" stopColor="#020617" stopOpacity="0" />
+        <stop offset="100%" stopColor="#08110f" stopOpacity="0" />
       </radialGradient>
       <pattern id={`pa-grid-${uid}`} width="24" height="24" patternUnits="userSpaceOnUse">
         <path d="M24 0H0V24" fill="none" stroke="#94a3b8" strokeOpacity="0.07" strokeWidth="1" />
       </pattern>
     </defs>
-    <rect width="400" height="300" fill="#020617" />
+    <rect width="400" height="300" fill="#08110f" />
     <rect width="400" height="300" fill={`url(#pa-grid-${uid})`} />
     <rect width="400" height="300" fill={`url(#pa-glow-${uid})`} />
   </>
@@ -74,12 +75,12 @@ const Scene: React.FC<{ variant: IllustrationVariant }> = ({ variant }) => {
           ].map(([x, y], i) => (
             <g key={i}>
               <line x1="200" y1="140" x2={x} y2={y} className={STROKE} strokeOpacity="0.45" strokeWidth="1.2" strokeDasharray="4 4" />
-              <circle cx={x} cy={y} r="17" className={STROKE} fill="#020617" strokeWidth="1.5" />
+              <circle cx={x} cy={y} r="17" className={i % 2 ? 'stroke-cyan-400' : STROKE} fill="#08110f" strokeWidth="1.5" />
               <Cross x={x} y={y} s={12} />
             </g>
           ))}
           <circle cx="200" cy="140" r="44" className={STROKE} strokeOpacity="0.3" fill="none" strokeWidth="1" />
-          <circle cx="200" cy="140" r="32" className={STROKE} fill="#020617" strokeWidth="1.8" />
+          <circle cx="200" cy="140" r="32" className={STROKE} fill="#08110f" strokeWidth="1.8" />
           <Cross x={200} y={140} s={26} filled />
         </g>
       );
@@ -87,14 +88,14 @@ const Scene: React.FC<{ variant: IllustrationVariant }> = ({ variant }) => {
       return (
         <g>
           <g opacity="0.95">
-            <rect x="70" y="60" width="120" height="160" rx="10" className={STROKE} fill="#0b1220" strokeWidth="1.6" />
+            <rect x="70" y="60" width="120" height="160" rx="10" className={STROKE} fill="#0d1916" strokeWidth="1.6" />
             {[90, 108, 126, 144, 162].map((y) => (
               <line key={y} x1="86" y1={y} x2={y % 36 === 0 ? 160 : 174} y2={y} stroke="#64748b" strokeWidth="3" strokeLinecap="round" opacity="0.6" />
             ))}
             <path d="M58 72V58h14M202 58h14v14M216 208v14h-14M72 222H58v-14" className={STROKE} fill="none" strokeWidth="2" strokeLinecap="round" />
           </g>
           <path d="M214 140h38m-10-10 10 10-10 10" className={STROKE} fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-          <rect x="262" y="84" width="76" height="112" rx="9" className={STROKE} fill="#0b1220" strokeWidth="1.6" strokeDasharray="5 4" />
+          <rect x="262" y="84" width="76" height="112" rx="9" className={STROKE} fill="#0d1916" strokeWidth="1.6" strokeDasharray="5 4" />
           <circle cx="300" cy="126" r="16" className={STROKE} fill="none" strokeWidth="2" />
           <path d="M292 126l6 6 11-12" className={STROKE} fill="none" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
           <text x="300" y="172" textAnchor="middle" fontSize="10" fontFamily="ui-monospace, monospace" className="fill-emerald-400" opacity="0.85">
@@ -105,7 +106,7 @@ const Scene: React.FC<{ variant: IllustrationVariant }> = ({ variant }) => {
     case 'training':
       return (
         <g>
-          <rect x="60" y="70" width="170" height="130" rx="8" className={STROKE} fill="#0b1220" strokeWidth="1.6" />
+          <rect x="60" y="70" width="170" height="130" rx="8" className={STROKE} fill="#0d1916" strokeWidth="1.6" />
           {[100, 130, 160].map((y) => (
             <line key={y} x1="60" y1={y} x2="230" y2={y} stroke="#64748b" strokeOpacity="0.5" />
           ))}
@@ -126,7 +127,7 @@ const Scene: React.FC<{ variant: IllustrationVariant }> = ({ variant }) => {
     case 'audit':
       return (
         <g>
-          <path d="M200 52l70 24v62c0 44-30 76-70 96-40-20-70-52-70-96V76z" className={STROKE} fill="#0b1220" strokeWidth="1.8" strokeLinejoin="round" />
+          <path d="M200 52l70 24v62c0 44-30 76-70 96-40-20-70-52-70-96V76z" className={STROKE} fill="#0d1916" strokeWidth="1.8" strokeLinejoin="round" />
           <path d="M170 142l22 22 40-46" className={STROKE} fill="none" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
           {[0, 1, 2].map((i) => (
             <g key={i} opacity={0.6 - i * 0.12}>
@@ -145,11 +146,11 @@ const Scene: React.FC<{ variant: IllustrationVariant }> = ({ variant }) => {
     case 'mobile':
       return (
         <g>
-          <rect x="60" y="70" width="190" height="124" rx="9" className={STROKE} fill="#0b1220" strokeWidth="1.6" />
+          <rect x="60" y="70" width="190" height="124" rx="9" className={STROKE} fill="#0d1916" strokeWidth="1.6" />
           <path d="M130 194v22h50v-22M112 216h86" className={STROKE} fill="none" strokeWidth="1.6" strokeLinecap="round" />
           <Cross x={155} y={125} s={28} filled />
           <line x1="96" y1="168" x2="214" y2="168" stroke="#64748b" strokeWidth="3" strokeLinecap="round" opacity="0.6" />
-          <rect x="278" y="92" width="64" height="124" rx="12" className={STROKE} fill="#0b1220" strokeWidth="1.6" />
+          <rect x="278" y="92" width="64" height="124" rx="12" className={STROKE} fill="#0d1916" strokeWidth="1.6" />
           <line x1="300" y1="102" x2="320" y2="102" stroke="#64748b" strokeWidth="2.5" strokeLinecap="round" />
           <Cross x={310} y={150} s={20} />
           <rect x="292" y="184" width="36" height="8" rx="4" className="fill-emerald-500/30" />
@@ -164,7 +165,7 @@ const Scene: React.FC<{ variant: IllustrationVariant }> = ({ variant }) => {
             [250, 80, 140],
           ].map(([x, y, h], i) => (
             <g key={i}>
-              <rect x={x} y={y} width="70" height={h} rx="9" className={STROKE} fill="#0b1220" strokeWidth="1.6" opacity={0.55 + i * 0.2} />
+              <rect x={x} y={y} width="70" height={h} rx="9" className={STROKE} fill="#0d1916" strokeWidth="1.6" opacity={0.55 + i * 0.2} />
               <line x1={x + 14} y1={y + 20} x2={x + 56} y2={y + 20} stroke="#64748b" strokeWidth="3" strokeLinecap="round" opacity="0.7" />
               <line x1={x + 14} y1={y + 36} x2={x + 42} y2={y + 36} stroke="#64748b" strokeWidth="3" strokeLinecap="round" opacity="0.5" />
               <Cross x={x + 35} y={y + h - 22} s={14 + i * 3} filled={i === 2} />
@@ -178,12 +179,12 @@ const Scene: React.FC<{ variant: IllustrationVariant }> = ({ variant }) => {
         <g>
           <circle cx="200" cy="140" r="104" className={STROKE} strokeOpacity="0.14" fill="none" strokeWidth="1" />
           <circle cx="200" cy="140" r="74" className={STROKE} strokeOpacity="0.25" fill="none" strokeWidth="1" strokeDasharray="3 6" />
-          <rect x="150" y="90" width="100" height="100" rx="24" className={STROKE} fill="#0b1220" strokeWidth="1.8" />
+          <rect x="150" y="90" width="100" height="100" rx="24" className={STROKE} fill="#0d1916" strokeWidth="1.8" />
           <Cross x={200} y={140} s={54} filled />
           <Pill x={90} y={80} r={-25} />
           <Pill x={318} y={92} r={30} o={0.55} />
-          <Pill x={96} y={216} r={20} o={0.5} />
-          <Pill x={312} y={212} r={-18} />
+          <Pill x={70} y={176} r={20} o={0.5} />
+          <Pill x={334} y={176} r={-18} />
           <path d="M20 262h96l12-22 14 40 14-52 14 34h210" className={STROKE} fill="none" strokeWidth="1.5" strokeOpacity="0.5" strokeLinejoin="round" strokeLinecap="round" />
         </g>
       );
@@ -192,24 +193,28 @@ const Scene: React.FC<{ variant: IllustrationVariant }> = ({ variant }) => {
 
 interface PanelIllustrationProps {
   variant: IllustrationVariant;
+  /** Sans fond : l'illustration devient un filigrane posé sur la page. */
+  bare?: boolean;
   className?: string;
   label?: string;
 }
 
 export const PanelIllustration: React.FC<PanelIllustrationProps> = ({
   variant,
+  bare = false,
   className = 'h-full w-full',
   label,
 }) => (
   <svg
     viewBox="0 0 400 300"
-    preserveAspectRatio="xMidYMid slice"
+    preserveAspectRatio={bare ? 'xMaxYMid meet' : 'xMidYMid slice'}
+    opacity={bare ? 0.5 : 1}
     className={className}
     role={label ? 'img' : undefined}
     aria-label={label}
     aria-hidden={label ? undefined : true}
   >
-    <Backdrop />
+    <Backdrop bare={bare} />
     <Scene variant={variant} />
   </svg>
 );
@@ -245,5 +250,30 @@ export const BottomArt: React.FC = () => (
         <circle cx="610" cy="170" r="6" />
       </g>
     </svg>
+  </div>
+);
+
+/** Ornements discrets sur les bords gauche et droit (écrans larges uniquement). */
+export const SideArt: React.FC = () => (
+  <div aria-hidden="true" className="pointer-events-none fixed inset-y-0 left-0 right-0 -z-10 hidden overflow-hidden xl:block">
+    {(['left', 'right'] as const).map((side) => (
+      <svg
+        key={side}
+        viewBox="0 0 120 900"
+        preserveAspectRatio="xMidYMid slice"
+        className={`absolute top-0 h-full w-28 opacity-[0.14] ${side === 'left' ? 'left-0' : 'right-0 -scale-x-100'}`}
+      >
+        <g fill="none" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M20 0V220l28 28v160l-28 28v200l28 28V900" className="stroke-emerald-400" strokeDasharray="2 7" />
+          <circle cx="48" cy="248" r="5" className="stroke-emerald-400" />
+          <circle cx="48" cy="408" r="5" className="stroke-cyan-400" />
+          <circle cx="48" cy="692" r="5" className="stroke-emerald-400" />
+          <path d="M80 120h18M89 111v18" className="stroke-cyan-400" />
+          <path d="M70 560h18M79 551v18" className="stroke-emerald-400" />
+          <rect x="64" y="300" width="30" height="12" rx="6" className="stroke-emerald-400" transform="rotate(-30 79 306)" />
+          <rect x="62" y="780" width="30" height="12" rx="6" className="stroke-cyan-400" transform="rotate(25 77 786)" />
+        </g>
+      </svg>
+    ))}
   </div>
 );

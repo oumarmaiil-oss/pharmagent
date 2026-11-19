@@ -116,7 +116,7 @@ export const TrainingCenter: React.FC<TrainingCenterProps> = ({
   return (
     <div className="space-y-6">
       {/* Split Dark Illustrated Training Hero */}
-      <section className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900 grid grid-cols-1 lg:grid-cols-12 items-stretch">
+      <section className="relative overflow-hidden rounded-xl border border-slate-800 bg-slate-900 grid grid-cols-1 lg:grid-cols-12 items-stretch">
         <div className="lg:col-span-7 p-6 flex flex-col justify-between gap-4">
           <div className="space-y-2">
             <div className="flex items-center gap-2 text-xs font-medium text-emerald-400">
@@ -144,8 +144,8 @@ export const TrainingCenter: React.FC<TrainingCenterProps> = ({
           </div>
         </div>
 
-        <div className="lg:col-span-5 relative min-h-[160px] bg-slate-950 border-t lg:border-t-0 lg:border-l border-slate-800 overflow-hidden">
-          <PanelIllustration variant="training" label="Mémoire d'entraînement IA et tableaux pharmaceutiques" />
+        <div className="pointer-events-none absolute inset-y-0 right-0 hidden w-[42%] lg:block [mask-image:linear-gradient(to_left,black_30%,transparent)]">
+          <PanelIllustration bare variant="training" label="Mémoire d'entraînement IA et tableaux pharmaceutiques" />
         </div>
       </section>
 

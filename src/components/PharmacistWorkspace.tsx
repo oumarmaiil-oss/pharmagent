@@ -991,7 +991,7 @@ export const PharmacistWorkspace: React.FC<PharmacistWorkspaceProps> = ({
 
       {/* Crisp Split Visual Header + Pharmacy Selector & Quota Controls */}
       <section className="rounded-xl border border-slate-800 bg-slate-900 overflow-hidden">
-        <div className="grid grid-cols-1 lg:grid-cols-12">
+        <div className="relative grid grid-cols-1 lg:grid-cols-12">
           <div className="lg:col-span-8 p-5">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="flex flex-wrap items-center gap-4">
@@ -1381,16 +1381,8 @@ export const PharmacistWorkspace: React.FC<PharmacistWorkspaceProps> = ({
             )}
           </div>
 
-          <div className="lg:col-span-4 relative min-h-[175px] border-t lg:border-t-0 lg:border-l border-slate-800 bg-slate-950 overflow-hidden">
-            <PanelIllustration variant="workspace" label="Espace de travail PharmAgent" />
-            <div className="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-transparent to-transparent flex items-end p-4">
-              <div className="text-[11px] text-slate-200 leading-snug">
-                <div className="font-semibold text-emerald-300">Poste Officine PharmAgent</div>
-                <div className="text-slate-300">
-                  Extraction IA sécurisée · Brouillon contrôlé avant validation finale
-                </div>
-              </div>
-            </div>
+          <div className="pointer-events-none absolute inset-y-0 right-0 hidden w-[42%] lg:block [mask-image:linear-gradient(to_left,black_30%,transparent)]">
+            <PanelIllustration bare variant="workspace" label="Espace de travail PharmAgent" />
           </div>
         </div>
       </section>
