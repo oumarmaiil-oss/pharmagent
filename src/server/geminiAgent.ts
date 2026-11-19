@@ -21,9 +21,9 @@ async function generate(ai: GoogleGenAI, params: GenerateParams) {
   const start = MODEL_CHAIN.indexOf(activeModel);
   let lastErr: unknown;
   for (const model of MODEL_CHAIN.slice(start)) {
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const ATTEMPT_TIMEOUT_MS = 35_000;
+        const ATTEMPT_TIMEOUT_MS = 15_000;
         const res = await Promise.race([
           ai.models.generateContent({ ...params, model }),
           new Promise<never>((_, reject) =>
@@ -31,7 +31,7 @@ async function generate(ai: GoogleGenAI, params: GenerateParams) {
           ),
         ]);
         if (model !== activeModel) {
-          console.warn(`[PharmAgent] Modèle Gemini « ${activeModel} » indisponible : bascule sur « ${model} ».`);
+          console.warn(`[PharmAgent] Modèle Gemini « ${activeModel} » indisponible : bascule sur « ${model } ».`);
           activeModel = model;
         }
         return res;
@@ -39,9 +39,9 @@ async function generate(ai: GoogleGenAI, params: GenerateParams) {
         lastErr = err;
         const msg = err instanceof Error ? err.message : String(err);
         if (/NOT_FOUND|no longer available|is not found|not supported for generateContent/i.test(msg)) break;
-        // Surcharge passagère côté Google : on réessaie, puis on passe au modèle suivant
+        // Surcharge passagère côté Google : une seule tentative avant bascule modèle suivant
         if (/UNAVAILABLE|overloaded|high demand|RESOURCE_EXHAUSTED|TIMEOUT_503|\b(429|500|503)\b/i.test(msg)) {
-          if (attempt < 2) { await new Promise((r) => setTimeout(r, 1500 * (attempt + 1))); continue; }
+          if (attempt < 1) { await new Promise((r) => setTimeout(r, 500)); continue; }
           break;
         }
         throw err;
