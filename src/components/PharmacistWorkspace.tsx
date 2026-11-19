@@ -80,6 +80,7 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
     if (!selectedPharmacyId) { setError('Choisissez une officine.'); return; }
     if (!doc && !samplePath) { setError('Prenez une photo ou importez un document.'); return; }
     setError(''); setLoading(true); setCurrentId(null);
+    let polling = false;
     try {
       const body: Record<string, unknown> = { pharmacyId: selectedPharmacyId, documentHint: docType, taskPrompt: taskPrompt || undefined };
       if (doc) body.imageBase64 = doc.dataUrl; else body.sampleAssetPath = samplePath;
@@ -94,10 +95,31 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
       setCurrentId(data.draft.id);
       setDoc(null); setSamplePath('');
       onRefresh();
+      // Si l'extraction est en cours (Gemini asynchrone), on poll toutes les 4s
+      if (data.draft.extractionStatus === 'processing') {
+        const pollId = data.draft.id;
+        const poll = async () => {
+          for (let i = 0; i < 45; i++) {
+            await new Promise((res) => setTimeout(res, 4000));
+            const pr = await fetch(`/api/drafts/${pollId}`, { headers: { Authorization: `Bearer ${token}` } });
+            if (!pr.ok) break;
+            const pd = await pr.json() as { draft?: DraftRecord };
+            if (!pd.draft) break;
+            remember(pd.draft);
+            setCurrentId(pd.draft.id);
+            onRefresh();
+            if (pd.draft.extractionStatus !== 'processing') break;
+          }
+          setLoading(false);
+        };
+        polling = true;
+        poll();
+        return;
+      }
     } catch {
       setError('Connexion impossible. Vérifiez Internet et réessayez.');
     } finally {
-      setLoading(false);
+      if (!polling) setLoading(false);
     }
   };
 
@@ -215,7 +237,21 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
             </button>
           </section>
 
-          {current && <DraftPanel draft={current} token={token} busy={busyId === current.id} onDecide={decide} onUpdated={remember} onRefresh={onRefresh} />}
+          {current?.extractionStatus === 'processing' && (
+            <div className="flex items-center gap-3 p-4 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 text-sm">
+              <Loader2 size={18} className="animate-spin text-emerald-400 shrink-0" />
+              <span>Analyse en cours… Gemini lit le document, cela peut prendre une minute.</span>
+            </div>
+          )}
+          {current?.extractionStatus === 'error' && (
+            <div className="flex items-center gap-3 p-4 rounded-xl bg-red-900/30 border border-red-800 text-red-300 text-sm">
+              <AlertCircle size={18} className="shrink-0" />
+              <span>{current.extractionError ?? "Erreur d'analyse."}</span>
+            </div>
+          )}
+          {current && current.extractionStatus !== 'processing' && current.extractionStatus !== 'error' && (
+            <DraftPanel draft={current} token={token} busy={busyId === current.id} onDecide={decide} onUpdated={remember} onRefresh={onRefresh} />
+          )}
         </div>
 
         <div className="space-y-5">

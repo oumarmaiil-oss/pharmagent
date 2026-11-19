@@ -408,6 +408,26 @@ class PharmAgentStore {
     return draft;
   }
 
+  finalizeExtraction(id: string, data: DraftRecord['extractedData'], mapping: DraftRecord['columnMapping'], tokens: number): void {
+    const draft = this.db.drafts.find((d) => d.id === id);
+    if (!draft) return;
+    draft.extractedData = data;
+    draft.columnMapping = mapping;
+    draft.tokensConsumed = tokens;
+    draft.extractionStatus = 'ready';
+    draft.updatedAt = now();
+    this.persist();
+  }
+
+  failExtraction(id: string, error: string): void {
+    const draft = this.db.drafts.find((d) => d.id === id);
+    if (!draft) return;
+    draft.extractionStatus = 'error';
+    draft.extractionError = error;
+    draft.updatedAt = now();
+    this.persist();
+  }
+
   updateDraftStatus(id: string, status: DraftStatus, actorName: string, reason?: string): DraftRecord | undefined {
     const draft = this.db.drafts.find((d) => d.id === id);
     if (!draft) return undefined;

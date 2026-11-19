@@ -608,6 +608,13 @@ app.get('/api/pharmacies/:id/drafts', (req, res) => {
   res.json({ drafts: store.getDrafts(req.params.id) });
 });
 
+app.get('/api/drafts/:draftId', (req, res) => {
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
+  if (!getOwnerSession(req) && !getPharmacySession(req)) { res.status(401).json({ error: 'Connexion requise.' }); return; }
+  res.json({ draft });
+});
+
 app.post('/api/drafts/:draftId/approve', (req, res) => {
   const draft = store.getDraft(req.params.draftId);
   if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
@@ -747,53 +754,54 @@ app.post('/api/agent/extract', async (req, res) => {
   if (!effPharmacyId || !store.getPharmacy(effPharmacyId)) { res.status(400).json({ error: 'Officine inconnue.' }); return; }
   if (pharmacyUser && pharmacyUser.pharmacyId !== effPharmacyId) { res.status(403).json({ error: 'Accès interdit à une autre officine.' }); return; }
 
+  let resolved: { base64: string; mimeType: string };
   try {
-    const resolved = resolveDocument(imageBase64, sampleAssetPath);
-    if (!/^(image\/(jpeg|png|webp|heic|heif)|application\/pdf)$/.test(resolved.mimeType)) {
-      res.status(400).json({ error: 'Format non pris en charge : utilisez une photo (JPG, PNG) ou un PDF.' });
-      return;
-    }
-    const { base64, mimeType } = await downscaleImage(resolved.base64, resolved.mimeType);
-    const extraction = await extractDocumentWithGemini({
-      imageBase64: base64, mimeType, documentHint: documentHint ?? 'bon_livraison', taskPrompt,
-    });
-    const data = extraction.data;
-    data.lineItems = (data.lineItems ?? []).filter((l) => l.designation?.trim());
-
-    const matched = await matchDocumentLines(effPharmacyId, data);
-    data.lineItems = matched.lines;
-
-    // Colonnes cibles : règles apprises, sans appel IA supplémentaire
-    const first: Record<string, unknown> = Object.fromEntries(Object.entries(data.lineItems[0] ?? {}).map(([k, v]) => [`item.${k}`, v]));
-    const sample: Record<string, unknown> = { ...data, ...first };
-    const columnMapping = store.getMemory().columnRules.map((r) => ({
-      sourceField: r.sourceField, targetColumn: r.targetColumn, exampleValue: String(sample[r.sourceField] ?? ''),
-    }));
-
-    const actorId = owner?.id ?? pharmacyUser!.id;
-    const actorName = owner?.fullName ?? pharmacyUser!.fullName;
-    const draft = store.createDraft({
-      pharmacyId: effPharmacyId,
-      status: 'pending',
-      documentCategory: documentHint ?? 'bon_livraison',
-      extractedData: data,
-      columnMapping,
-      actorId, actorName,
-      tokensConsumed: extraction.tokensConsumed + matched.tokensConsumed,
-    });
-
-    const toReview = data.lineItems.filter((l) => l.match?.status === 'to_review').length;
-    store.addAuditLog({
-      pharmacyId: effPharmacyId, actorId, actorName,
-      action: `Extraction ${documentHint ?? 'bon_livraison'} — ${data.lineItems.length} lignes (${data.lineItems.length - toReview} reconnues, ${toReview} à vérifier)`,
-      level: 'info',
-    });
-    res.json({ draft });
+    resolved = resolveDocument(imageBase64, sampleAssetPath);
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Erreur extraction.';
-    console.error('[PharmAgent] Extraction :', msg);
-    res.status(500).json({ error: msg.includes('API key') ? 'Clé Gemini invalide ou absente sur le serveur.' : msg });
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Document invalide.' }); return;
   }
+  if (!/^(image\/(jpeg|png|webp|heic|heif)|application\/pdf)$/.test(resolved.mimeType)) {
+    res.status(400).json({ error: 'Format non pris en charge : utilisez une photo (JPG, PNG) ou un PDF.' }); return;
+  }
+
+  const actorId = owner?.id ?? pharmacyUser!.id;
+  const actorName = owner?.fullName ?? pharmacyUser!.fullName;
+  const category = documentHint ?? 'bon_livraison';
+
+  // Créer le brouillon immédiatement (état « en cours ») pour éviter le timeout HTTP
+  const draft = store.createDraft({
+    pharmacyId: effPharmacyId, status: 'pending', extractionStatus: 'processing',
+    documentCategory: category,
+    extractedData: { lineItems: [], supplierOrOrg: '', documentDate: '', documentNumber: '', totalAmountHT: undefined, totalAmountTTC: undefined },
+    columnMapping: [], actorId, actorName, tokensConsumed: 0,
+  });
+  res.json({ draft });
+
+  // Traitement Gemini en arrière-plan (ne bloque plus la réponse HTTP)
+  (async () => {
+    try {
+      const { base64, mimeType } = await downscaleImage(resolved.base64, resolved.mimeType);
+      const extraction = await extractDocumentWithGemini({ imageBase64: base64, mimeType, documentHint: category, taskPrompt });
+      const data = extraction.data;
+      data.lineItems = (data.lineItems ?? []).filter((l) => l.designation?.trim());
+      const matched = await matchDocumentLines(effPharmacyId, data);
+      data.lineItems = matched.lines;
+      const first: Record<string, unknown> = Object.fromEntries(Object.entries(data.lineItems[0] ?? {}).map(([k, v]) => [`item.${k}`, v]));
+      const sample: Record<string, unknown> = { ...data, ...first };
+      const columnMapping = store.getMemory().columnRules.map((r) => ({
+        sourceField: r.sourceField, targetColumn: r.targetColumn, exampleValue: String(sample[r.sourceField] ?? ''),
+      }));
+      store.finalizeExtraction(draft.id, data, columnMapping, extraction.tokensConsumed + matched.tokensConsumed);
+      const toReview = data.lineItems.filter((l) => l.match?.status === 'to_review').length;
+      store.addAuditLog({ pharmacyId: effPharmacyId, actorId, actorName,
+        action: `Extraction ${category} — ${data.lineItems.length} lignes (${data.lineItems.length - toReview} reconnues, ${toReview} à vérifier)`,
+        level: 'info' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erreur extraction.';
+      console.error('[PharmAgent] Extraction async :', msg);
+      store.failExtraction(draft.id, msg.includes('API key') ? 'Clé Gemini invalide ou absente.' : msg);
+    }
+  })();
 });
 
 // ─── Agent IA : inspection d'interface ───────────────────

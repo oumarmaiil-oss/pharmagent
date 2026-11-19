@@ -7,6 +7,7 @@ export type DocumentCategory = 'bon_livraison' | 'facture' | 'mutuelle';
 export type SubscriptionPlan = 'trial' | 'standard' | 'premium' | 'suspended';
 export type PharmacyUserRole = 'titulaire' | 'adjoint' | 'assistant';
 export type DraftStatus = 'pending' | 'approved' | 'rejected';
+export type ExtractionStatus = 'processing' | 'ready' | 'error';
 export type AuditLevel = 'info' | 'warning' | 'blocked' | 'approved' | 'rejected';
 
 // ─── Entités principales ───────────────────────────────────
@@ -168,6 +169,8 @@ export interface DraftRecord {
   id: string;
   pharmacyId: string;
   status: DraftStatus;
+  extractionStatus?: ExtractionStatus;
+  extractionError?: string;
   documentCategory: DocumentCategory;
   extractedData: ExtractedDocumentData;
   columnMapping: ColumnMapping[];
