@@ -1,0 +1,109 @@
+import {
+  Activity,
+  BookOpen,
+  Building2,
+  FileSearch,
+  HardDrive,
+  LayoutDashboard,
+  LogOut,
+  Monitor,
+  ShieldAlert,
+  Stethoscope,
+} from 'lucide-react';
+import type { OwnerAccount } from '../types/pharmagent.ts';
+import type { AppTab } from '../App.tsx';
+
+const LOGO = (
+  <svg width="28" height="28" viewBox="0 0 32 32" fill="none">
+    <rect width="32" height="32" rx="8" fill="#059669" />
+    <path d="M16 6v20M6 16h20" stroke="white" strokeWidth="3.5" strokeLinecap="round" />
+  </svg>
+);
+
+interface NavItem { id: AppTab; label: string; icon: React.ReactNode; badge?: number }
+
+interface Props {
+  tab: AppTab;
+  onTabChange: (t: AppTab) => void;
+  owner: OwnerAccount;
+  onLogout: () => void;
+  pendingCount: number;
+  loading: boolean;
+  children: React.ReactNode;
+}
+
+export default function Layout({ tab, onTabChange, owner, onLogout, pendingCount, loading, children }: Props) {
+  const navItems: NavItem[] = [
+    { id: 'dashboard', label: 'Tableau de bord', icon: <LayoutDashboard size={18} /> },
+    { id: 'workspace', label: 'Poste Pharmacien', icon: <Stethoscope size={18} />, badge: pendingCount || undefined },
+    { id: 'pharmacies', label: 'Mes Officines', icon: <Building2 size={18} /> },
+    { id: 'training', label: 'Mémoire & Entraînement', icon: <BookOpen size={18} /> },
+    { id: 'grounding', label: 'Inspecteur UI', icon: <Monitor size={18} /> },
+    { id: 'audit', label: 'Journal Garde-Fou', icon: <ShieldAlert size={18} /> },
+    { id: 'deployment', label: 'Agent Local', icon: <HardDrive size={18} /> },
+  ];
+
+  return (
+    <div className="flex h-dvh overflow-hidden bg-slate-950">
+      {/* Sidebar */}
+      <aside className="w-60 flex-shrink-0 flex flex-col border-r border-slate-800 bg-slate-900">
+        {/* Logo */}
+        <div className="flex items-center gap-3 px-4 py-5 border-b border-slate-800">
+          {LOGO}
+          <div>
+            <div className="font-semibold text-sm text-white leading-tight">PharmAgent</div>
+            <div className="text-xs text-emerald-400 leading-tight">Supervision v2</div>
+          </div>
+        </div>
+
+        {/* Navigation */}
+        <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-0.5">
+          {navItems.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => onTabChange(item.id)}
+              className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition-all relative
+                ${tab === item.id
+                  ? 'bg-emerald-500/15 text-emerald-400 shadow-sm'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+              {item.badge ? (
+                <span className="ml-auto bg-amber-500 text-black text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center">
+                  {item.badge > 9 ? '9+' : item.badge}
+                </span>
+              ) : null}
+            </button>
+          ))}
+        </nav>
+
+        {/* Footer */}
+        <div className="border-t border-slate-800 px-3 py-3">
+          {loading && (
+            <div className="flex items-center gap-2 text-xs text-emerald-400 px-2 py-1 mb-2">
+              <Activity size={12} className="animate-pulse" />
+              <span>Chargement…</span>
+            </div>
+          )}
+          <div className="flex items-center justify-between px-2 py-1.5">
+            <div>
+              <div className="text-xs font-medium text-white">{owner.fullName}</div>
+              <div className="text-xs text-slate-500">{owner.role === 'owner' ? 'Propriétaire' : 'Co-Superviseur'}</div>
+            </div>
+            <button onClick={onLogout} className="text-slate-500 hover:text-red-400 p-1.5 rounded-lg hover:bg-red-500/10" title="Déconnexion">
+              <LogOut size={16} />
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      {/* Main content */}
+      <main className="flex-1 overflow-y-auto">
+        <div className="animate-in">
+          {children}
+        </div>
+      </main>
+    </div>
+  );
+}

@@ -1,3 +1,9 @@
+// ============================================================
+// PharmAgent — Garde-fou « Brouillon uniquement »
+// L'agent ne peut JAMAIS valider, soumettre ou clôturer.
+// Il s'arrête strictement au stade Brouillon.
+// ============================================================
+
 import type { GroundedTargetElement } from '../types/pharmagent.ts';
 
 export class SafetyViolationError extends Error {
@@ -15,70 +21,53 @@ const FORBIDDEN_PATTERNS = [
   /\bencaiss(er|ement)\b/i,
   /\bconfirm(er|ation)\b/i,
   /\bsoumettre\b/i,
-  /\bfinaliz(e|er)\b/i,
+  /\bfinali(s|z)(er|ation)\b/i,
   /\bsubmit\b/i,
+  /\bcommit\b/i,
+  /\bpost(?:er)?\b/i,
+  /\benvoyer\b/i,
 ];
 
-const ALLOWED_DRAFT_PATTERNS = [
+const DRAFT_PATTERNS = [
   /\bbrouillon\b/i,
   /\bdraft\b/i,
-  /\bsauvegard(er|e)\s+temporaire\b/i,
+  /\btemporaire\b/i,
+  /\bprovisoire\b/i,
 ];
 
-export class DraftOnlyGuardrail {
-  assertElementSafe(element: Pick<GroundedTargetElement, 'elementRole' | 'detectedLabel' | 'safetyStatus'>): void {
-    const label = (element.detectedLabel || '').trim();
+export function checkTextSafety(text: string): { safe: boolean; reason?: string } {
+  const lc = text.toLowerCase();
+  for (const pattern of FORBIDDEN_PATTERNS) {
+    if (pattern.test(lc)) {
+      return {
+        safe: false,
+        reason: `Action interdite détectée : "${text}". L'agent doit s'arrêter strictement au stade Brouillon.`,
+      };
+    }
+  }
+  return { safe: true };
+}
 
-    if (
-      element.safetyStatus === 'FORBIDDEN_BY_GUARDRAIL' ||
-      element.elementRole === 'forbidden_final_button'
-    ) {
+export class DraftOnlyGuardrail {
+  assertElementSafe(el: Pick<GroundedTargetElement, 'elementRole' | 'detectedLabel' | 'safetyStatus'>): void {
+    if (el.safetyStatus === 'FORBIDDEN_BY_GUARDRAIL' || el.elementRole === 'forbidden_final_button') {
       throw new SafetyViolationError(
-        `[GARDE-FOU] Action formellement interdite sur "${label}". L'agent doit s'arrêter strictement au stade Brouillon.`
+        `[GARDE-FOU] Élément interdit "${el.detectedLabel}". L'agent s'arrête au stade Brouillon.`
       );
     }
-
-    const matchesForbidden = FORBIDDEN_PATTERNS.some((rx) => rx.test(label));
-    const matchesDraft = ALLOWED_DRAFT_PATTERNS.some((rx) => rx.test(label));
-
-    if (matchesForbidden && !matchesDraft) {
-      throw new SafetyViolationError(
-        `[GARDE-FOU] Libellé critique détecté ("${label}"). Toute validation finale est bloquée par politique de sécurité.`
-      );
+    const check = checkTextSafety(el.detectedLabel || '');
+    if (!check.safe) {
+      throw new SafetyViolationError(`[GARDE-FOU] ${check.reason}`);
     }
   }
 
-  enforceClassification(element: GroundedTargetElement): GroundedTargetElement {
-    const label = (element.detectedLabel || '').trim();
-    const matchesForbidden = FORBIDDEN_PATTERNS.some((rx) => rx.test(label));
-    const matchesDraft = ALLOWED_DRAFT_PATTERNS.some((rx) => rx.test(label));
-
-    if (
-      element.elementRole === 'forbidden_final_button' ||
-      (matchesForbidden && !matchesDraft)
-    ) {
-      return {
-        ...element,
-        elementRole: 'forbidden_final_button',
-        safetyStatus: 'FORBIDDEN_BY_GUARDRAIL',
-        guardrailReason:
-          element.guardrailReason ||
-          'Bouton de validation finale isolé par le Garde-Fou PharmAgent : clic interdit.',
-      };
-    }
-
-    if (element.elementRole === 'draft_button' || matchesDraft) {
-      return {
-        ...element,
-        elementRole: 'draft_button',
-        safetyStatus: 'AUTHORIZED_DRAFT_SAVE',
-      };
-    }
-
-    return {
-      ...element,
-      safetyStatus: 'AUTHORIZED_INPUT',
-    };
+  classifyElement(label: string): 'SAFE_DRAFT' | 'FORBIDDEN_BY_GUARDRAIL' | 'UNKNOWN' {
+    if (!label) return 'UNKNOWN';
+    const forbidden = FORBIDDEN_PATTERNS.some((p) => p.test(label));
+    if (forbidden) return 'FORBIDDEN_BY_GUARDRAIL';
+    const draft = DRAFT_PATTERNS.some((p) => p.test(label));
+    if (draft) return 'SAFE_DRAFT';
+    return 'UNKNOWN';
   }
 }
 
