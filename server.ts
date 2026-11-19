@@ -44,10 +44,12 @@ function resolveImagePayload(
 
   if (sampleAssetPath) {
     const safeRelative = sampleAssetPath.replace(/^\/+/, '');
-    if (!safeRelative.startsWith('src/assets/images/')) {
+    const imagesDir = path.resolve(__dirname, 'src/assets/images');
+    const absolutePath = path.resolve(__dirname, safeRelative);
+    // Empêche toute traversée de répertoire (ex. "src/assets/images/../../.env").
+    if (!absolutePath.startsWith(imagesDir + path.sep)) {
       throw new Error('Chemin d’image exemple non autorisé.');
     }
-    const absolutePath = path.resolve(__dirname, safeRelative);
     if (!fs.existsSync(absolutePath)) {
       throw new Error(`Image exemple introuvable : ${safeRelative}`);
     }

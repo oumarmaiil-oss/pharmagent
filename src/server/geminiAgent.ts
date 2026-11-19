@@ -8,11 +8,14 @@ import type {
 } from '../types/pharmagent.ts';
 import { guardrail } from './guardrail.ts';
 
+// Modèle configurable via la variable d'environnement GEMINI_MODEL.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-4-argon';
+
 function getGeminiClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error(
-      'GEMINI_API_KEY manquante côté serveur. Configurez la variable dans Settings > Secrets.'
+      'GEMINI_API_KEY manquante côté serveur. Ajoutez-la dans les variables d’environnement du service (Render > Environment).'
     );
   }
   return new GoogleGenAI({
@@ -48,7 +51,7 @@ export async function extractDocumentWithGemini(params: {
       : '';
 
   const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
+    model: GEMINI_MODEL,
     contents: {
       parts: [
         {
@@ -146,7 +149,7 @@ export async function mapToRealExcelColumnsWithGemini(params: {
       : '';
 
   const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
+    model: GEMINI_MODEL,
     contents:
       `Voici les en-têtes réels d'un fichier Excel créé par le pharmacien :\n` +
       `${JSON.stringify(params.excelColumns)}\n` +
@@ -208,7 +211,7 @@ export async function groundTargetInterfaceWithGemini(params: {
   };
 
   const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
+    model: GEMINI_MODEL,
     contents: {
       parts: [
         {
