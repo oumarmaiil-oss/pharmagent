@@ -12,7 +12,7 @@ import type {
 
 // Modèle configurable via GEMINI_MODEL. Google retire régulièrement des modèles :
 // en cas de « modèle introuvable », on bascule sur le suivant et on le retient.
-const MODEL_CHAIN = [...new Set([process.env.GEMINI_MODEL, 'gemini-3.8-flash', 'gemini-flash-latest'].filter((m): m is string => !!m))];
+const MODEL_CHAIN = [...new Set([process.env.GEMINI_MODEL, 'gemini-2.5-flash', 'gemini-2.0-flash'].filter((m): m is string => !!m))];
 let activeModel = MODEL_CHAIN[0];
 
 type GenerateParams = Omit<Parameters<GoogleGenAI['models']['generateContent']>[0], 'model'>;
