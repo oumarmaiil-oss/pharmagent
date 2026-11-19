@@ -40,7 +40,7 @@ async function generate(ai: GoogleGenAI, params: GenerateParams) {
         const msg = err instanceof Error ? err.message : String(err);
         if (/NOT_FOUND|no longer available|is not found|not supported for generateContent/i.test(msg)) break;
         // Surcharge passagère côté Google : on réessaie, puis on passe au modèle suivant
-        if (/UNAVAILABLE|overloaded|high demand|RESOURCE_EXHAUSTED|\b(429|500|503)\b/i.test(msg)) {
+        if (/UNAVAILABLE|overloaded|high demand|RESOURCE_EXHAUSTED|TIMEOUT_503|\b(429|500|503)\b/i.test(msg)) {
           if (attempt < 2) { await new Promise((r) => setTimeout(r, 1500 * (attempt + 1))); continue; }
           break;
         }
