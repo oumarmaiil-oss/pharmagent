@@ -679,6 +679,7 @@ RECORDER_JS = r"""
     send({ type: el.tagName === 'SELECT' ? 'select' : 'fill', selectors: selectorsFor(el, true), value: clean(v, 300),
            label: hintLabel(el), via: viaOf.get(el) || 'mouse' });
   };
+  window.__paFlush = () => flush(document.activeElement);
   document.addEventListener('focusin', (e) => {
     const el = e.target; if (!isEditable(el)) return;
     initial.set(el, valueOf(el));
@@ -978,6 +979,14 @@ class WebDriver:
                 continue
         return rows
 
+    def flush_inputs(self) -> None:
+        for p in self.ctx.pages:
+            for f in p.frames:
+                try:
+                    f.evaluate("() => window.__paFlush && window.__paFlush()")
+                except Exception:
+                    pass
+
     def install_recorder(self) -> None:
         for p in self.ctx.pages:
             for f in p.frames:
@@ -1050,10 +1059,18 @@ class WebDriver:
             elif kind == "select":
                 val = value_for(st, values)
                 loc = self.find(frame, st.get("selectors", []), what)
-                try:
-                    loc.select_option(label=val, timeout=3000)
-                except Exception:
-                    loc.select_option(value=val, timeout=3000)
+                options = loc.evaluate("el => Array.from(el.options).map(o => [o.value, o.text])")
+                best, best_sc = None, 0.0
+                for value, text in options:
+                    t, v = norm(text), norm(val)
+                    if not t:
+                        continue
+                    sc = 1.0 if t == v else 0.9 if (t in v.split() or v.startswith(t) or t.startswith(v)) else option_score(text, val)
+                    if sc > best_sc:
+                        best, best_sc = value, sc
+                if best is None or best_sc < 0.6:
+                    raise StepError(f"« {val} » absent de la liste « {what} » de l'ERP.")
+                loc.select_option(value=best, timeout=3000)
             elif kind == "click":
                 loc = self.find(frame, st.get("selectors", []), what)
                 actual = ""
@@ -1345,6 +1362,7 @@ class Engine:
         if not rec:
             raise ValueError("Aucun enregistrement en cours.")
         if rec["mode"] == "web":
+            self.web.flush_inputs()
             self.web.pump(300)  # dernières frappes
         sample = {**self.sample.get("header", {}), **self.sample.get("line", {})}
         warnings: List[str] = []
@@ -1448,9 +1466,13 @@ class Engine:
             message += ". Vérifiez puis validez dans l'ERP."
         except (StepError, GuardrailError, Aborted) as e:
             status, message = "failed", str(e)
-        except Exception as e:  # erreur inattendue : on la remonte proprement
-            status, message = "failed", f"Erreur inattendue : {e}"
+        except Exception as e:  # toujours signalée au serveur, jamais de bon bloqué « en cours »
             log.error(traceback.format_exc())
+            first = str(e).split("\n")[0]
+            if "Timeout" in type(e).__name__ or "Timeout" in first:
+                status, message = "failed", "L'ERP n'a pas répondu à temps (écran figé ou champ bloqué). Vérifiez l'écran de saisie puis relancez."
+            else:
+                status, message = "failed", f"Erreur inattendue : {first[:200]}"
         finally:
             if player:
                 player.close()

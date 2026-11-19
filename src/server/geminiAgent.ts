@@ -83,7 +83,8 @@ export async function extractDocumentWithGemini(params: {
             `Analyse ce document (type probable : ${params.documentHint}). ` +
             `Extrais l'en-tête (numéro, fournisseur/organisme, pharmacie destinataire, date, montant total FCFA) ` +
             `et chaque ligne : désignation recopiée EXACTEMENT comme imprimée (abréviations comprises, ne corrige rien), ` +
-            `code CIP/EAN s'il figure sur la ligne, quantité entière, N° lot, date expiration, ` +
+            `code CIP/EAN s'il figure sur la ligne, quantité entière, N° lot (lotNumber), ` +
+            `date de péremption (expiryDate : colonne « Date Exp. », « Péremption », « DLU » ou « Exp », recopiée telle quelle, ex. 06/2028), ` +
             `prix unitaire d'achat FCFA, prix public/vente FCFA s'il figure.` +
             missionClause,
         },
