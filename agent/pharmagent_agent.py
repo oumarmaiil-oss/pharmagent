@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-AGENT_VERSION = "2.3.3"
+AGENT_VERSION = "2.3.4"
 DEFAULT_SERVER = "https://pharmagent.onrender.com"
 PANEL_PORT = int(os.environ.get("PHARMAGENT_PORT", "8765"))
 POLL_SECONDS = float(os.environ.get("PHARMAGENT_POLL", "5"))
@@ -1987,8 +1987,8 @@ function render(){if(!S)return;const st=S.status;
   <p>Dès qu'un bon est approuvé dans PharmAgent (téléphone ou ordinateur), il est ${p.mode==='file'?'écrit automatiquement dans une copie du fichier « '+esc((p.filePath||'').split(/[\\/]/).pop())+' », qui s\'ouvre':'saisi ici automatiquement dans l\'ERP'+(p.mode==='web'?' (navigateur PharmAgent)':' « '+esc(p.windowTitle||'')+' »')}.</p>
   ${p.mode==='desktop'&&/numbers|excel|libreoffice|calc/i.test(p.windowTitle||'')?`<div class="alert w"><b>« ${esc(p.windowTitle)} » est un tableur.</b> Le mode clavier y est peu fiable. Passez en <b>mode Fichier</b> : PharmAgent écrit directement dans le fichier, sans démo.<div class="row"><button onclick="setupMode='file';call('change_setup')">Passer en mode Fichier</button></div></div>`:''}
   ${lr?`<div class="alert ${lr.status==='done'?'g':'e'}"><b>${lr.test?'Test':'Dernier bon'} ${esc(lr.documentNumber)}</b> · ${esc(lr.at)}<br>${esc(lr.message)}</div>`:''}
-  <div class="row"><button ${busy?'disabled':''} onclick="call('test_run')">▶ Tester avec l'exemple</button><button class="sec" onclick="call('open_erp')">Afficher l'ERP</button><button class="sec" onclick="call('pause',{paused:${st!=='paused'}})">${st==='paused'?'Reprendre':'Mettre en pause'}</button>${p.mode==='file'?`<button class="sec" onclick="setupMode='file';call('change_setup')">Changer de fichier</button>`:`<button class="sec" onclick="edit=null;call('redo_demo')">Refaire la démo</button>`}<button class="sec" onclick="setupMode=null;call('change_setup')">Changer de mode</button></div>
-  <p class="muted" style="margin-top:14px">Démo du ${p.recordedAt?new Date(p.recordedAt).toLocaleString('fr-FR'):'—'} · ${p.headerSteps||0} étape(s) d'en-tête · ${p.lineSteps||0} par ligne</p></div>`;
+  <div class="row">${p.mode==='file'?'':`<button ${busy?'disabled':''} onclick="call('test_run')">▶ Tester avec l'exemple</button>`}<button class="sec" onclick="call('open_erp')">${p.mode==='file'?'Ouvrir le modèle':"Afficher l'ERP"}</button><button class="sec" onclick="call('pause',{paused:${st!=='paused'}})">${st==='paused'?'Reprendre':'Mettre en pause'}</button>${p.mode==='file'?`<button class="sec" onclick="setupMode='file';call('change_setup')">Changer de fichier</button>`:`<button class="sec" onclick="edit=null;call('redo_demo')">Refaire la démo</button>`}<button class="sec" onclick="setupMode=null;call('change_setup')">Changer de mode</button></div>
+  <p class="muted" style="margin-top:14px">${p.mode==='file'?`Modèle : ${esc(p.filePath||'')} · choisissez de préférence un modèle <b>vide</b> (sinon les lignes s'ajoutent après celles déjà présentes).`:`Démo du ${p.recordedAt?new Date(p.recordedAt).toLocaleString('fr-FR'):'—'} · ${p.headerSteps||0} étape(s) d'en-tête · ${p.lineSteps||0} par ligne`}</p></div>`;
   h+=`<div class="card"><h2>Cet ordinateur</h2><p>Relié à <b>${esc(S.pharmacyName)}</b> · serveur ${esc(S.server)}</p><div class="row"><button class="sec red" onclick="if(confirm('Délier cet ordinateur de l\\'officine ?'))call('unpair')">Délier l'ordinateur</button></div></div>`}
  if(a.dataset.h!==h){a.innerHTML=h;a.dataset.h=h}}
 let supportCode='';
