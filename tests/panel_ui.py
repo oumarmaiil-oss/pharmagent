@@ -16,7 +16,7 @@ check = Checker()
 A.SYSTEM = "Darwin"
 A.mac_accessibility_ok = lambda: False
 A.mac_input_monitoring_ok = lambda: False
-A.list_windows = lambda: ["Google Chrome", "Numbers"]
+A.list_windows = lambda: ["Google Chrome", "Numbers", "LogiPharm"]
 asked = []
 A.mac_request_permissions = lambda: asked.append(1)
 
@@ -57,22 +57,31 @@ with sync_playwright() as pw:
     options = page.eval_on_selector_all("#win option", "o => o.map(x => x.textContent)")
     check("liste : choix obligatoire, sans Finder", options[0].startswith("— Choisissez") and "Numbers" in options and "Finder" not in options, options)
     page.select_option("#win", "Numbers")
+    page.click("text=Continuer")
+    for _ in range(25):
+        if any("est un tableur" in e for e in errors):
+            break
+        page.wait_for_timeout(200)
+    page.wait_for_timeout(500)
+    check("tableur choisi en mode clavier : redirigé vers le mode Fichier", any("est un tableur" in e for e in errors), errors)
+    errors[:] = [e for e in errors if "est un tableur" not in e]
+    page.select_option("#win", "LogiPharm")
     time.sleep(2.5)
-    check("choix conservé malgré l'actualisation du panneau", page.input_value("#win") == "Numbers")
+    check("choix conservé malgré l'actualisation du panneau", page.input_value("#win") == "LogiPharm")
     page.click("text=Continuer")
     page.wait_for_selector("text=Démonstration (une seule fois)", timeout=5000)
-    check("Continuer => démonstration, fenêtre surveillée affichée", "Fenêtre surveillée : Numbers" in page.inner_text("#app"))
+    check("Continuer => démonstration, fenêtre surveillée affichée", "Fenêtre surveillée : LogiPharm" in page.inner_text("#app"))
     page.click("text=Autoriser sur ce Mac")
     time.sleep(1)
     check("bouton d'autorisation transmis à l'agent", asked == [1])
 
     e.recording = {"phase": "header", "mode": "desktop", "events": [], "started": time.time()}
-    e.key_recorder = A.KeyRecorder("Numbers")
+    e.key_recorder = A.KeyRecorder("LogiPharm")
     e.key_recorder.fg_ok, e.key_recorder.fg_title = False, "Safari"
     page.wait_for_selector("text=vos touches sont ignorées", timeout=5000)
     check("alerte : mauvaise fenêtre au premier plan", True)
-    e.key_recorder.fg_ok, e.key_recorder.fg_title, e.key_recorder.buf = True, "Numbers", "UBIPHARM"
-    page.wait_for_selector("text=Fenêtre active : Numbers", timeout=5000)
+    e.key_recorder.fg_ok, e.key_recorder.fg_title, e.key_recorder.buf = True, "LogiPharm", "UBIPHARM"
+    page.wait_for_selector("text=Fenêtre active : LogiPharm", timeout=5000)
     check("compteur et saisie visibles pendant la démo", "Actions vues : 1" in page.inner_text("#app") and "UBIPHARM" in page.inner_text("#app"))
     check("aucune erreur JavaScript", not errors, errors)
     browser.close()
