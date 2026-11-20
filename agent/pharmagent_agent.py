@@ -881,14 +881,14 @@ pre{background:#0e1527;border:1px solid var(--line);border-radius:10px;padding:1
 .bar i{display:block;height:100%;background:var(--ok)}
 </style></head><body><div class="wrap" id="app">Chargement…</div>
 <script>
-let S={},busy=false;
+let S={},busy=false,urlDraft=null;
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 async function call(name,payload){
   busy=true;render();
   try{
     const r=await fetch('/api/'+name,{method:'POST',headers:{'Content-Type':'application/json','X-PharmAgent':'1'},body:JSON.stringify(payload||{})});
     const j=await r.json();
-    if(j.error) alert(j.error);
+    if(j.error) alert(j.error); else if(name==='set_url') urlDraft=null;
   }catch(e){alert(String(e));}
   busy=false;await tick();
 }
@@ -899,6 +899,9 @@ async function tick(){
 function render(){
   const a=document.getElementById('app');
   if(!S.version){a.textContent='Chargement…';return;}
+  // Ne jamais redessiner pendant que l'utilisateur écrit : sinon le champ se vide sous ses doigts.
+  const act=document.activeElement;
+  if(act&&act.tagName==='INPUT'&&a.contains(act))return;
   const st=S.status;
   let h=`<div class="head"><div><h1>Agent Floki</h1><div class="sub">${esc(S.pharmacyName||'non appairé')} · v${esc(S.version)} · ${esc(S.os)}</div></div>
   <span class="pill ${S.serverOk?'ok':'bad'}">${S.serverOk?'Serveur OK':'Serveur injoignable'}</span></div>`;
@@ -908,7 +911,7 @@ function render(){
     <div class="code">${esc(S.pairingCode||'……')}</div></div>`;
   }else{
     h+=`<div class="card"><label>Adresse de l'écran de réception de l'ERP</label>
-    <input id="url" value="${esc(S.erpUrl||'')}" placeholder="https://erp.mapharmacie.sn">
+    <input id="url" oninput="urlDraft=this.value" value="${esc(urlDraft!==null?urlDraft:(S.erpUrl||''))}" placeholder="https://erp.mapharmacie.sn">
     <div class="row"><button ${busy?'disabled':''} onclick="call('set_url',{erpUrl:document.getElementById('url').value})">Enregistrer</button>
     <button class="sec" ${busy?'disabled':''} onclick="call('open_erp')">Ouvrir l'ERP</button>
     <button class="sec" ${busy?'disabled':''} onclick="call('pause')">${S.status==='paused'?'Reprendre':'Mettre en pause'}</button></div></div>`;
