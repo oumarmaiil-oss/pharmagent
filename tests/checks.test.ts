@@ -44,6 +44,11 @@ test('produit périmé, péremption courte, quantité et prix manquants, lecture
   assert.match(texts, /warn:Total du bon non lu/);
 });
 
+test('nouveau produit signalé (non saisi par l\'agent)', () => {
+  const c = draftChecks(draft([line({ match: { status: 'new_product', method: 'manual', score: 1, erpLabel: 'X', candidates: [] } })], 1000), TODAY);
+  assert.ok(c.some((x) => x.level === 'warn' && x.text.includes('nouveau produit')));
+});
+
 test('bon déjà importé', () => {
   const c = draftChecks(draft([line({})], 1000, { duplicateOf: { id: 'd0', createdAt: '2026-11-18T10:00:00Z', status: 'approved' } }), TODAY);
   assert.ok(c.some((x) => x.level === 'error' && x.text.includes('déjà importé')));

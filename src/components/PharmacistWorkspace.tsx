@@ -361,7 +361,7 @@ function DraftPanel(props: DraftProps) {
     <section className="bg-slate-900 border border-slate-700 rounded-2xl p-5 animate-in">
       <div className="flex items-center justify-between gap-2 mb-3">
         <div className="min-w-0">
-          <div className="text-sm font-semibold text-white truncate">{draft.extractedData.documentNumber || 'Nouveau document'} · {draft.extractedData.supplierOrOrg}</div>
+          <div className="text-sm font-semibold text-white break-words">{draft.extractedData.documentNumber || 'Nouveau document'} · {draft.extractedData.supplierOrOrg}</div>
           <div className="text-xs text-slate-500">{draft.extractedData.documentDate} · {draft.extractedData.totalAmountFCFA?.toLocaleString('fr-FR')} FCFA</div>
           <div className="text-[11px] text-slate-500">Lancé par {draft.actorName}{draft.approvedBy ? ` · approuvé par ${draft.approvedBy}` : ''}</div>
         </div>

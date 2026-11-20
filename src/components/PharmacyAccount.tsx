@@ -1,5 +1,5 @@
-import { KeyRound, Loader2, Users } from 'lucide-react';
-import { useState } from 'react';
+import { KeyRound, Loader2, Package, Upload, Users } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import type { PharmacySession } from '../App.tsx';
 
 interface Props {
@@ -17,6 +17,43 @@ export default function PharmacyAccount({ token, session, onTeamAccountCreated }
   const [busy, setBusy] = useState(false);
   const [teamPw, setTeamPw] = useState('');
   const [teamErr, setTeamErr] = useState('');
+  const [catalogTotal, setCatalogTotal] = useState<number | null>(null);
+  const [catalogMsg, setCatalogMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [catalogBusy, setCatalogBusy] = useState(false);
+  const catalogInput = useRef<HTMLInputElement>(null);
+  const phId = session.pharmacy.id;
+
+  useEffect(() => {
+    if (!isPharmacist) return;
+    fetch(`/api/pharmacies/${phId}/catalog`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => r.json())
+      .then((d: { total?: number }) => setCatalogTotal(d.total ?? 0))
+      .catch(() => setCatalogTotal(null));
+  }, [isPharmacist, phId, token]);
+
+  const importCatalog = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setCatalogBusy(true); setCatalogMsg(null);
+    try {
+      const fileBase64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+      const r = await post(`/api/pharmacies/${phId}/catalog/import`, { fileBase64 });
+      const d = await r.json() as { added?: number; updated?: number; total?: number; error?: string };
+      if (!r.ok) { setCatalogMsg({ ok: false, text: d.error ?? 'Import impossible.' }); return; }
+      setCatalogTotal(d.total ?? null);
+      setCatalogMsg({ ok: true, text: `${d.added} produit(s) ajouté(s), ${d.updated} mis à jour.` });
+    } catch {
+      setCatalogMsg({ ok: false, text: 'Fichier illisible.' });
+    } finally {
+      setCatalogBusy(false);
+    }
+  };
 
   const post = (url: string, body: object) => fetch(url, {
     method: 'POST',
@@ -83,6 +120,23 @@ export default function PharmacyAccount({ token, session, onTeamAccountCreated }
           </button>
         </form>
       </section>
+
+      {isPharmacist && (
+        <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+          <h2 className="text-sm font-semibold text-white flex items-center gap-2"><Package size={15} className="text-emerald-400" /> Catalogue produits</h2>
+          <p className="text-xs text-slate-400">
+            Exportez la liste des produits de votre logiciel (Excel ou CSV) et importez-la ici : les produits des bons seront reconnus automatiquement.
+            Colonnes reconnues : désignation, code CIP, prix d'achat, prix de vente, stock.
+          </p>
+          <div className="text-sm text-slate-200">{catalogTotal === null ? '…' : `${catalogTotal.toLocaleString('fr-FR')} produit(s) dans le catalogue`}</div>
+          {catalogTotal === 0 && <p className="text-xs text-amber-300">Catalogue vide : chaque produit des bons devra être choisi à la main.</p>}
+          <button onClick={() => catalogInput.current?.click()} disabled={catalogBusy} className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-sm font-medium px-4 py-2 rounded-lg disabled:opacity-50">
+            {catalogBusy ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} Importer le catalogue
+          </button>
+          <input ref={catalogInput} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={importCatalog} />
+          {catalogMsg && <p className={`text-xs ${catalogMsg.ok ? 'text-emerald-300' : 'text-red-300'}`}>{catalogMsg.text}</p>}
+        </section>
+      )}
 
       {isPharmacist && (
         <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">

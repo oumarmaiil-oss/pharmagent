@@ -655,7 +655,7 @@ app.get('/api/pharmacies/:id/catalog', (req, res) => {
 });
 
 app.post('/api/pharmacies/:id/catalog/import', (req, res) => {
-  const actor = requirePharmacyOrOwner(req, res, req.params.id);
+  const actor = requirePharmacist(req, res, req.params.id);
   if (!actor) return;
   const { fileBase64 } = req.body as { fileBase64?: string };
   if (!fileBase64) { res.status(400).json({ error: 'Fichier requis (Excel ou CSV).' }); return; }

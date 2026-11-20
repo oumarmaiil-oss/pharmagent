@@ -60,6 +60,9 @@ export function draftChecks(draft: DraftRecord, today = new Date()): DraftCheck[
     const exp = expiryEnd(l.expiryDate);
     if (exp && exp < today) out.push({ level: 'error', text: `${name} : produit périmé (${l.expiryDate}).` });
     else if (exp && exp < limit) out.push({ level: 'warn', text: `${name} : péremption courte (${l.expiryDate}), moins de ${SHORT_EXPIRY_MONTHS} mois.` });
+    if (l.match?.status === 'new_product') {
+      out.push({ level: 'warn', text: `${name} : nouveau produit, l'agent ne le saisira pas. Créez-le d'abord dans votre logiciel, puis saisissez cette ligne à la main.` });
+    }
     if (typeof l.confidence === 'number' && l.confidence < LOW_CONFIDENCE) {
       out.push({ level: 'warn', text: `${name} : lecture incertaine, comparez avec la photo.` });
     }
