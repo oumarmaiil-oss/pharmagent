@@ -105,7 +105,7 @@ export default function PharmacyAccount({ token, session, onTeamAccountCreated }
       <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
         <div className="text-xs text-slate-400">Code de connexion de la pharmacie</div>
         <div className="mono text-2xl font-bold text-emerald-300 tracking-widest mt-1">{session.pharmacy.code}</div>
-        <p className="text-xs text-slate-500 mt-2">Avec ce code, chacun se connecte avec son profil (Pharmacien ou Équipe) et son mot de passe.</p>
+        <p className="text-xs text-slate-500 mt-2">C'est l'identifiant de connexion de la pharmacie. Le Pharmacien et l'Équipe tapent ce même identifiant, chacun avec son mot de passe.</p>
       </section>
 
       <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
@@ -149,7 +149,7 @@ export default function PharmacyAccount({ token, session, onTeamAccountCreated }
           {teamPw && (
             <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">
               Mot de passe du compte Équipe : <span className="mono font-bold tracking-wider">{teamPw}</span>
-              <div className="text-xs text-emerald-300/80 mt-1">Notez-le maintenant : il ne sera plus affiché. Connexion : code {session.pharmacy.code}, profil Équipe.</div>
+              <div className="text-xs text-emerald-300/80 mt-1">Notez-le maintenant : il ne sera plus affiché. Connexion de l'Équipe : identifiant {session.pharmacy.code} et ce mot de passe.</div>
             </div>
           )}
           {teamErr && <p className="text-xs text-red-300">{teamErr}</p>}

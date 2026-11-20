@@ -74,13 +74,25 @@ export default function PharmacyManagement({ token, snapshot, onRefresh }: Props
       <BackupCard token={token} />
 
       {credentials && (
-        <section className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-4 space-y-1.5">
-          <div className="text-sm font-semibold text-emerald-200">Accès de {credentials.name} — à transmettre au pharmacien</div>
-          <div className="text-sm text-emerald-100">Code pharmacie : <span className="mono font-bold tracking-widest">{credentials.code}</span></div>
-          <div className="text-sm text-emerald-100">Profil : Pharmacien · Mot de passe : <span className="mono font-bold tracking-wider">{credentials.password}</span></div>
-          <p className="text-xs text-emerald-300/80">Notez-les maintenant : le mot de passe ne sera plus affiché. Le pharmacien peut le changer dans « Mon compte » et y créer un compte Équipe.</p>
-          <button onClick={() => setCredentials(null)} className="text-xs text-emerald-300 underline">J'ai noté</button>
-        </section>
+        // Fenêtre au centre de l'écran : impossible de manquer le mot de passe, où que l'on ait cliqué
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+          <div className="w-full max-w-md rounded-2xl border border-emerald-500/40 bg-slate-900 p-5 space-y-3 shadow-2xl">
+            <div className="text-base font-semibold text-white">Connexion de {credentials.name}</div>
+            <p className="text-xs text-slate-400">Sur l'écran de connexion, tapez simplement ces deux informations (majuscules ou minuscules).</p>
+            <div className="rounded-xl bg-slate-950 border border-slate-700 p-3 space-y-2 text-sm">
+              <div className="flex justify-between gap-3"><span className="text-slate-400">Identifiant</span><span className="font-mono font-bold tracking-widest text-emerald-300" data-testid="cred-code">{credentials.code}</span></div>
+              <div className="flex justify-between gap-3"><span className="text-slate-400">Mot de passe</span><span className="font-mono font-bold tracking-wider text-emerald-300" data-testid="cred-password">{credentials.password}</span></div>
+            </div>
+            <p className="text-xs text-amber-300">Notez-le maintenant : il ne sera plus affiché. Le pharmacien peut le changer ensuite dans « Mon compte ».</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => { void navigator.clipboard?.writeText(`Identifiant : ${credentials.code}\nMot de passe : ${credentials.password}`); }}
+                className="flex-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-sm py-2 rounded-lg"
+              >Copier</button>
+              <button onClick={() => setCredentials(null)} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold py-2 rounded-lg">J'ai noté</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* En-tête */}
@@ -173,7 +185,7 @@ export default function PharmacyManagement({ token, snapshot, onRefresh }: Props
                 {isOpen && (
                   <div className="border-t border-slate-800 p-5 space-y-4">
                     <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
-                      <div><span className="text-slate-500">Code de connexion :</span> <span className="font-mono font-bold tracking-widest text-emerald-300">{ph.code}</span></div>
+                      <div><span className="text-slate-500">Identifiant de connexion :</span> <span className="font-mono font-bold tracking-widest text-emerald-300">{ph.code}</span></div>
                       <div><span className="text-slate-500">Région :</span> <span className="text-slate-300">{ph.region}</span></div>
                       <div><span className="text-slate-500">Créé le :</span> <span className="text-slate-300">{new Date(ph.createdAt).toLocaleDateString('fr-FR')}</span></div>
                       <div><span className="text-slate-500">Agent :</span> <span className={ph.agent && Date.now() - Date.parse(ph.agent.lastSeen) < 70000 ? 'text-emerald-300' : 'text-slate-400'}>{ph.agent ? (Date.now() - Date.parse(ph.agent.lastSeen) < 70000 ? `en ligne (${ph.agent.hostname ?? 'PC'})` : 'hors ligne') : 'non installé'}</span></div>
@@ -196,7 +208,7 @@ export default function PharmacyManagement({ token, snapshot, onRefresh }: Props
                         Réinitialiser le mot de passe Pharmacien
                       </button>
                       <p className="text-xs text-slate-500">
-                        Connexion de la pharmacie : code <b className="text-slate-300">{ph.code}</b>, profil Pharmacien. Installation de l'ordinateur : onglet <b className="text-slate-300">Agent local</b>.
+                        Connexion : identifiant <b className="text-slate-300">{ph.code}</b> + mot de passe Pharmacien (ou Équipe). Installation de l'ordinateur : onglet <b className="text-slate-300">Agent local</b>.
                       </p>
                     </div>
                   </div>

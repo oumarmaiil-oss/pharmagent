@@ -54,19 +54,30 @@ try:
             p.on("dialog", lambda d: d.accept())
             return p
 
-        def login_pharmacy(page, profile, password):
+        def login(page, identifiant, password):
             page.goto(B)
-            page.click("button:has-text('Pharmacie')")
-            page.fill("input[placeholder='K7M2QX']", cred["code"].lower())
-            page.click(f"button:has-text('{profile}')")
+            page.fill("input[autocomplete='username']", identifiant)
             page.fill("input[type='password']", password)
             page.click("button[type='submit']")
+
+        def login_pharmacy(page, _profile, password):
+            login(page, cred["code"].lower(), password)
+
+        def wait_text(page, text, timeout=15):
+            end = time.time() + timeout
+            while time.time() < end:
+                if text in page.inner_text("body"):
+                    return True
+                time.sleep(0.2)
+            return False
 
         # Écran de connexion sur téléphone
         m = new_page(390, 844)
         m.goto(B)
-        m.wait_for_selector("text=Code pharmacie")
-        check("connexion : mode Pharmacie par défaut", "Code pharmacie" in m.inner_text("body"))
+        m.wait_for_selector("input[autocomplete='username']")
+        check("connexion : un seul formulaire Identifiant + Mot de passe, sans onglets", m.locator("input[autocomplete='username']").count() == 1 and "Superviseur" not in m.inner_text("form"))
+        m.fill("input[autocomplete='username']", "abcXYZ")
+        check("l'identifiant garde ce qui est tapé (pas de majuscules forcées)", m.input_value("input[autocomplete='username']") == "abcXYZ")
         if SHOTS:
             m.screenshot(path=f"{SHOTS}/login_mobile.png")
         m.close()
@@ -104,11 +115,7 @@ try:
 
         # Superviseur
         o = new_page()
-        o.goto(B)
-        o.click("button:has-text('Superviseur')")
-        o.fill("input[placeholder='dr.oumar']", "dr.oumar")
-        o.fill("input[type='password']", "ownerpw")
-        o.click("button[type='submit']")
+        login(o, "Dr.Oumar", "ownerpw")
         o.wait_for_selector("aside >> text=Tableau de bord")
         check("Superviseur : tous les onglets", "Mes Officines" in nav(o) and "Mon compte" not in nav(o), nav(o))
         o.click("aside >> text=Mes Officines")
@@ -117,9 +124,21 @@ try:
         o.fill("input[placeholder='Dr. Nom Prénom']", "Dr Sow")
         o.fill("input[placeholder='Dakar'] >> nth=0", "Dakar")
         o.click("button:has-text('Créer')")
-        o.wait_for_selector("text=à transmettre au pharmacien")
-        check("création : code et mot de passe affichés au superviseur", "Code pharmacie" in o.inner_text("main"))
+        o.wait_for_selector("text=Connexion de Pharmacie Créée UI")
+        check("création : code et mot de passe affichés dans une fenêtre", o.is_visible("[data-testid=cred-password]"))
+        o.click("button:has-text(\"J'ai noté\")")
+        # Réinitialisation depuis la fiche (en bas de page) : la fenêtre doit apparaître quand même, au centre
+        o.click("text=Pharmacie Créée UI")
+        o.click("button:has-text('Réinitialiser le mot de passe Pharmacien')")
+        o.wait_for_selector("[data-testid=cred-password]")
+        box = o.locator("[data-testid=cred-password]").bounding_box()
+        check("réinitialisation : mot de passe visible à l'écran sans défiler", box is not None and 0 <= box["y"] <= 900, box)
+        code, pw = o.inner_text("[data-testid=cred-code]").strip(), o.inner_text("[data-testid=cred-password]").strip()
         o.close()
+        q = new_page(390, 844)
+        login(q, code.lower(), pw.lower())
+        check("connexion avec l'identifiant et le mot de passe affichés (tapés en minuscules, sur téléphone)", wait_text(q, "Pharmacie Créée UI"))
+        q.close()
 
         check("aucune erreur JavaScript", not errors, errors)
         browser.close()

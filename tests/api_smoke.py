@@ -122,7 +122,8 @@ try:
     check("officine supprimée : catalogue refusé", call("POST", f"/api/pharmacies/{pb}/catalog/import", {"fileBase64": "AA=="}, owner)[1] == 404)
     pb, cred_c = mk("ZZ C")
     user_c = login(cred_c, "pharmacien", cred_c["password"])[0]["token"]
-    team_b = login(cred_c, "equipe", call("POST", "/api/pharmacy/team-account", {}, user_c)[0]["password"])[0]["token"]
+    team_pw_c = call("POST", "/api/pharmacy/team-account", {}, user_c)[0]["password"]
+    team_b = login(cred_c, "equipe", team_pw_c)[0]["token"]
     b64 = lambda txt: base64.b64encode(txt.encode("utf-8")).decode()
     catalog_csv = "Désignation;Code CIP;Prix achat;Stock\nDOLIPRANE 1000MG CP B/8;3400930000001;1.000;10\nAMOXICILLINE 500MG GELULE B/12;;2.100;0\n"
     body, status, _ = call("POST", f"/api/pharmacies/{pb}/catalog/import", {"fileBase64": "data:text/csv;base64," + b64(catalog_csv)}, owner)
@@ -169,6 +170,17 @@ try:
     body, status, _ = call("POST", "/api/tools/fill-any", {"pharmacyId": pb, "documentBase64": "data:text/csv;base64," + b64("a;b\n1;2"), "templateBase64": "data:text/csv;base64," + b64("x\n")}, owner)
     check("tableau sans intitulés : message clair", status == 400 and "Aucun tableau" in body.get("error", ""), body)
     check("remplissage universel refusé sans compte", call("POST", "/api/tools/fill-any", {"pharmacyId": pb})[1] == 401)
+
+    # Connexion unique : identifiant (code ou superviseur, sans casse) + mot de passe ; le mot de passe désigne le compte
+    uni = lambda ident, pw: call("POST", "/api/auth/login", {"identifiant": ident, "password": pw})
+    check("connexion unique : superviseur (identifiant sans casse)", uni("DR.OUMAR", "ownerpw")[0].get("kind") == "owner")
+    body, status, _ = uni(cred_c["code"].lower(), cred_c["password"])
+    check("connexion unique : pharmacie, mot de passe Pharmacien → compte Pharmacien", status == 200 and body["user"]["profile"] == "pharmacien", body)
+    body, status, _ = uni(cred_c["code"], team_pw_c)
+    check("connexion unique : mot de passe Équipe → compte Équipe", status == 200 and body["user"]["profile"] == "equipe", body)
+    check("connexion unique : mauvais mot de passe refusé", uni(cred_c["code"], "faux-faux")[1] == 401)
+    body, status, _ = call("POST", "/api/pharmacy/auth/change-password", {"current": cred_c["password"], "next": team_pw_c}, user_c)
+    check("Pharmacien et Équipe ne peuvent pas avoir le même mot de passe", status == 400 and "différent" in body.get("error", ""), body)
 
     # Sécurité : sessions, jeton dans l'adresse, ancienne route, en-têtes du navigateur
     tok1 = login(cred_c, "pharmacien", cred_c["password"])[0]["token"]

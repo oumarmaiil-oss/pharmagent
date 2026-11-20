@@ -323,7 +323,7 @@ class PharmAgentStore {
 
   loginOwner(loginId: string, password: string): string | null {
     const o = this.db.owner;
-    if (o.loginId !== loginId) return null;
+    if (o.loginId.trim().toLowerCase() !== loginId.trim().toLowerCase()) return null;   // identifiant sans casse
     if (!this.passOk(o, password)) return null;
     return makeToken({ kind: 'owner', sub: o.id, pv: passwordStamp(o.passwordHash) }, this.db.authSecret);
   }
@@ -426,7 +426,12 @@ class PharmAgentStore {
     return { token: makeToken({ kind: 'pharmacy_user', sub: user.id, pharmacyId: pharmacy.id, pv: passwordStamp(user.passwordHash) }, this.db.authSecret), user, pharmacy };
   }
 
-  verifyUserPassword(userId: string, password: string): boolean {
+  passwordUsedByOther(user: PharmacyUser, password: string): boolean {
+    return this.db.users.some((x) => x.pharmacyId === user.pharmacyId && x.id !== user.id
+      && [password, password.trim().toUpperCase()].some((pw) => checkPassword(pw, x.passwordHash)));
+  }
+
+    verifyUserPassword(userId: string, password: string): boolean {
     const u = this.db.users.find((x) => x.id === userId);
     return !!u && this.passOk(u, password);
   }
@@ -439,8 +444,15 @@ class PharmAgentStore {
   }
 
   resetPharmacistPassword(pharmacyId: string): string | null {
-    const u = this.db.users.find((x) => x.pharmacyId === pharmacyId && x.role === 'titulaire');
-    if (!u) return null;
+    const ph = this.db.pharmacies.find((p) => p.id === pharmacyId);
+    if (!ph) return null;
+    let u = this.db.users.find((x) => x.pharmacyId === pharmacyId && x.role === 'titulaire');
+    if (!u) {
+      // Pharmacie créée par une ancienne version sans compte Pharmacien : on le crée
+      u = { id: `usr-${nanoid(8)}`, pharmacyId, loginId: 'pharmacien', fullName: ph.pharmacist || ph.name, role: 'titulaire', passwordHash: '', createdAt: now() };
+      this.db.users.push(u);
+    }
+    if (!ph.code) this.ensureCodes();
     const password = readable(8);
     u.passwordHash = hashPassword(password);
     this.persist();

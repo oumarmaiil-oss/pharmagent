@@ -487,6 +487,28 @@ app.post('/api/pharmacy/auth/login', (req, res) => {
   res.json({ token: r.token, user: publicUser(r.user), pharmacy: publicPharmacy(r.pharmacy), teamAccount: store.hasTeamAccount(r.pharmacy.id) });
 });
 
+// Connexion unique (standard) : identifiant + mot de passe.
+// Identifiant = celui du superviseur, ou le code de la pharmacie. Le mot de passe désigne le compte (Pharmacien ou Équipe).
+app.post('/api/auth/login', (req, res) => {
+  if (rateLimited(req, res, 'login')) return;
+  const { identifiant, password } = req.body as { identifiant?: string; password?: string };
+  if (!identifiant?.trim() || !password) { res.status(400).json({ error: 'Identifiant et mot de passe requis.' }); return; }
+  const ownerToken = store.loginOwner(identifiant, password);
+  if (ownerToken) {
+    clearFailures(req, 'login');
+    res.json({ kind: 'owner', token: ownerToken, owner: store.getOwner() });
+    return;
+  }
+  const r = store.loginPharmacyProfile(identifiant, 'pharmacien', password) ?? store.loginPharmacyProfile(identifiant, 'equipe', password);
+  if (!r) {
+    recordFailure(req, 'login');
+    res.status(401).json({ error: 'Identifiant ou mot de passe incorrect.' });
+    return;
+  }
+  clearFailures(req, 'login');
+  res.json({ kind: 'pharmacy', token: r.token, user: publicUser(r.user), pharmacy: publicPharmacy(r.pharmacy), teamAccount: store.hasTeamAccount(r.pharmacy.id) });
+});
+
 app.get('/api/pharmacy/auth/me', (req, res) => {
   const u = getPharmacySession(req);
   const ph = u ? store.getPharmacy(u.pharmacyId) : undefined;
@@ -507,6 +529,8 @@ app.post('/api/pharmacy/auth/change-password', (req, res) => {
   const { current, next } = req.body as { current?: string; next?: string };
   if (!next || next.length < 6) { res.status(400).json({ error: 'Nouveau mot de passe : 6 caractères minimum.' }); return; }
   if (!current || !store.verifyUserPassword(u.id, current)) { res.status(401).json({ error: 'Mot de passe actuel incorrect.' }); return; }
+  // Le mot de passe désigne le compte à la connexion : Pharmacien et Équipe ne peuvent pas avoir le même
+  if (store.passwordUsedByOther(u, next)) { res.status(400).json({ error: "Choisissez un mot de passe différent de celui de l'autre compte de la pharmacie." }); return; }
   store.setUserPassword(u.id, next);
   res.json({ ok: true });
 });
