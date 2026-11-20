@@ -1,0 +1,504 @@
+<title>PharmERP — Réception BL</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap">
+<style>
+/* Layout: header narrow / table full-width */
+:root {
+  --bg: #f7f8fc;
+  --surface: #ffffff;
+  --border: #d6dae6;
+  --muted: #8892a4;
+  --fg: #1a2033;
+  --accent: #2563eb;
+  --accent-dim: #dbeafe;
+  --danger: #dc2626;
+  --success: #16a34a;
+  --success-bg: #f0fdf4;
+  --radius: 8px;
+  --shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1117; --surface: #1a1f2e; --border: #2d3348;
+    --muted: #5c667a; --fg: #e8eaf0; --accent: #3b82f6; --accent-dim: #1e3a5f;
+    --success-bg: #052e16; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1117; --surface: #1a1f2e; --border: #2d3348;
+  --muted: #5c667a; --fg: #e8eaf0; --accent: #3b82f6; --accent-dim: #1e3a5f;
+  --success-bg: #052e16; color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 14px;
+  color: var(--fg);
+  background: var(--bg);
+  min-height: 100vh;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 32px;
+}
+
+/* Top bar */
+.topbar {
+  background: var(--accent);
+  color: #fff;
+  padding: 0 max(24px, env(safe-area-inset-left, 0px));
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: max(-16px, calc(-1 * env(safe-area-inset-left, 0px)));
+  margin-right: max(-16px, calc(-1 * env(safe-area-inset-right, 0px)));
+  margin-bottom: 24px;
+}
+.topbar-logo { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 18px; letter-spacing: -.3px; }
+.topbar-sep { opacity: .4; font-size: 20px; font-weight: 300; }
+.topbar-page { font-size: 13px; opacity: .85; }
+.topbar-badge {
+  margin-left: auto;
+  background: rgba(255,255,255,.18);
+  border: 1px solid rgba(255,255,255,.25);
+  border-radius: 20px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .3px;
+  text-transform: uppercase;
+}
+
+/* Container */
+.container { max-width: 960px; margin: 0 auto; }
+
+/* Card */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 20px 24px;
+  margin-bottom: 16px;
+}
+.card-title {
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: .5px;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 16px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Header fields grid */
+.header-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 600px) {
+  .header-grid { grid-template-columns: 1fr; }
+}
+
+.field { display: flex; flex-direction: column; gap: 5px; }
+.field label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: .3px;
+}
+.field input {
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 14px;
+  transition: border-color .15s;
+  min-width: 0;
+}
+.field input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+
+/* Table */
+.table-wrap { overflow-x: auto; }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 600px;
+  font-variant-numeric: tabular-nums;
+}
+thead th {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .4px;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 2px solid var(--border);
+  white-space: nowrap;
+}
+tbody tr { border-bottom: 1px solid var(--border); }
+tbody tr:last-child { border-bottom: none; }
+tbody td { padding: 6px 4px; vertical-align: middle; }
+tbody td input {
+  width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  min-width: 0;
+}
+tbody td input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-dim);
+}
+td.del-col { width: 36px; text-align: center; }
+.del-btn {
+  background: none; border: none; cursor: pointer;
+  color: var(--muted); font-size: 16px; line-height: 1;
+  padding: 4px; border-radius: 4px;
+  transition: color .15s;
+}
+.del-btn:hover { color: var(--danger); }
+
+/* Row index */
+td.idx { width: 32px; text-align: center; color: var(--muted); font-size: 12px; padding-left: 8px; }
+
+/* Actions row */
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 20px;
+  flex-wrap: wrap;
+}
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 38px; padding: 0 18px;
+  border-radius: 7px;
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 600; font-size: 13px;
+  cursor: pointer; border: none; transition: opacity .15s, box-shadow .15s;
+}
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-secondary {
+  background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+}
+.btn-secondary:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.btn-primary {
+  background: var(--accent); color: #fff;
+  box-shadow: 0 1px 4px rgba(37,99,235,.3);
+}
+.btn-primary:hover:not(:disabled) { opacity: .9; box-shadow: 0 2px 8px rgba(37,99,235,.4); }
+.btn-validate {
+  background: var(--success); color: #fff;
+  box-shadow: 0 1px 4px rgba(22,163,74,.3);
+  margin-left: auto;
+}
+.btn-validate:hover:not(:disabled) { opacity: .9; }
+
+/* Guard banner */
+.guard-banner {
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 10px 16px;
+  font-size: 12px;
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.guard-icon { font-size: 16px; flex-shrink: 0; }
+
+/* Success overlay */
+.success-panel {
+  display: none;
+  background: var(--success-bg);
+  border: 1px solid var(--success);
+  border-radius: var(--radius);
+  padding: 20px 24px;
+  text-align: center;
+  margin-top: 16px;
+}
+.success-panel.visible { display: block; }
+.success-panel h3 {
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 700;
+  color: var(--success);
+  font-size: 18px;
+  margin-bottom: 8px;
+}
+.success-panel p { color: var(--fg); font-size: 13px; line-height: 1.6; }
+.success-summary {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Scroll past topbar */
+.topbar { position: sticky; top: 0; z-index: 10; }
+
+/* Saisie BCC */
+.bcc-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr 1fr auto;
+  gap: 12px;
+  align-items: end;
+}
+@media (max-width: 700px) {
+  .bcc-grid { grid-template-columns: 1fr 1fr; }
+}
+.field select {
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 14px;
+  transition: border-color .15s;
+  min-width: 0;
+  cursor: pointer;
+}
+.field select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+.bcc-hint {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 10px;
+  font-style: italic;
+}
+</style>
+
+<div class="topbar">
+  <span class="topbar-logo">PharmERP</span>
+  <span class="topbar-sep">/</span>
+  <span class="topbar-page">Réception de bon de livraison</span>
+  <span class="topbar-badge">Test Playwright</span>
+</div>
+
+<div class="container">
+  <div class="guard-banner">
+    <span class="guard-icon">🤖</span>
+    <span>Agent Floki remplit ce formulaire automatiquement — la validation finale reste au pharmacien.</span>
+  </div>
+
+  <div class="card">
+    <div class="card-title">En-tête du bon</div>
+    <div class="header-grid">
+      <div class="field">
+        <label for="fournisseur">Fournisseur</label>
+        <input id="fournisseur" name="fournisseur" type="text" placeholder="Nom du fournisseur" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="reference_bl">Référence BL</label>
+        <input id="reference_bl" name="reference_bl" type="text" placeholder="N° du bon de livraison" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="date_reception">Date réception</label>
+        <input id="date_reception" name="date_reception" type="text" placeholder="JJ/MM/AAAA" autocomplete="off">
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Saisie BCC — Catalogue produits</div>
+    <div class="bcc-grid">
+      <div class="field">
+        <label for="bcc_produit">Produit du catalogue</label>
+        <select id="bcc_produit" name="bcc_produit" onchange="bccSelect(this)">
+          <option value="">— Choisir un produit —</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="bcc_lot">N° de lot</label>
+        <input id="bcc_lot" name="bcc_lot" type="text" placeholder="LOT-XXXXX" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="bcc_quantite">Qté reçue</label>
+        <input id="bcc_quantite" name="bcc_quantite" type="number" min="0" placeholder="0" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="bcc_prix">Prix d'achat</label>
+        <input id="bcc_prix" name="bcc_prix" type="number" min="0" placeholder="0" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="bcc_peremption">Date péremption</label>
+        <input id="bcc_peremption" name="bcc_peremption" type="text" placeholder="MM/AAAA" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>&nbsp;</label>
+        <button class="btn btn-primary" type="button" id="bcc-add-btn" onclick="bccAjouter()">Ajouter</button>
+      </div>
+    </div>
+    <p class="bcc-hint">Sélectionner un produit pré-remplit les champs — modifiables avant d'ajouter.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Lignes produits</div>
+    <div class="table-wrap">
+      <table id="lines-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th style="min-width:220px">Désignation produit</th>
+            <th style="min-width:110px">N° de lot</th>
+            <th style="min-width:80px">Qté reçue</th>
+            <th style="min-width:110px">Prix d'achat</th>
+            <th style="min-width:110px">Date péremption</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="lines-body">
+        </tbody>
+      </table>
+    </div>
+    <div class="actions">
+      <button class="btn btn-secondary" id="add-line" type="button">＋ Ajouter une ligne</button>
+      <button class="btn btn-validate" id="btn-valider" type="button" onclick="valider()">
+        ✓ Valider la réception
+      </button>
+    </div>
+  </div>
+
+  <div class="success-panel" id="success-panel">
+    <h3>✓ Réception validée</h3>
+    <p>Le bon de livraison a été enregistré dans le stock.</p>
+    <div class="success-summary" id="success-summary"></div>
+  </div>
+</div>
+
+<script>
+// Catalogue BCC (produits ERP de référence)
+const CATALOGUE = [
+  { cip: "3400935000011", designation: "COTRIMOXAZOLE 480MG CP B/20",         lot: "LOT-CTX-2611", quantite: 30,  prix: 650,  peremption: "08/2028" },
+  { cip: "3400935000028", designation: "METRONIDAZOLE 500MG SUPP B/10",        lot: "LOT-MTZ-2612", quantite: 20,  prix: 1200, peremption: "03/2028" },
+  { cip: "3400935000035", designation: "QUININE 500MG CP B/20",                lot: "LOT-QNI-2613", quantite: 25,  prix: 1800, peremption: "11/2027" },
+  { cip: "3400935000042", designation: "ARTESUNATE 100MG CP B/12",             lot: "LOT-ART-2614", quantite: 40,  prix: 3200, peremption: "06/2028" },
+  { cip: "3400935000059", designation: "PARACETAMOL 250MG SUPP B/10",          lot: "LOT-PAR-2615", quantite: 60,  prix: 420,  peremption: "01/2029" },
+  { cip: "3400935000066", designation: "AMOXICILLINE 250MG/5ML SUSP 100ML",   lot: "LOT-AMX-2616", quantite: 15,  prix: 2100, peremption: "09/2027" },
+  { cip: "3400935000073", designation: "ZINC SULFATE 20MG CP B/20",            lot: "LOT-ZNC-2617", quantite: 0,   prix: 580,  peremption: "04/2028" },
+  { cip: "3400935000080", designation: "ACIDE FOLIQUE 5MG CP B/30",            lot: "LOT-AFC-2618", quantite: 50,  prix: 390,  peremption: "07/2028" },
+  { cip: "3400935000097", designation: "VITAMINE A 200000UI CAPS",             lot: "LOT-VTA-2619", quantite: 80,  prix: 310,  peremption: "12/2028" },
+  { cip: "3400935000103", designation: "FER SULFATE 200MG CP B/30",            lot: "LOT-FER-2620", quantite: 45,  prix: 720,  peremption: "05/2028" },
+  { cip: "3400935000110", designation: "ALBENDAZOLE 400MG CP",                 lot: "LOT-ALB-2621", quantite: 35,  prix: 490,  peremption: "10/2027" },
+  { cip: "3400935000127", designation: "MEBENDAZOLE 100MG CP B/6",             lot: "LOT-MBZ-2622", quantite: 30,  prix: 560,  peremption: "02/2028" },
+  { cip: "3400935000134", designation: "DOXYCYCLINE 100MG GELULE B/10",        lot: "LOT-DOX-2623", quantite: 20,  prix: 1100, peremption: "08/2028" },
+  { cip: "3400935000141", designation: "ATENOLOL 50MG CP B/30",                lot: "LOT-ATL-2624", quantite: 15,  prix: 1350, peremption: "03/2027" },
+  { cip: "3400935000158", designation: "FUROSEMIDE 40MG CP B/30",              lot: "LOT-FUR-2625", quantite: 25,  prix: 870,  peremption: "11/2028" },
+];
+
+// Alimenter le select
+(function() {
+  const sel = document.getElementById('bcc_produit');
+  CATALOGUE.forEach((p, i) => {
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = p.designation;
+    sel.appendChild(opt);
+  });
+})();
+
+function bccSelect(sel) {
+  const idx = sel.value;
+  if (idx === '') return;
+  const p = CATALOGUE[+idx];
+  document.getElementById('bcc_lot').value = p.lot;
+  document.getElementById('bcc_quantite').value = p.quantite || '';
+  document.getElementById('bcc_prix').value = p.prix;
+  document.getElementById('bcc_peremption').value = p.peremption;
+}
+
+function bccAjouter() {
+  const sel = document.getElementById('bcc_produit');
+  const designation = sel.value !== '' ? CATALOGUE[+sel.value].designation : '';
+  addLine({
+    designation,
+    lot:       document.getElementById('bcc_lot').value,
+    quantite:  document.getElementById('bcc_quantite').value,
+    prix:      document.getElementById('bcc_prix').value,
+    peremption: document.getElementById('bcc_peremption').value,
+  });
+  // Réinitialiser le formulaire BCC
+  sel.value = '';
+  ['bcc_lot','bcc_quantite','bcc_prix','bcc_peremption'].forEach(id => document.getElementById(id).value = '');
+  // Scroll vers la dernière ligne ajoutée
+  document.getElementById('lines-body').lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+let lineCount = 0;
+
+function addLine(data = {}) {
+  lineCount++;
+  const n = lineCount;
+  const tbody = document.getElementById('lines-body');
+  const tr = document.createElement('tr');
+  tr.dataset.line = n;
+  tr.innerHTML = `
+    <td class="idx">${n}</td>
+    <td><input id="designation_${n}" name="designation_${n}" type="text" placeholder="Désignation" value="${esc(data.designation||'')}"></td>
+    <td><input id="lot_${n}" name="lot_${n}" type="text" placeholder="LOT-XXXXX" value="${esc(data.lot||'')}"></td>
+    <td><input id="quantite_${n}" name="quantite_${n}" type="number" min="0" placeholder="0" value="${esc(data.quantite||'')}"></td>
+    <td><input id="prix_achat_${n}" name="prix_achat_${n}" type="number" min="0" placeholder="0" value="${esc(data.prix||'')}"></td>
+    <td><input id="peremption_${n}" name="peremption_${n}" type="text" placeholder="MM/AAAA" value="${esc(data.peremption||'')}"></td>
+    <td class="del-col"><button class="del-btn" type="button" onclick="delLine(this)" title="Supprimer">×</button></td>
+  `;
+  tbody.appendChild(tr);
+  return tr;
+}
+
+function delLine(btn) {
+  btn.closest('tr').remove();
+  document.querySelectorAll('#lines-body tr').forEach((tr, i) => {
+    tr.querySelector('.idx').textContent = i + 1;
+  });
+}
+
+function esc(v) {
+  return String(v).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+}
+
+function valider() {
+  const fournisseur = document.getElementById('fournisseur').value.trim();
+  const refBL = document.getElementById('reference_bl').value.trim();
+  const date = document.getElementById('date_reception').value.trim();
+  const rows = document.querySelectorAll('#lines-body tr');
+  let lignes = 0;
+  rows.forEach((tr, i) => {
+    const n = i + 1;
+    if (tr.querySelector(`[name="designation_${tr.dataset.line}"]`)?.value.trim()) lignes++;
+  });
+  const panel = document.getElementById('success-panel');
+  const summary = document.getElementById('success-summary');
+  panel.classList.add('visible');
+  summary.textContent = `Fournisseur : ${fournisseur || '—'} · Réf. BL : ${refBL || '—'} · Date : ${date || '—'} · ${lignes} ligne(s) enregistrée(s)`;
+  panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  document.getElementById('btn-valider').disabled = true;
+}
+
+// Table vide par défaut (on ajoute via BCC ou le bouton manuel)
+document.getElementById('add-line').addEventListener('click', () => { addLine(); });
+</script>
