@@ -61,6 +61,12 @@ function New-Link($Path, $Arguments) {
 New-Link (Join-Path ([Environment]::GetFolderPath('Desktop')) 'PharmAgent.lnk') "`"$Agent`" --server $Server"
 New-Link (Join-Path ([Environment]::GetFolderPath('Startup')) 'PharmAgent.lnk') "`"$Agent`" --background --server $Server"
 
+# Arrete une ancienne version encore lancee, pour que la nouvelle prenne sa place
+Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like '*pharmagent_agent.py*' } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+Start-Sleep -Seconds 1
+
 Start-Process -FilePath $Pyw -ArgumentList "`"$Agent`" --server $Server" -WorkingDirectory $AppDir
 
 Write-Host ''

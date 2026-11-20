@@ -67,6 +67,11 @@ echo "  Il affiche un code à 6 chiffres : saisissez-le dans PharmAgent › Agen
 
 if [ -z "${PHARMAGENT_INSTALL_NO_LAUNCH:-}" ]; then
   # Arrête une ancienne version encore lancée, pour que la nouvelle prenne sa place
+  if [ "$OS" = "Darwin" ]; then
+    # Ancien démarrage automatique (versions < 2.2) : retiré, l'agent recrée le bon au lancement
+    launchctl unload "$HOME/Library/LaunchAgents/com.pharmagent.agent.plist" >/dev/null 2>&1 || true
+    rm -f "$HOME/Library/LaunchAgents/com.pharmagent.agent.plist" "$APP_DIR/launcher.sha"
+  fi
   pkill -f "pharmagent_agent.py" >/dev/null 2>&1 || true
   sleep 1
   if [ "$OS" = "Darwin" ]; then
