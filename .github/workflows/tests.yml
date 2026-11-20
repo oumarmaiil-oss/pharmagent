@@ -32,6 +32,7 @@ jobs:
       - run: python tests/agent_unit.py
       - run: python tests/panel_ui.py
       - run: python tests/api_smoke.py
+      - run: python tests/web_ui.py
 
   windows:
     name: Windows (saisie clavier réelle dans le Bloc-notes)

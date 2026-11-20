@@ -26,6 +26,7 @@ import type {
   ExtractedDocumentData,
   ExtractedLineItem,
   Pharmacy,
+  PharmacyUser,
   RecipeStep,
   TargetSoftwareType,
 } from './src/types/pharmagent.ts';
@@ -113,8 +114,13 @@ function requireApprover(req: express.Request, res: express.Response, pharmacyId
   const user = getPharmacySession(req);
   if (!user) { res.status(401).json({ error: 'Connexion requise.' }); return null; }
   if (user.pharmacyId !== pharmacyId) { res.status(403).json({ error: 'Accès interdit.' }); return null; }
-  if (user.role === 'assistant') { res.status(403).json({ error: "Seul le titulaire ou l'adjoint peut approuver." }); return null; }
   return { actor: user, displayName: user.fullName };
+}
+// Réglages de la pharmacie (agent, compte Équipe) : propriétaire ou compte Pharmacien
+function requirePharmacist(req: express.Request, res: express.Response, pharmacyId: string) {
+  const r = requireApprover(req, res, pharmacyId);
+  if (r && 'role' in r.actor && r.actor.role !== 'titulaire') { res.status(403).json({ error: 'Réservé au compte Pharmacien.' }); return null; }
+  return r;
 }
 
 function requireAgent(req: express.Request, res: express.Response): Pharmacy | null {
@@ -439,9 +445,73 @@ app.post('/api/pharmacies', (req, res) => {
     res.status(400).json({ error: 'Nom, ville et titulaire sont obligatoires.' });
     return;
   }
-  const pharmacy = store.createPharmacy({ name: name.trim(), city: city.trim(), region, pharmacist: pharmacist.trim(), targetSoftware: targetSoftware ?? 'ERP Officine Intégré' });
+  const { pharmacy, password } = store.createPharmacy({ name: name.trim(), city: city.trim(), region, pharmacist: pharmacist.trim(), targetSoftware: targetSoftware ?? 'ERP Officine Intégré' });
   store.addAuditLog({ pharmacyId: pharmacy.id, actorId: 'OWNER-01', actorName: store.getOwner().fullName, action: `Création de l'officine ${pharmacy.name}`, level: 'info' });
-  res.status(201).json({ pharmacy });
+  res.status(201).json({ pharmacy, credentials: { code: pharmacy.code, password } });
+});
+
+app.post('/api/pharmacies/:id/reset-password', (req, res) => {
+  if (!requireOwner(req, res)) return;
+  const ph = store.getPharmacy(req.params.id);
+  const password = ph ? store.resetPharmacistPassword(ph.id) : null;
+  if (!ph || !password) { res.status(404).json({ error: 'Officine introuvable.' }); return; }
+  store.addAuditLog({ pharmacyId: ph.id, actorId: 'OWNER-01', actorName: store.getOwner().fullName, action: 'Mot de passe du compte Pharmacien réinitialisé', level: 'warning' });
+  res.json({ code: ph.code, password });
+});
+
+// ─── Espace pharmacie (compte Pharmacien ou Équipe) ──────
+
+const publicUser = (u: PharmacyUser) => ({ id: u.id, pharmacyId: u.pharmacyId, fullName: u.fullName, profile: u.role === 'titulaire' ? 'pharmacien' : 'equipe' });
+const publicPharmacy = (p: Pharmacy) => ({ id: p.id, name: p.name, city: p.city, code: p.code });
+
+app.post('/api/pharmacy/auth/login', (req, res) => {
+  if (rateLimited(req, res, 'login')) return;
+  const { code, profile, password } = req.body as { code?: string; profile?: string; password?: string };
+  if (!code || !password || (profile !== 'pharmacien' && profile !== 'equipe')) {
+    res.status(400).json({ error: 'Code pharmacie, profil et mot de passe requis.' });
+    return;
+  }
+  const r = store.loginPharmacyProfile(code, profile, password);
+  if (!r) {
+    recordFailure(req, 'login');
+    res.status(401).json({ error: 'Code pharmacie ou mot de passe incorrect.' });
+    return;
+  }
+  clearFailures(req, 'login');
+  res.json({ token: r.token, user: publicUser(r.user), pharmacy: publicPharmacy(r.pharmacy), teamAccount: store.hasTeamAccount(r.pharmacy.id) });
+});
+
+app.get('/api/pharmacy/auth/me', (req, res) => {
+  const u = getPharmacySession(req);
+  const ph = u ? store.getPharmacy(u.pharmacyId) : undefined;
+  if (!u || !ph) { res.status(401).json({ error: 'Connexion requise.' }); return; }
+  res.json({ user: publicUser(u), pharmacy: publicPharmacy(ph), teamAccount: store.hasTeamAccount(ph.id) });
+});
+
+app.get('/api/pharmacy/dashboard', (req, res) => {
+  const u = getPharmacySession(req);
+  if (!u) { res.status(401).json({ error: 'Connexion requise.' }); return; }
+  const snap = store.getDashboard(u.pharmacyId);
+  res.json({ ...snap, pharmacies: snap.pharmacies.map(({ agentKey: _key, ...p }) => p) });
+});
+
+app.post('/api/pharmacy/auth/change-password', (req, res) => {
+  const u = getPharmacySession(req);
+  if (!u) { res.status(401).json({ error: 'Connexion requise.' }); return; }
+  const { current, next } = req.body as { current?: string; next?: string };
+  if (!next || next.length < 6) { res.status(400).json({ error: 'Nouveau mot de passe : 6 caractères minimum.' }); return; }
+  if (!current || !store.verifyUserPassword(u.id, current)) { res.status(401).json({ error: 'Mot de passe actuel incorrect.' }); return; }
+  store.setUserPassword(u.id, next);
+  res.json({ ok: true });
+});
+
+app.post('/api/pharmacy/team-account', (req, res) => {
+  const u = getPharmacySession(req);
+  if (!u) { res.status(401).json({ error: 'Connexion requise.' }); return; }
+  if (u.role !== 'titulaire') { res.status(403).json({ error: 'Réservé au compte Pharmacien.' }); return; }
+  const password = store.resetTeamAccount(u.pharmacyId);
+  store.addAuditLog({ pharmacyId: u.pharmacyId, actorId: u.id, actorName: u.fullName, action: 'Compte Équipe créé ou réinitialisé', level: 'info' });
+  res.json({ password });
 });
 
 app.patch('/api/pharmacies/:id/subscription', (req, res) => {
@@ -474,7 +544,7 @@ app.get('/api/pharmacies/:id/users', (req, res) => {
 // Le superviseur (ou le titulaire) saisit le code affiché par l'agent sur le PC de l'officine
 app.post('/api/pharmacies/:id/pair', (req, res) => {
   if (rateLimited(req, res, 'pair')) return;
-  const actor = requireApprover(req, res, req.params.id);
+  const actor = requirePharmacist(req, res, req.params.id);
   if (!actor) return;
   const ph = store.getPharmacy(req.params.id);
   if (!ph) { res.status(404).json({ error: 'Officine introuvable.' }); return; }

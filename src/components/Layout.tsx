@@ -4,13 +4,13 @@ import {
   CircleHelp,
   Building2,
   HardDrive,
+  KeyRound,
   LayoutDashboard,
   LogOut,
   Monitor,
   ShieldAlert,
   Stethoscope,
 } from 'lucide-react';
-import type { OwnerAccount } from '../types/pharmagent.ts';
 import type { AppTab } from '../App.tsx';
 
 const LOGO = (
@@ -25,15 +25,17 @@ interface NavItem { id: AppTab; label: string; icon: React.ReactNode; badge?: nu
 interface Props {
   tab: AppTab;
   onTabChange: (t: AppTab) => void;
-  owner: OwnerAccount;
+  tabs: AppTab[];
+  userName: string;
+  userRole: string;
   onLogout: () => void;
   pendingCount: number;
   loading: boolean;
   children: React.ReactNode;
 }
 
-export default function Layout({ tab, onTabChange, owner, onLogout, pendingCount, loading, children }: Props) {
-  const navItems: NavItem[] = [
+export default function Layout({ tab, onTabChange, tabs, userName, userRole, onLogout, pendingCount, loading, children }: Props) {
+  const allItems: NavItem[] = [
     { id: 'dashboard', label: 'Tableau de bord', icon: <LayoutDashboard size={18} /> },
     { id: 'workspace', label: 'Poste Pharmacien', icon: <Stethoscope size={18} />, badge: pendingCount || undefined },
     { id: 'pharmacies', label: 'Mes Officines', icon: <Building2 size={18} /> },
@@ -41,8 +43,10 @@ export default function Layout({ tab, onTabChange, owner, onLogout, pendingCount
     { id: 'grounding', label: 'Inspecteur UI', icon: <Monitor size={18} /> },
     { id: 'audit', label: 'Journal Garde-Fou', icon: <ShieldAlert size={18} /> },
     { id: 'deployment', label: 'Agent local', icon: <HardDrive size={18} /> },
+    { id: 'account', label: 'Mon compte', icon: <KeyRound size={18} /> },
     { id: 'guide', label: 'Guide', icon: <CircleHelp size={18} /> },
   ];
+  const navItems = allItems.filter((i) => tabs.includes(i.id));
 
   return (
     <div className="flex flex-col md:flex-row h-dvh overflow-hidden bg-slate-950">
@@ -99,8 +103,8 @@ export default function Layout({ tab, onTabChange, owner, onLogout, pendingCount
           )}
           <div className="flex items-center justify-between px-2 py-1.5">
             <div>
-              <div className="text-xs font-medium text-white">{owner.fullName}</div>
-              <div className="text-xs text-slate-500">{owner.role === 'owner' ? 'Propriétaire' : 'Co-Superviseur'}</div>
+              <div className="text-xs font-medium text-white">{userName}</div>
+              <div className="text-xs text-slate-500">{userRole}</div>
             </div>
             <button onClick={onLogout} className="text-slate-500 hover:text-red-400 p-1.5 rounded-lg hover:bg-red-500/10" title="Déconnexion">
               <LogOut size={16} />

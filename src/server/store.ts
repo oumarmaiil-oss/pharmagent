@@ -42,6 +42,11 @@ function checkPassword(pw: string, hash: string): boolean {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+const READABLE = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+function readable(len: number): string {
+  return Array.from(crypto.randomBytes(len)).map((b) => READABLE[b % READABLE.length]).join('');
+}
+
 function generateSecret(len = 16): string {
   const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$';
   return Array.from(crypto.randomBytes(len)).map((b) => chars[b % chars.length]).join('');
@@ -198,7 +203,20 @@ class PharmAgentStore {
       try { loaded = this.migrate(JSON.parse(fs.readFileSync(DB_PATH, 'utf-8')) as Database); } catch { /* fichier corrompu */ }
     }
     this.db = loaded ?? initialDatabase();
+    this.ensureCodes();
     if (!loaded) this.writeFile();
+  }
+
+  // Chaque pharmacie a un code court pour se connecter (attribué aussi aux pharmacies existantes)
+  private ensureCodes(): void {
+    const used = new Set(this.db.pharmacies.map((p) => p.code).filter(Boolean));
+    for (const ph of this.db.pharmacies) {
+      if (ph.code) continue;
+      let code = readable(6);
+      while (used.has(code)) code = readable(6);
+      ph.code = code;
+      used.add(code);
+    }
   }
 
   // Charge l'état depuis Postgres si DATABASE_URL est défini (survit aux redémarrages Render)
@@ -215,6 +233,7 @@ class PharmAgentStore {
     const r = await this.pool.query<{ data: Database }>('SELECT data FROM pharmagent_state WHERE id = 1');
     if (r.rows[0]) {
       this.db = this.migrate(r.rows[0].data);
+      this.ensureCodes();
       this.writeFile();
       console.log('[PharmAgent] État chargé depuis Postgres.');
     } else {
@@ -330,7 +349,7 @@ class PharmAgentStore {
     return this.db.pharmacies.find((p) => p.id === id);
   }
 
-  createPharmacy(params: { name: string; city: string; region?: string; pharmacist: string; targetSoftware: TargetSoftwareType }): Pharmacy {
+  createPharmacy(params: { name: string; city: string; region?: string; pharmacist: string; targetSoftware: TargetSoftwareType }): { pharmacy: Pharmacy; password: string } {
     const pharmacy: Pharmacy = {
       id: `ph-${nanoid(8)}`,
       name: params.name,
@@ -345,19 +364,19 @@ class PharmAgentStore {
       agentKey: `ak-${nanoid(24)}`,
     };
     this.db.pharmacies.push(pharmacy);
-    for (const role of ['titulaire', 'adjoint', 'assistant'] as const) {
-      this.db.users.push({
-        id: `usr-${nanoid(8)}`,
-        pharmacyId: pharmacy.id,
-        loginId: role,
-        fullName: role === 'titulaire' ? params.pharmacist : `${role.charAt(0).toUpperCase() + role.slice(1)} (${params.name})`,
-        role,
-        passwordHash: hashPassword(pharmacyPassword),
-        createdAt: now(),
-      });
-    }
+    const password = readable(8);
+    this.db.users.push({
+      id: `usr-${nanoid(8)}`,
+      pharmacyId: pharmacy.id,
+      loginId: 'titulaire',
+      fullName: params.pharmacist,
+      role: 'titulaire',
+      passwordHash: hashPassword(password),
+      createdAt: now(),
+    });
+    this.ensureCodes();
     this.persist();
-    return pharmacy;
+    return { pharmacy, password };
   }
 
   updatePharmacySubscription(id: string, plan: SubscriptionPlan, quota?: number): void {
@@ -366,6 +385,60 @@ class PharmAgentStore {
     ph.subscription = plan;
     if (quota !== undefined) ph.monthlyQuota = quota;
     this.persist();
+  }
+
+  getPharmacyByCode(code: string): Pharmacy | undefined {
+    const c = code.trim().toUpperCase();
+    return c ? this.db.pharmacies.find((p) => p.code === c) : undefined;
+  }
+
+  loginPharmacyProfile(code: string, profile: 'pharmacien' | 'equipe', password: string): { token: string; user: PharmacyUser; pharmacy: Pharmacy } | null {
+    const pharmacy = this.getPharmacyByCode(code);
+    if (!pharmacy) return null;
+    const user = this.db.users.find((u) => u.pharmacyId === pharmacy.id
+      && (profile === 'pharmacien' ? u.role === 'titulaire' : u.role !== 'titulaire')
+      && checkPassword(password, u.passwordHash));
+    if (!user) return null;
+    return { token: makeToken({ kind: 'pharmacy_user', sub: user.id, pharmacyId: pharmacy.id }, this.db.authSecret), user, pharmacy };
+  }
+
+  verifyUserPassword(userId: string, password: string): boolean {
+    const u = this.db.users.find((x) => x.id === userId);
+    return !!u && checkPassword(password, u.passwordHash);
+  }
+
+  setUserPassword(userId: string, password: string): void {
+    const u = this.db.users.find((x) => x.id === userId);
+    if (!u) return;
+    u.passwordHash = hashPassword(password);
+    this.persist();
+  }
+
+  resetPharmacistPassword(pharmacyId: string): string | null {
+    const u = this.db.users.find((x) => x.pharmacyId === pharmacyId && x.role === 'titulaire');
+    if (!u) return null;
+    const password = readable(8);
+    u.passwordHash = hashPassword(password);
+    this.persist();
+    return password;
+  }
+
+  hasTeamAccount(pharmacyId: string): boolean {
+    return this.db.users.some((u) => u.pharmacyId === pharmacyId && u.role !== 'titulaire');
+  }
+
+  // Compte « Équipe » facultatif : créé ou réinitialisé par le pharmacien
+  resetTeamAccount(pharmacyId: string): string {
+    const ph = this.db.pharmacies.find((p) => p.id === pharmacyId);
+    let user = this.db.users.find((u) => u.pharmacyId === pharmacyId && u.loginId === 'equipe');
+    if (!user) {
+      user = { id: `usr-${nanoid(8)}`, pharmacyId, loginId: 'equipe', fullName: `Équipe (${ph?.name ?? ''})`, role: 'assistant', passwordHash: '', createdAt: now() };
+      this.db.users.push(user);
+    }
+    const password = readable(8);
+    user.passwordHash = hashPassword(password);
+    this.persist();
+    return password;
   }
 
   getPharmacyUsers(pharmacyId: string): PharmacyUser[] {
@@ -442,6 +515,7 @@ class PharmAgentStore {
       throw new Error('Fichier de sauvegarde invalide.');
     }
     this.db = this.migrate(d as Database);
+    this.ensureCodes();
     this.writeFile();
     await this.flushPg();
     return { pharmacies: this.db.pharmacies.length, drafts: this.db.drafts.length };
@@ -719,12 +793,13 @@ class PharmAgentStore {
 
   // ── Dashboard ────────────────────────────────────────
 
-  getDashboard() {
-    const pharmacies = this.getPharmacies();
+  getDashboard(pharmacyId?: string) {
+    const pharmacies = this.getPharmacies().filter((p) => !pharmacyId || p.id === pharmacyId);
+    const drafts = pharmacyId ? this.db.drafts.filter((d) => d.pharmacyId === pharmacyId) : this.db.drafts;
     const thisMonth = new Date().toISOString().slice(0, 7);
 
     const stats = pharmacies.map((ph) => {
-      const phDrafts = this.db.drafts.filter((d) => d.pharmacyId === ph.id);
+      const phDrafts = drafts.filter((d) => d.pharmacyId === ph.id);
       const monthDrafts = phDrafts.filter((d) => d.createdAt.startsWith(thisMonth));
       return {
         pharmacyId: ph.id,
@@ -743,12 +818,14 @@ class PharmAgentStore {
     return {
       pharmacies,
       stats,
-      pendingDrafts: this.db.drafts.filter((d) => d.status === 'pending').slice(0, 30),
-      recentDrafts: this.db.drafts.filter((d) => d.status === 'approved').slice(0, 30),
-      recentAudit: this.db.auditLogs.slice(0, 20),
-      totalDraftsToday: this.db.drafts.filter((d) => d.createdAt.startsWith(todayStr)).length,
-      totalApprovedMonth: this.db.drafts.filter((d) => d.status === 'approved' && d.updatedAt.startsWith(thisMonth)).length,
-      learnedMemory: this.db.learnedMemory,
+      pendingDrafts: drafts.filter((d) => d.status === 'pending').slice(0, 30),
+      recentDrafts: drafts.filter((d) => d.status === 'approved').slice(0, 30),
+      recentAudit: this.db.auditLogs.filter((l) => !pharmacyId || l.pharmacyId === pharmacyId).slice(0, 20),
+      totalDraftsToday: drafts.filter((d) => d.createdAt.startsWith(todayStr)).length,
+      totalApprovedMonth: drafts.filter((d) => d.status === 'approved' && d.updatedAt.startsWith(thisMonth)).length,
+      learnedMemory: pharmacyId
+        ? { ...this.db.learnedMemory, productAliases: this.db.learnedMemory.productAliases.filter((a) => !a.pharmacyId || a.pharmacyId === pharmacyId) }
+        : this.db.learnedMemory,
       persistence: this.persistence,
     };
   }

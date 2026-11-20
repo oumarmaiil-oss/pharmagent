@@ -76,7 +76,7 @@ export default function GuideCenter({ standalone = false }: { standalone?: boole
                 <p className="text-slate-400">Astuce téléphone : menu du navigateur › « Ajouter à l'écran d'accueil » pour l'avoir comme une application.</p>
               </Step>
               <Step n={2} title="Créer l'officine">
-                <p>Onglet <b>Mes Officines</b> › <b>Nouvelle officine</b> : nom, titulaire, ville. Les comptes titulaire / adjoint / assistant sont créés automatiquement.</p>
+                <p>Onglet <b>Mes Officines</b> › <b>Nouvelle officine</b> : nom, titulaire, ville. PharmAgent affiche alors le <b>code pharmacie</b> et le <b>mot de passe du compte Pharmacien</b>, une seule fois : transmettez-les au pharmacien. Il pourra changer son mot de passe et créer un compte <b>Équipe</b> pour ses assistants dans « Mon compte ».</p>
               </Step>
               <Step n={3} title="Importer le catalogue produits (recommandé)">
                 <p>Demandez au pharmacien d'exporter la liste des produits de son ERP (Excel ou CSV), puis onglet <b>Mémoire & Entraînement</b> › choisissez l'officine › <b>Importer le catalogue</b>.</p>
@@ -118,7 +118,7 @@ export default function GuideCenter({ standalone = false }: { standalone?: boole
         )}
 
         {part === 'usage' && (
-          <Block icon={<Smartphone size={20} />} title="Utilisation au quotidien" who="Pharmacien, adjoint ou superviseur · depuis le téléphone ou le PC">
+          <Block icon={<Smartphone size={20} />} title="Utilisation au quotidien" who="Pharmacien ou Équipe · depuis le téléphone ou le PC">
             <Step n={1} title="Photographier le bon">
               <p>Onglet <b>Poste Pharmacien</b> › choisissez l'officine › <b>Photo</b> (ou <b>Importer</b> une image / un PDF) › <b>Analyser</b>.</p>
             </Step>

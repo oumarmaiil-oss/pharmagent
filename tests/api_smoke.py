@@ -48,9 +48,32 @@ try:
     check("serveur démarré", call("GET", "/api/health")[1] == 200)
     check("mauvais mot de passe refusé", call("POST", "/api/owner/auth/login", {"loginId": "dr.oumar", "password": "x"})[1] == 401)
     owner = call("POST", "/api/owner/auth/login", {"loginId": "dr.oumar", "password": "ownerpw"})[0]["token"]
-    mk = lambda n: call("POST", "/api/pharmacies", {"name": n, "city": "Dakar", "pharmacist": "T", "targetSoftware": "Excel / Tableur"}, owner)[0]["pharmacy"]["id"]
-    pa, pb = mk("ZZ A"), mk("ZZ B")
-    user_b = call("POST", f"/api/pharmacies/{pb}/auth/login", {"loginId": "titulaire", "password": "phpw"})[0]["token"]
+    def mk(name):
+        body, status, _ = call("POST", "/api/pharmacies", {"name": name, "city": "Dakar", "pharmacist": "Dr T", "targetSoftware": "Excel / Tableur"}, owner)
+        return body["pharmacy"]["id"], body["credentials"]
+    (pa, cred_a), (pb, cred_b) = mk("ZZ A"), mk("ZZ B")
+    check("création : code et mot de passe Pharmacien fournis", len(cred_b["code"]) == 6 and len(cred_b["password"]) >= 8)
+    login = lambda cred, profile, pw: call("POST", "/api/pharmacy/auth/login", {"code": cred["code"], "profile": profile, "password": pw})
+    check("mauvais mot de passe pharmacie refusé", login(cred_b, "pharmacien", "faux")[1] == 401)
+    check("le mot de passe d'une autre pharmacie ne marche pas", login(cred_b, "pharmacien", cred_a["password"])[1] == 401)
+    body, status, _ = login(cred_b, "pharmacien", cred_b["password"])
+    check("connexion Pharmacien", status == 200 and body["user"]["profile"] == "pharmacien" and body["teamAccount"] is False, body)
+    user_b = body["token"]
+    snap = call("GET", "/api/pharmacy/dashboard", token=user_b)[0]
+    check("tableau de bord limité à sa pharmacie, sans clé d'agent", [p["id"] for p in snap["pharmacies"]] == [pb] and "agentKey" not in snap["pharmacies"][0])
+    check("tableau de bord superviseur refusé à une pharmacie", call("GET", "/api/dashboard", token=user_b)[1] == 401)
+    body, status, _ = call("POST", "/api/pharmacy/team-account", {}, user_b)
+    check("compte Équipe créé par le Pharmacien", status == 200 and body.get("password"))
+    team_pw = body["password"]
+    body, status, _ = login(cred_b, "equipe", team_pw)
+    check("connexion Équipe", status == 200 and body["user"]["profile"] == "equipe")
+    team_b = body["token"]
+    check("l'Équipe ne gère pas les comptes", call("POST", "/api/pharmacy/team-account", {}, team_b)[1] == 403)
+    check("l'Équipe ne branche pas l'agent", call("POST", f"/api/pharmacies/{pb}/pair", {"code": "123456"}, team_b)[1] == 403)
+    check("changement de mot de passe : ancien requis", call("POST", "/api/pharmacy/auth/change-password", {"current": "x", "next": "nouveau1"}, team_b)[1] == 401)
+    check("changement de mot de passe", call("POST", "/api/pharmacy/auth/change-password", {"current": team_pw, "next": "nouveau1"}, team_b)[1] == 200 and login(cred_b, "equipe", "nouveau1")[1] == 200)
+    body, status, _ = call("POST", f"/api/pharmacies/{pb}/reset-password", {}, owner)
+    check("réinitialisation par le superviseur", status == 200 and login(cred_b, "pharmacien", body["password"])[1] == 200 and login(cred_b, "pharmacien", cred_b["password"])[1] == 401)
 
     body, status, _ = call("POST", "/api/agent/extract", {"pharmacyId": pa, "sampleAssetPath": "/src/assets/images/sample_bon_livraison_1795017387838.jpg"}, owner)
     check("analyse lancée en arrière-plan", status == 200 and body["draft"]["extractionStatus"] == "processing")

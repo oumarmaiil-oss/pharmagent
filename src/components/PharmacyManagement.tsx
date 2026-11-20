@@ -25,6 +25,7 @@ export default function PharmacyManagement({ token, snapshot, onRefresh }: Props
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [credentials, setCredentials] = useState<{ name: string; code: string; password: string } | null>(null);
   const [form, setForm] = useState({ name: '', city: '', region: '', pharmacist: '', targetSoftware: SOFTWARE_OPTIONS[0] as TargetSoftwareType });
 
   const pharmacies = snapshot?.pharmacies ?? [];
@@ -38,8 +39,9 @@ export default function PharmacyManagement({ token, snapshot, onRefresh }: Props
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(form),
       });
-      const data = await r.json() as { pharmacy?: object; error?: string };
+      const data = await r.json() as { pharmacy?: { name: string }; credentials?: { code: string; password: string }; error?: string };
       if (!r.ok || !data.pharmacy) { setError(data.error ?? 'Erreur création.'); return; }
+      if (data.credentials) setCredentials({ name: data.pharmacy.name, ...data.credentials });
       setShowForm(false);
       setForm({ name: '', city: '', region: '', pharmacist: '', targetSoftware: SOFTWARE_OPTIONS[0] });
       onRefresh();
@@ -48,6 +50,14 @@ export default function PharmacyManagement({ token, snapshot, onRefresh }: Props
     } finally {
       setLoading(false);
     }
+  };
+
+  const resetPharmacistPassword = async (id: string, name: string) => {
+    if (!window.confirm(`Réinitialiser le mot de passe du compte Pharmacien de ${name} ? L'ancien ne fonctionnera plus.`)) return;
+    const r = await fetch(`/api/pharmacies/${id}/reset-password`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+    const data = await r.json() as { code?: string; password?: string; error?: string };
+    if (r.ok && data.code && data.password) setCredentials({ name, code: data.code, password: data.password });
+    else window.alert(data.error ?? 'Réinitialisation impossible.');
   };
 
   const handlePlanChange = async (id: string, plan: string) => {
@@ -62,6 +72,16 @@ export default function PharmacyManagement({ token, snapshot, onRefresh }: Props
   return (
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
       <BackupCard token={token} />
+
+      {credentials && (
+        <section className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-4 space-y-1.5">
+          <div className="text-sm font-semibold text-emerald-200">Accès de {credentials.name} — à transmettre au pharmacien</div>
+          <div className="text-sm text-emerald-100">Code pharmacie : <span className="mono font-bold tracking-widest">{credentials.code}</span></div>
+          <div className="text-sm text-emerald-100">Profil : Pharmacien · Mot de passe : <span className="mono font-bold tracking-wider">{credentials.password}</span></div>
+          <p className="text-xs text-emerald-300/80">Notez-les maintenant : le mot de passe ne sera plus affiché. Le pharmacien peut le changer dans « Mon compte » et y créer un compte Équipe.</p>
+          <button onClick={() => setCredentials(null)} className="text-xs text-emerald-300 underline">J'ai noté</button>
+        </section>
+      )}
 
       {/* En-tête */}
       <div className="flex items-center justify-between">
@@ -153,7 +173,7 @@ export default function PharmacyManagement({ token, snapshot, onRefresh }: Props
                 {isOpen && (
                   <div className="border-t border-slate-800 p-5 space-y-4">
                     <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
-                      <div><span className="text-slate-500">ID :</span> <span className="font-mono text-slate-300">{ph.id}</span></div>
+                      <div><span className="text-slate-500">Code de connexion :</span> <span className="font-mono font-bold tracking-widest text-emerald-300">{ph.code}</span></div>
                       <div><span className="text-slate-500">Région :</span> <span className="text-slate-300">{ph.region}</span></div>
                       <div><span className="text-slate-500">Créé le :</span> <span className="text-slate-300">{new Date(ph.createdAt).toLocaleDateString('fr-FR')}</span></div>
                       <div><span className="text-slate-500">Agent :</span> <span className={ph.agent && Date.now() - Date.parse(ph.agent.lastSeen) < 70000 ? 'text-emerald-300' : 'text-slate-400'}>{ph.agent ? (Date.now() - Date.parse(ph.agent.lastSeen) < 70000 ? `en ligne (${ph.agent.hostname ?? 'PC'})` : 'hors ligne') : 'non installé'}</span></div>
@@ -171,10 +191,14 @@ export default function PharmacyManagement({ token, snapshot, onRefresh }: Props
                       </select>
                     </div>
 
-                    <p className="text-xs text-slate-500">
-                      Installation et appairage de l'ordinateur : onglet <b className="text-slate-300">Agent local</b>.
-                      Identifiants de l'officine : titulaire / adjoint / assistant.
-                    </p>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button onClick={() => resetPharmacistPassword(ph.id, ph.name)} className="text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-3 py-1.5 rounded-lg">
+                        Réinitialiser le mot de passe Pharmacien
+                      </button>
+                      <p className="text-xs text-slate-500">
+                        Connexion de la pharmacie : code <b className="text-slate-300">{ph.code}</b>, profil Pharmacien. Installation de l'ordinateur : onglet <b className="text-slate-300">Agent local</b>.
+                      </p>
+                    </div>
                   </div>
                 )}
               </div>

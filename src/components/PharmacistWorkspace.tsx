@@ -10,7 +10,7 @@ import { ExecutionBadge, ExecutionDetail } from './ExecutionStatus.tsx';
 
 interface Props {
   token: string;
-  owner: OwnerAccount;
+  owner?: OwnerAccount;
   snapshot: DashboardSnapshot | null;
   onRefresh: () => void;
   selectedPharmacyId: string;
@@ -363,6 +363,7 @@ function DraftPanel(props: DraftProps) {
         <div className="min-w-0">
           <div className="text-sm font-semibold text-white truncate">{draft.extractedData.documentNumber || 'Nouveau document'} · {draft.extractedData.supplierOrOrg}</div>
           <div className="text-xs text-slate-500">{draft.extractedData.documentDate} · {draft.extractedData.totalAmountFCFA?.toLocaleString('fr-FR')} FCFA</div>
+          <div className="text-[11px] text-slate-500">Lancé par {draft.actorName}{draft.approvedBy ? ` · approuvé par ${draft.approvedBy}` : ''}</div>
         </div>
         <span className={`text-xs px-2.5 py-1 rounded-full border font-medium whitespace-nowrap ${status[1]}`}>{status[0]}</span>
       </div>
