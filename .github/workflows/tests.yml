@@ -27,7 +27,7 @@ jobs:
       - run: npx tsc --noEmit
       - run: npm run build
       - run: npm test
-      - run: pip install playwright
+      - run: pip install playwright openpyxl
       - run: python -m playwright install --with-deps chromium
       - run: python tests/agent_unit.py
       - run: python tests/panel_ui.py
