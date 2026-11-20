@@ -4,6 +4,9 @@
 
 export type TargetSoftwareType = 'ERP Officine Intégré' | 'Excel / Tableur' | 'Dossier Patient';
 export type DocumentCategory = 'bon_livraison' | 'facture' | 'mutuelle';
+/** Ce que l'IA a réellement reconnu sur la photo (peut contredire le type choisi à l'envoi). */
+export type ReadDocumentType = DocumentCategory | 'avoir' | 'ordonnance' | 'autre';
+export type PhotoQuality = 'bonne' | 'moyenne' | 'illisible';
 export type SubscriptionPlan = 'trial' | 'standard' | 'premium' | 'suspended';
 export type PharmacyUserRole = 'titulaire' | 'adjoint' | 'assistant';
 export type DraftStatus = 'pending' | 'approved' | 'rejected';
@@ -152,7 +155,9 @@ export interface ProductMatch {
 }
 
 export interface ExtractedDocumentData {
-  documentType: DocumentCategory;
+  documentType: ReadDocumentType;
+  documentCount?: number;        // documents distincts sur la même photo
+  photoQuality?: PhotoQuality;
   documentNumber: string;
   supplierOrOrg: string;
   recipientPharmacy: string;

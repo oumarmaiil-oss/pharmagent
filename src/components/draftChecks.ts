@@ -34,19 +34,43 @@ const money = (n: number, cur: string) => `${(Math.round(n * 100) / 100).toLocal
 const close = (a: number, b: number) => Math.abs(a - b) <= Math.max(1, Math.abs(b) * 0.005);
 const netLine = (q: number, pu: number, discount?: number) => q * pu * (1 - (discount ?? 0) / 100);
 
+/** Ce qui interdit l'approbation, quel que soit l'avis du pharmacien (vérifié aussi par le serveur). */
+export function blockingReason(draft: DraftRecord): string | undefined {
+  const data = draft.extractedData;
+  const lines = data.lineItems ?? [];
+  if (data.documentType === 'ordonnance') {
+    return "C'est une ordonnance, pas un bon de livraison ni une facture fournisseur : PharmAgent ne la saisit pas en stock. Rejetez ce brouillon.";
+  }
+  if (data.documentType === 'autre') {
+    return "Ce document n'est ni un bon de livraison ni une facture fournisseur : rien à saisir. Rejetez ce brouillon.";
+  }
+  if (data.documentType === 'avoir' || lines.some((l) => l.quantity < 0)) {
+    return "Avoir ou retour de marchandise : PharmAgent ne saisit pas les avoirs. Traitez-le directement dans votre logiciel.";
+  }
+  if ((data.documentCount ?? 1) > 1) {
+    return `${data.documentCount} documents sur la même photo : seul le premier a été lu. Prenez une photo par bon, puis rejetez ce brouillon.`;
+  }
+  const unreadable = lines.filter((l) => /illisible/i.test(l.designation ?? '')).length;
+  if (data.photoQuality === 'illisible' || (lines.length && unreadable * 2 >= lines.length)) {
+    return 'Photo illisible : reprenez-la à plat, bien éclairée, le bon entier dans le cadre, sans compression (pas de capture WhatsApp).';
+  }
+  if (!lines.length) {
+    return 'Aucune ligne de produit lue : photo trop petite, floue ou coupée. Reprenez-la à plat, le bon entier dans le cadre.';
+  }
+  return undefined;
+}
+
 export function draftChecks(draft: DraftRecord, today = new Date()): DraftCheck[] {
   if (draft.extractionStatus === 'processing' || draft.extractionStatus === 'error') return [];
   const out: DraftCheck[] = [];
   const data = draft.extractedData;
   const lines = data.lineItems ?? [];
 
+  const blocked = blockingReason(draft);
+  if (blocked) return [{ level: 'error', text: blocked }];
+
   if (draft.duplicateOf) {
     out.push({ level: 'error', text: `Ce bon semble déjà importé le ${new Date(draft.duplicateOf.createdAt).toLocaleDateString('fr-FR')} (même fournisseur et même numéro) : risque de saisie en double.` });
-  }
-
-  if (lines.length && lines.some((l) => l.quantity < 0)) {
-    out.push({ level: 'error', text: "Avoir ou retour de marchandise (quantités négatives) : PharmAgent ne saisit pas les avoirs. Traitez-le directement dans votre logiciel." });
-    return out;
   }
   // Un relevé de mutuelle n'affiche souvent que la part remboursée : pas de recoupement avec le total
   const isClaim = draft.documentCategory === 'mutuelle';
@@ -72,6 +96,7 @@ export function draftChecks(draft: DraftRecord, today = new Date()): DraftCheck[
     out.push({ level: 'warn', text: `Total HT (${money(data.totalHT, cur)}) + TVA (${money(data.totalTVA, cur)}) ne donne pas le total à payer (${money(printed, cur)}).` });
   }
 
+  const uncertain: number[] = [];
   const limit = new Date(today);
   limit.setMonth(limit.getMonth() + SHORT_EXPIRY_MONTHS);
   lines.forEach((l, i) => {
@@ -84,14 +109,17 @@ export function draftChecks(draft: DraftRecord, today = new Date()): DraftCheck[
       out.push({ level: 'error', text: `${name} : ${l.quantity} × ${l.unitPriceFCFA} ne donne pas le montant imprimé (${l.lineTotal}).` });
     }
     const exp = expiryEnd(l.expiryDate);
-    if (exp && exp < today) out.push({ level: 'error', text: `${name} : produit périmé (${l.expiryDate}).` });
+    if (exp && exp < today) out.push({ level: 'error', text: `${name} : produit périmé (${l.expiryDate}) ou date mal lue : vérifiez sur la boîte.` });
     else if (exp && exp < limit) out.push({ level: 'warn', text: `${name} : péremption courte (${l.expiryDate}), moins de ${SHORT_EXPIRY_MONTHS} mois.` });
     if (l.match?.status === 'new_product') {
       out.push({ level: 'warn', text: `${name} : nouveau produit, l'agent ne le saisira pas. Créez-le d'abord dans votre logiciel, puis saisissez cette ligne à la main.` });
     }
-    if (typeof l.confidence === 'number' && l.confidence < LOW_CONFIDENCE) {
-      out.push({ level: 'warn', text: `${name} : lecture incertaine, comparez avec la photo.` });
-    }
+    if (typeof l.confidence === 'number' && l.confidence < LOW_CONFIDENCE) uncertain.push(i + 1);
   });
+  // Une seule alerte pour toutes les lignes incertaines : trop d'alertes et plus personne ne les lit
+  if (uncertain.length) {
+    const which = uncertain.length === lines.length ? 'toutes les lignes' : `ligne${uncertain.length > 1 ? 's' : ''} ${uncertain.join(', ')}`;
+    out.push({ level: 'warn', text: `Lecture incertaine (${which}) : comparez avec la photo.` });
+  }
   return out;
 }

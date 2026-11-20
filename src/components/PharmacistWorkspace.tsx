@@ -5,7 +5,7 @@ import {
 import { useRef, useState } from 'react';
 import type { DashboardSnapshot, DraftRecord, OwnerAccount } from '../types/pharmagent.ts';
 import DraftLines, { countToReview } from './DraftLines.tsx';
-import { draftChecks } from './draftChecks.ts';
+import { blockingReason, draftChecks } from './draftChecks.ts';
 import { ExecutionBadge, ExecutionDetail } from './ExecutionStatus.tsx';
 
 interface Props {
@@ -441,6 +441,7 @@ function FillExcelButton({ draftId, token }: { draftId: string; token: string })
 
 function DraftBody({ draft, token, busy, onDecide, onUpdated, onRefresh }: DraftProps) {
   const toReview = countToReview(draft);
+  const blocked = !!blockingReason(draft);
   return (
     <div className="space-y-3">
       <DraftLines draft={draft} token={token} onUpdated={onUpdated} />
@@ -460,10 +461,10 @@ function DraftBody({ draft, token, busy, onDecide, onUpdated, onRefresh }: Draft
           <div className="flex gap-2">
             <button
               onClick={() => onDecide(draft, 'approve')}
-              disabled={busy || toReview > 0}
+              disabled={busy || toReview > 0 || blocked}
               className="flex-1 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-sm font-semibold py-2.5 rounded-xl"
             >
-              {busy ? <Loader2 size={15} className="animate-spin" /> : <ThumbsUp size={15} />} {toReview > 0 ? `${toReview} ligne(s) à vérifier` : 'Approuver'}
+              {busy ? <Loader2 size={15} className="animate-spin" /> : <ThumbsUp size={15} />} {blocked ? 'Non saisissable' : toReview > 0 ? `${toReview} ligne(s) à vérifier` : 'Approuver'}
             </button>
             <button
               onClick={() => onDecide(draft, 'reject')}

@@ -9,7 +9,7 @@ import type {
   GroundingAnalysisResult,
   TargetSoftwareType,
 } from '../types/pharmagent.ts';
-import { EXTRACTION_GLOSSARY } from './vocabulary.ts';
+import { DOCUMENT_READING_RULES, EXTRACTION_GLOSSARY } from './vocabulary.ts';
 
 const MODEL = process.env.CLAUDE_MODEL || 'claude-haiku-5-5';
 
@@ -102,6 +102,13 @@ export async function extractDocument(params: {
           `date de péremption (expiryDate : colonne « Date Exp. », « Péremption », « DLU » ou « Exp », recopiée telle quelle, ex. 06/2028), ` +
           `prix unitaire d'achat, prix public/vente s'il figure, UG, remise, TVA et montant de la ligne s'ils figurent. ` +
           `Ne devine jamais un chiffre illisible : baisse la confidence de la ligne (sous 0,6).\n` +
+          `Classe d'abord le document (documentType), quel que soit le type probable annoncé : bon_livraison, facture, avoir (retour, quantités négatives), ` +
+          `mutuelle (relevé de tiers payant), ordonnance (prescription d'un médecin à un patient : posologie, nom du patient), ` +
+          `autre (questionnaire, courrier, ticket, tout le reste). Pour ordonnance et autre, renvoie lineItems vide et n'extrais rien d'autre.\n` +
+          `documentCount = nombre de documents distincts visibles sur la photo (numéros différents) ; s'il y en a plusieurs, n'extrais que le premier.\n` +
+          `photoQuality : bonne, moyenne, ou illisible si la plupart des chiffres ne se lisent pas (photo floue, trop petite, trop sombre) : ` +
+          `dans ce cas ne recopie que ce qui est sûr, sans inventer de lignes.\n` +
+          DOCUMENT_READING_RULES + '\n' +
           EXTRACTION_GLOSSARY +
           missionClause,
       },
@@ -110,7 +117,9 @@ export async function extractDocument(params: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        documentType: str,
+        documentType: { type: 'string', enum: ['bon_livraison', 'facture', 'avoir', 'mutuelle', 'ordonnance', 'autre'] },
+        documentCount: { type: 'integer' },
+        photoQuality: { type: 'string', enum: ['bonne', 'moyenne', 'illisible'] },
         documentNumber: str,
         supplierOrOrg: str,
         recipientPharmacy: str,
@@ -143,7 +152,7 @@ export async function extractDocument(params: {
           },
         },
       },
-      required: ['documentType', 'documentNumber', 'supplierOrOrg', 'recipientPharmacy', 'documentDate', 'totalAmountFCFA', 'lineItems'],
+      required: ['documentType', 'documentCount', 'photoQuality', 'documentNumber', 'supplierOrOrg', 'recipientPharmacy', 'documentDate', 'totalAmountFCFA', 'lineItems'],
     },
   );
 

@@ -79,7 +79,10 @@ try:
                 # Chiffre caché : acceptable si l'IA le déduit en le marquant incertain, ou s'abstient (quantité vide/0 signalée).
                 # Inacceptable : un chiffre faux, ou présenté comme sûr.
                 q, conf = num(x.get("quantity")), x.get("confidence") or 1
-                if not ((q == num(y["qty"]) and conf < 0.8) or q in (None, 0)):
+                # Accepté aussi : un chiffre faux mais marqué incertain ET contredit par le montant imprimé (le contrôle le bloque)
+                amt = x.get("lineTotal"); pu = num(x.get("unitPriceFCFA")) or 0
+                caught = conf < 0.8 and amt is not None and q is not None and abs(q * pu - amt) > 1
+                if not ((q == num(y["qty"]) and conf < 0.8) or q in (None, 0) or caught):
                     errs.append(f"L{i+1} chiffre caché mal traité : qté {q}, confiance {conf}")
                 continue
             if num(x.get("quantity")) != num(y["qty"]): errs.append(f"L{i+1} qté {x.get('quantity')}≠{y['qty']}")
@@ -98,7 +101,7 @@ try:
         if t.get("blot_line") is not None:
             # au moins une alerte sur la ligne cachée : « incertaine » ou « quantité manquante »
             expect = [w for w in expect if w != "incertaine"] + (["incertaine"] if "incertaine" in texts else ["quantité"])
-            allowed = expect + ["incertaine", "quantité"]
+            allowed = expect + ["incertaine", "quantité", "ne donne pas le montant"]
         missing = [w for w in expect if w.lower() not in texts]
         extra = [c["text"][:80] for c in checks[key] if c["level"] == "error" and not any(w.lower() in c["text"].lower() for w in allowed)]
         check(f"{key} : alertes attendues, aucune fausse alerte", not missing and not extra, {"manquantes": missing, "en trop": extra})

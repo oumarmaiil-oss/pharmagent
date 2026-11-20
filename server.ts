@@ -17,6 +17,7 @@ import {
 } from './src/server/aiAgent.ts';
 import { fillWorkbook, FIELD_LABELS } from './src/server/excelFill.ts';
 import { matchColumn, type ColumnField } from './src/server/vocabulary.ts';
+import { blockingReason } from './src/components/draftChecks.ts';
 import { checkTextSafety } from './src/server/guardrail.ts';
 import { AUTO_THRESHOLD, matchLines, normalizeSupplier } from './src/server/productMatcher.ts';
 import { store, type CatalogRowInput } from './src/server/store.ts';
@@ -695,10 +696,8 @@ app.post('/api/drafts/:draftId/approve', (req, res) => {
   if (draft.extractionStatus === 'processing' || draft.extractionStatus === 'error') { res.status(400).json({ error: "Analyse non terminée ou en échec : rien à approuver." }); return; }
   const actor = requireApprover(req, res, draft.pharmacyId);
   if (!actor) return;
-  if (draft.extractedData.lineItems.some((l) => l.quantity < 0)) {
-    res.status(400).json({ error: "Avoir ou retour (quantités négatives) : PharmAgent ne le saisit pas. Traitez-le dans votre logiciel, puis rejetez ce brouillon." });
-    return;
-  }
+  const blocked = blockingReason(draft);
+  if (blocked) { res.status(400).json({ error: blocked }); return; }
   const toReview = draft.extractedData.lineItems.filter((l) => l.match?.status === 'to_review').length;
   if (toReview) {
     res.status(400).json({ error: `${toReview} ligne(s) à vérifier : choisissez le produit ERP avant d'approuver.` });

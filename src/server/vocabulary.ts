@@ -66,3 +66,21 @@ Glossaire (mêmes informations, noms différents selon les pays et les grossiste
 - Ignore les lignes qui ne sont pas des produits : « Report », « À reporter », sous-totaux de page, transport, frais, consigne.
 - Les montants sont dans la devise du document (FCFA, EUR, USD, MAD…) : indique-la dans currency, ne convertis rien.
 `.trim();
+
+/** Pièges des vrais documents photographiés en officine (Laborex, UbiPharm, Copharmed…). */
+export const DOCUMENT_READING_RULES = `
+Règles de lecture des documents réels :
+- FCFA n'a pas de centimes : « 638.200 » ou « 638 200 » = 638200. Le point y sépare les milliers.
+- Annotations manuscrites du pharmacien : une date écrite à la main sur une ligne (ex. « 10/28 », même dans la colonne TVA ou Colisage) est la péremption de cette ligne s'il n'y en a pas d'imprimée.
+  Un prix écrit à la main sur une ligne est le prix public (salePriceFCFA) seulement si aucun prix public n'est imprimé.
+  Ignore les coches, « OK », signatures, tampons et références internes manuscrites (ex. « 2026/12345 ») : ce ne sont ni le numéro du document ni des produits.
+- Des pastilles ou autocollants peuvent cacher une case : ne devine pas, baisse la confidence de la ligne.
+- Impression matricielle pâle : O/D/0, I/1, S/5, B/8 se confondent. Choisis la lecture qui donne un nom de médicament qui existe (DOLIPRANE et non DDLIPRANE) et des chiffres cohérents (quantité × prix = montant).
+- Lot et péremption peuvent être sur une seconde ligne sous le produit : rattache-les au produit au-dessus.
+- Un produit qui vient d'être livré n'est presque jamais déjà périmé : si tu lis une date passée, relis-la ; si le doute reste, baisse la confidence.
+- Un même document peut avoir deux volets (bon de prélèvement + facture, ou original + copie) avec les mêmes lignes : ne compte chaque ligne qu'une fois.
+- Document de plusieurs pages (« page 1/2 ») : extrais les lignes de cette page. S'il n'y a pas de total final, totalAmountFCFA = le montant de bas de page (« Montant HT cumulé », « Cumul », « À reporter »).
+- documentNumber = le numéro de la facture ou du bon (« Facture N° », « N° BL », « N° pièce »), recopié avec ses tirets : jamais le numéro de client, de commande, de tournée, de relevé ou de séquence.
+- Un produit dont tu ne lis pas le nom : ne crée pas la ligne. Si la plupart des lignes ne se lisent pas, photoQuality = illisible.
+- La photo peut être tournée ou de travers : lis-la dans le bon sens.
+`.trim();

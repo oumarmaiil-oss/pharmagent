@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { draftChecks, expiryEnd } from '../src/components/draftChecks.ts';
+import { blockingReason, draftChecks, expiryEnd } from '../src/components/draftChecks.ts';
 import type { DraftRecord, ExtractedLineItem } from '../src/types/pharmagent.ts';
 
 const TODAY = new Date(Date.UTC(2026, 10, 20));
@@ -40,7 +40,7 @@ test('produit périmé, péremption courte, quantité et prix manquants, lecture
   assert.match(texts, /warn:Ligne 2 .*péremption courte/);
   assert.match(texts, /error:Ligne 3 .*quantité/);
   assert.match(texts, /error:Ligne 4 .*prix/);
-  assert.match(texts, /warn:Ligne 5 .*incertaine/);
+  assert.match(texts, /warn:Lecture incertaine \(ligne 5\)/);
   assert.match(texts, /warn:Total du bon non lu/);
 });
 
@@ -79,4 +79,22 @@ test('bon déjà importé', () => {
 
 test('analyse en cours ou en échec : pas de contrôle', () => {
   assert.deepEqual(draftChecks(draft([line({ quantity: 0 })], 5, { extractionStatus: 'processing' }), TODAY), []);
+});
+
+test('ordonnance, document hors sujet, plusieurs bons, photo illisible : approbation impossible', () => {
+  const base = draft([line({})], 1000);
+  const as = (o: Partial<DraftRecord['extractedData']>) => ({ ...base, extractedData: { ...base.extractedData, ...o } });
+  for (const [o, word] of [[{ documentType: 'ordonnance', lineItems: [] }, 'ordonnance'], [{ documentType: 'autre', lineItems: [] }, 'ni un bon'],
+    [{ documentType: 'avoir' }, 'avoir'], [{ documentCount: 2 }, '2 documents'], [{ photoQuality: 'illisible' }, 'illisible'], [{ lineItems: [] }, 'aucune ligne'], [{ lineItems: [line({ designation: 'illisible (ligne 1)' })] }, 'illisible']] as const) {
+    const d = as(o as never);
+    assert.match(blockingReason(d) ?? '', new RegExp(word, 'i'));
+    const c = draftChecks(d, TODAY);
+    assert.equal(c.length, 1); assert.equal(c[0].level, 'error');
+  }
+  assert.equal(blockingReason(as({ documentCount: 1, photoQuality: 'moyenne' })), undefined);
+});
+
+test('lignes incertaines regroupées en une seule alerte', () => {
+  const c = draftChecks(draft([line({ confidence: 0.6 }), line({ confidence: 0.7 })], 2000), TODAY);
+  assert.deepEqual(c.map((x) => x.text), ['Lecture incertaine (toutes les lignes) : comparez avec la photo.']);
 });
