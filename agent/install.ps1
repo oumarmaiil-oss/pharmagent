@@ -33,12 +33,45 @@ $Uv = (Get-Command uv).Source
 Step '2/5 Python et dependances (1 a 3 minutes la premiere fois)'
 Run 'creation de Python' { & $Uv venv --quiet --allow-existing --python 3.12 "$AppDir\venv" }
 $Py = "$AppDir\venv\Scripts\python.exe"
-Run 'installation des dependances' { & $Uv pip install --quiet --python $Py --upgrade 'playwright>=1.47' pynput }
+Run 'installation des dependances' { & $Uv pip install --quiet --python $Py --upgrade 'playwright>=1.47' }
 
 Step '3/5 Navigateur'
-$Edge = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe") | Where-Object { Test-Path $_ }
-if ($Edge) { Write-Host '    Microsoft Edge present : rien a telecharger.' }
-else { Run 'telechargement du navigateur' { & $Py -m playwright install chromium } }
+# Verifie que Playwright pilote reellement un navigateur : sans ce controle la
+# panne n'apparait qu'au premier remplissage d'ERP.
+$Probe = @'
+import sys
+try:
+    from playwright.sync_api import sync_playwright
+except Exception as e:
+    print("ABSENT|%s" % e); sys.exit(0)
+last = "aucun navigateur"
+try:
+    with sync_playwright() as p:
+        for ch in ["msedge", "chrome", None]:
+            try:
+                kw = {"headless": True}
+                if ch:
+                    kw["channel"] = ch
+                p.chromium.launch(**kw).close()
+                print("OK|%s" % (ch or "Chromium")); sys.exit(0)
+            except Exception as e:
+                last = str(e).splitlines()[0][:160]
+except Exception as e:
+    last = str(e).splitlines()[0][:160]
+print("ECHEC|%s" % last)
+'@
+$ProbeFile = "$AppDir\browser_check.py"
+Set-Content -Path $ProbeFile -Value $Probe -Encoding UTF8
+$Result = (& $Py $ProbeFile 2>$null | Select-Object -Last 1)
+if ($Result -notlike 'OK|*') {
+    Write-Host '    Aucun navigateur pilotable : telechargement de Chromium...'
+    & $Py -m playwright install chromium
+    $Result = (& $Py $ProbeFile 2>$null | Select-Object -Last 1)
+}
+Remove-Item -Force $ProbeFile -ErrorAction SilentlyContinue
+$BrowserOk = $Result -like 'OK|*'
+if ($BrowserOk) { Write-Host ('    Navigateur verifie : ' + $Result.Split('|')[1] + ' demarre correctement.') }
+else { Write-Host ('    Le navigateur ne demarre pas : ' + $Result.Split('|')[-1]) -ForegroundColor Yellow }
 
 Step '4/5 Agent PharmAgent'
 Invoke-WebRequest "$Server/agent/pharmagent_agent.py" -OutFile "$AppDir\pharmagent_agent.py.new" -UseBasicParsing
@@ -70,7 +103,12 @@ Start-Sleep -Seconds 1
 Start-Process -FilePath $Pyw -ArgumentList "`"$Agent`" --server $Server" -WorkingDirectory $AppDir
 
 Write-Host ''
-Write-Host '  Installation terminee.' -ForegroundColor Green
+if ($BrowserOk) { Write-Host '  Installation terminee et verifiee.' -ForegroundColor Green }
+else {
+    Write-Host '  Agent installe, mais le navigateur ne demarre pas.' -ForegroundColor Yellow
+    Write-Host '  L''agent fonctionnera pour tout sauf le remplissage de l''ERP.'
+    Write-Host '  Installez Microsoft Edge ou Google Chrome, puis relancez cet installeur.'
+}
 Write-Host '  Le panneau PharmAgent s''ouvre dans le navigateur (http://127.0.0.1:8765).'
 Write-Host '  Il affiche un code a 6 chiffres : saisissez-le dans PharmAgent > Agent local.'
 Write-Host '  Une icone PharmAgent a ete ajoutee sur le Bureau.'
