@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-AGENT_VERSION = "2.2.3"
+AGENT_VERSION = "2.2.4"
 DEFAULT_SERVER = "https://pharmagent.onrender.com"
 PANEL_PORT = int(os.environ.get("PHARMAGENT_PORT", "8765"))
 POLL_SECONDS = float(os.environ.get("PHARMAGENT_POLL", "5"))
@@ -1954,7 +1954,10 @@ def replace_running_agent(panel_url: str) -> bool:
             old = json.loads(r.read())
         if old.get("version") == AGENT_VERSION:
             return False
-        urllib.request.urlopen(urllib.request.Request(panel_url + "api/quit", data=b"{}", method="POST", headers=hdr), timeout=5).read()
+        try:
+            urllib.request.urlopen(urllib.request.Request(panel_url + "api/quit", data=b"{}", method="POST", headers=hdr), timeout=5).read()
+        except Exception:
+            pass  # l'ancien agent peut couper la connexion en s'arrêtant, avant d'avoir répondu
         time.sleep(2.5)
         return True
     except Exception:

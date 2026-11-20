@@ -69,6 +69,7 @@ def handler(version):
             self.wfile.write(body)
 
         def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
             quits.append(self.path)
             self.send_response(200)
             self.send_header("Content-Length", "2")
