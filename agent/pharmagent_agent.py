@@ -738,6 +738,10 @@ class Engine:
             if filler.skipped:
                 message += " Non rempli : " + ", ".join(filler.skipped[:6]) + "."
             message += " Vérifiez puis validez dans l'ERP."
+            try:
+                page.screenshot(path=str(HOME / "derniere_saisie.png"), full_page=True)
+            except Exception:
+                pass
             if not filler.filled:
                 status = "failed"
                 message = ("Rien n'a pu être rempli sur « %s » : les champs du formulaire n'ont pas été reconnus."
