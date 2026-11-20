@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-AGENT_VERSION = "2.2.1"
+AGENT_VERSION = "2.2.2"
 DEFAULT_SERVER = "https://pharmagent.onrender.com"
 PANEL_PORT = int(os.environ.get("PHARMAGENT_PORT", "8765"))
 POLL_SECONDS = float(os.environ.get("PHARMAGENT_POLL", "5"))
@@ -390,9 +390,23 @@ def activate_window(title: str) -> bool:
             hwnd = found[0]
             if user32.IsIconic(hwnd):
                 user32.ShowWindow(hwnd, 9)
-            user32.keybd_event(0x12, 0, 0, 0)  # Alt : autorise le passage au premier plan
-            user32.keybd_event(0x12, 0, 2, 0)
-            user32.SetForegroundWindow(hwnd)
+            fg = user32.GetForegroundWindow()
+            if fg == hwnd:
+                return True
+            # Jamais de touche Alt seule : elle ouvre le menu de l'ERP et la frappe suivante y déclencherait une commande
+            cur = ctypes.windll.kernel32.GetCurrentThreadId()
+            fg_thread = user32.GetWindowThreadProcessId(fg, None) if fg else 0
+            attached = bool(fg_thread) and fg_thread != cur and bool(user32.AttachThreadInput(cur, fg_thread, True))
+            try:
+                user32.SetForegroundWindow(hwnd)
+                user32.BringWindowToTop(hwnd)
+            finally:
+                if attached:
+                    user32.AttachThreadInput(cur, fg_thread, False)
+            if user32.GetForegroundWindow() != hwnd:
+                user32.keybd_event(0x10, 0, 0, 0)  # Maj : frappe neutre qui autorise le passage au premier plan
+                user32.keybd_event(0x10, 0, 2, 0)
+                user32.SetForegroundWindow(hwnd)
             return True
         if SYSTEM == "Darwin":
             safe = title.replace('"', "")
