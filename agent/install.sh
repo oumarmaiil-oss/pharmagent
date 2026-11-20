@@ -29,7 +29,15 @@ UV="$(command -v uv)" || fail "uv introuvable après installation."
 step "2/5 Python $PY_VERSION et dépendances (1 à 3 minutes la première fois)"
 "$UV" venv --quiet --allow-existing --python "$PY_VERSION" "$APP_DIR/venv"
 PY="$APP_DIR/venv/bin/python"
-"$UV" pip install --quiet --python "$PY" --upgrade "playwright>=1.47" pynput
+# macOS 12 (Monterey) et antérieur : playwright>=1.45 nécessite macOS 13+
+# On utilise la dernière version Node 18 (1.37) compatible macOS 12
+MACOS_MAJOR=$(sw_vers -productVersion 2>/dev/null | cut -d. -f1 || echo "14")
+if [ "$OS" = "Darwin" ] && [ "${MACOS_MAJOR}" -lt 13 ]; then
+  PW_SPEC="playwright==1.37.0"
+else
+  PW_SPEC="playwright>=1.47"
+fi
+"$UV" pip install --quiet --python "$PY" --upgrade "$PW_SPEC" pynput
 
 step "3/5 Navigateur pour les ERP web"
 if [ -n "${PHARMAGENT_SKIP_BROWSER:-}" ]; then
