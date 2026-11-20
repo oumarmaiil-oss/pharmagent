@@ -701,7 +701,7 @@ class KeyPlayer:
 
     def ensure_window(self) -> None:
         if not self.title:
-            raise StepError("Aucun logiciel choisi : refaites le réglage dans le panneau de l'agent.")
+            raise StepError("Aucun logiciel choisi : refaites le réglage dans le panneau d'Agent Floki.")
         if foreground_is(self.title):
             return
         if not activate_window(self.title):
@@ -1025,7 +1025,7 @@ def web_steps_from(events: List[Dict[str, Any]], phase: str, sample: Dict[str, A
         elif t == "click":
             text = ev.get("text", "")
             if forbidden_text(text):
-                warnings.append(f"Clic sur « {text} » ignoré : PharmAgent ne valide jamais à la place du pharmacien.")
+                warnings.append(f"Clic sur « {text} » ignoré : Agent Floki ne valide jamais à la place du pharmacien.")
                 continue
             prev = next((s for s in reversed(steps) if s["kind"] != "press"), None)
             if ev.get("isOption") and prev and prev["kind"] == "fill":
@@ -1302,7 +1302,7 @@ class WebDriver:
                 except Exception:
                     pass
                 if forbidden_text(actual) or forbidden_text(st.get("text", "")):
-                    raise GuardrailError(f"Garde-fou : clic sur « {actual or st.get('text')} » refusé. PharmAgent ne valide jamais.")
+                    raise GuardrailError(f"Garde-fou : clic sur « {actual or st.get('text')} » refusé. Agent Floki ne valide jamais.")
                 loc.click(timeout=5000)
             elif kind == "press":
                 key = st.get("key", "")
@@ -1727,7 +1727,7 @@ class Engine:
         if name == "pharmsync":
             # Scan la page ERP ouverte et mappe les champs via l'IA
             if not self.web.is_open:
-                raise ValueError("Ouvrez d'abord l'ERP dans le navigateur PharmAgent.")
+                raise ValueError("Ouvrez d'abord l'ERP dans le navigateur Agent Floki.")
             page = self.web.page()
             mapper = SmartMapper()
             survey = mapper.survey(page)
@@ -2111,7 +2111,7 @@ class Engine:
             self.last_error = str(e)
 
     def loop(self) -> None:
-        log.info("Agent PharmAgent %s démarré (%s) — serveur %s", AGENT_VERSION, SYSTEM, self.api.server)
+        log.info("Agent Floki %s démarré (%s) — serveur %s", AGENT_VERSION, SYSTEM, self.api.server)
         while not self.shutdown.is_set():
             if time.time() - self._last_update_check > 1800 and not (self.recording or self.review or self.task):
                 self._last_update_check = time.time()
@@ -2180,7 +2180,7 @@ class Engine:
 
 PANEL_HTML = r"""<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PharmAgent — Agent local</title>
+<title>Agent Floki — PharmAgent</title>
 <style>
 :root{--bg:#070d1a;--card:#0e1729;--card2:#132036;--line:#1e2d47;--text:#e8eef9;--muted:#8a9bb8;--brand:#10b981;--brand2:#34d399;--warn:#f59e0b;--bad:#f87171;--blue:#60a5fa}
 *{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:var(--text);background:var(--bg);min-height:100vh}
@@ -2213,10 +2213,10 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:8px 6px;b
 .muted{color:var(--muted);font-size:13px}
 </style></head><body><div class="wrap">
 <header><div class="logo"><svg width="22" height="22" viewBox="0 0 32 32"><path d="M16 6v20M6 16h20" stroke="#fff" stroke-width="4" stroke-linecap="round"/></svg></div>
-<div><h1>PharmAgent — Agent local</h1><div class="sub" id="sub"></div></div><span class="pill" id="pill">…</span></header>
+<div><h1>Agent Floki</h1><div class="sub" id="sub"></div></div><span class="pill" id="pill">…</span></header>
 <div id="app"></div>
 <div class="card"><div class="shield"><span>🛡️</span><div><b>Garde-fou actif.</b> L'agent remplit l'écran de saisie de l'ERP puis s'arrête. Il ne clique jamais sur Valider, Confirmer, Clôturer ou Enregistrer définitivement : la validation reste au pharmacien.</div></div></div>
-<div class="card"><h2>Aide à distance</h2><p class="muted">Envoie au support une capture de l'écran, l'état et le journal de l'agent. Rien n'est envoyé sans ce clic. Donnez ensuite le code au support (valable 1 heure).</p>
+<div class="card"><h2>Aide à distance</h2><p class="muted">Envoie au support une capture de l'écran, l'état et le journal d'Agent Floki. Rien n'est envoyé sans ce clic. Donnez ensuite le code au support (valable 1 heure).</p>
 <div class="row"><button class="sec" id="supbtn" onclick="support()">Envoyer au support</button></div><div id="supcode"></div></div>
 <details class="card"><summary class="muted" style="cursor:pointer">Journal de l'agent</summary><div class="logs" id="logs"></div></details>
 </div>
@@ -2239,24 +2239,24 @@ function render(){if(!S)return;const st=S.status;
  $('#logs').innerHTML=S.logs.slice().reverse().map(l=>`<div>${l.t} ${esc(l.msg)}</div>`).join('');
  const a=$('#app');let h='';
  if(!S.serverOk&&S.lastError)h+=`<div class="alert e">${esc(S.lastError)} — vérifiez la connexion Internet.</div>`;
- if(st==='pairing'){h+=`<div class="card"><h2>Relier cet ordinateur à l'officine</h2><p>Sur votre téléphone, ouvrez <b>PharmAgent › Agent local</b>, choisissez l'officine puis <b>Appairer un ordinateur</b> et saisissez ce code :</p>
+ if(st==='pairing'){h+=`<div class="card"><h2>Relier cet ordinateur à l'officine</h2><p>Sur votre téléphone, ouvrez <b>PharmAgent › Agent Floki</b>, choisissez l'officine puis <b>Appairer un ordinateur</b> et saisissez ce code :</p>
   <div class="code">${S.pairingCode?esc(S.pairingCode):'…'}</div><p class="muted">Le code est valable 15 minutes. Cette page se met à jour toute seule.</p></div>`}
  else if(st==='setup'){const m=setupMode||S.setup.mode||'web';h+=`<div class="card">${stepsBar(1)}<h2>1. Où se trouve l'ERP de l'officine ?</h2>
   <div class="grid2" style="margin-top:12px"><button class="choice ${m==='web'?'on':''}" onclick="setupMode='web';render()"><div class="t">🌐 Site web</div><div class="d">L'ERP s'ouvre dans un navigateur (adresse https://…)</div></button>
   <button class="choice ${m==='desktop'?'on':''}" onclick="setupMode='desktop';loadWins()"><div class="t">🖥️ Logiciel installé</div><div class="d">Un logiciel de pharmacie sur cet ordinateur (saisie au clavier, démo une fois)</div></button>
   <button class="choice ${m==='file'?'on':''}" onclick="setupMode='file';render()"><div class="t">📄 Fichier Excel ou Numbers</div><div class="d">Le bon est écrit directement dans le fichier : aucune démo, aucune frappe</div></button></div>`;
-  if(m==='file')h+=`<p>Choisissez votre fichier de réception (modèle vide). Pour chaque bon approuvé, PharmAgent crée à côté une copie remplie, <b>« nom du fichier - N° du bon »</b>, et l'ouvre. Votre modèle n'est jamais modifié.</p>
+  if(m==='file')h+=`<p>Choisissez votre fichier de réception (modèle vide). Pour chaque bon approuvé, Agent Floki crée à côté une copie remplie, <b>« nom du fichier - N° du bon »</b>, et l'ouvre. Votre modèle n'est jamais modifié.</p>
    <div class="row"><button class="sec" ${busy?'disabled':''} onclick="pickFile()">Choisir le fichier…</button></div>
    <label class="l">ou collez son chemin (Mac : clic droit sur le fichier, touche Option › « Copier … en tant que nom de chemin »)</label><input id="fpath" placeholder="/Users/…/Reception.numbers" value="${esc(filePick||'')}" oninput="filePick=this.value.trim().replace(/^['\"]|['\"]$/g,'')">${filePick?`<p class="muted">Fichier : <b>${esc(filePick)}</b></p><div class="row"><button ${busy?'disabled':''} onclick="call('setup',{mode:'file',filePath:filePick})">Utiliser ce fichier</button></div>`:''}`;
-  else if(m==='web')h+=`<label class="l">Adresse de l'ERP</label><input id="url" placeholder="https://erp.mapharmacie.sn" oninput="urlPick=this.value" value="${esc(urlPick??(S.setup.erpUrl||''))}"><div class="row"><button class="big" ${busy?'disabled':''} onclick="call('setup',{mode:'web',erpUrl:$('#url').value})">Ouvrir l'ERP dans le navigateur PharmAgent</button></div><p class="muted">Un navigateur dédié s'ouvre : connectez-vous à l'ERP une fois, la session est conservée.</p>`;
+  else if(m==='web')h+=`<label class="l">Adresse de l'ERP</label><input id="url" placeholder="https://erp.mapharmacie.sn" oninput="urlPick=this.value" value="${esc(urlPick??(S.setup.erpUrl||''))}"><div class="row"><button class="big" ${busy?'disabled':''} onclick="call('setup',{mode:'web',erpUrl:$('#url').value})">Ouvrir l'ERP dans le navigateur Agent Floki</button></div><p class="muted">Un navigateur dédié s'ouvre : connectez-vous à l'ERP une fois, la session est conservée.</p>`;
   else h+=`<label class="l">Fenêtre de l'ERP (ouvrez d'abord le logiciel)</label><select id="win" onchange="winPick=this.value"><option value="">— Choisissez la fenêtre de l'ERP —</option>${(winList||[]).map(w=>`<option ${w===(winPick??S.setup.windowTitle)?'selected':''}>${esc(w)}</option>`).join('')}</select>
    <div class="row"><button class="sec" onclick="loadWins()">Actualiser la liste</button><button ${busy?'disabled':''} onclick="call('setup',{mode:'desktop',windowTitle:$('#win').value})">Continuer</button></div>
    ${macAlert()}`;
   h+='</div>'}
  else if(st==='prepare'){h+=`<div class="card">${stepsBar(2)}<h2>2. Démonstration (une seule fois)</h2>
-  <p>Ouvrez dans l'ERP l'écran de <b>réception d'un bon de livraison</b> (nouvelle réception). Vous allez saisir <b>l'en-tête puis une ligne</b>, normalement, pendant que PharmAgent observe.</p>
+  <p>Ouvrez dans l'ERP l'écran de <b>réception d'un bon de livraison</b> (nouvelle réception). Vous allez saisir <b>l'en-tête puis une ligne</b>, normalement, pendant que Agent Floki observe.</p>
   <p>${S.setup.mode==='desktop'?'Logiciel installé : utilisez <b>uniquement le clavier</b> (Tab, Entrée, flèches) pour passer d\'un champ à l\'autre.':'Utilisez la souris ou le clavier comme d\'habitude.'}</p>
-  <div class="alert w">Ne cliquez pas sur Valider à la fin : PharmAgent s'arrête toujours avant.</div>
+  <div class="alert w">Ne cliquez pas sur Valider à la fin : Agent Floki s'arrête toujours avant.</div>
   ${S.setup.mode==='desktop'?`<p class="muted">Fenêtre surveillée : <b>${esc(S.setup.windowTitle||'')}</b> (« Changer d'ERP » pour en choisir une autre)</p>`:''}${macAlert()}
   <div class="row"><button class="sec" onclick="call('open_erp')">Afficher l'ERP</button><button class="sec" onclick="call('change_setup')">Changer d'ERP</button><button ${busy?'disabled':''} onclick="call('record_start',{phase:'header'})">▶ Commencer la démo</button></div></div>`}
  else if(st==='rec_header'||st==='rec_line'){const ph=st==='rec_header'?'header':'line';h+=`<div class="card">${stepsBar(ph==='header'?2:3)}<span class="rec">Enregistrement</span>
@@ -2266,7 +2266,7 @@ function render(){if(!S)return;const st=S.status;
   ${S.recording.fgOk===undefined?'':(S.recording.fgOk?`<p class="muted">Fenêtre active : <b>${esc(S.recording.fgTitle)}</b> ✓</p>`:`<div class="alert w">La fenêtre active est « ${esc(S.recording.fgTitle)} », pas « ${esc(S.recording.wanted)} » : vos touches sont ignorées. Cliquez sur la barre de titre de « ${esc(S.recording.wanted)} ».</div>`)}${macAlert()}<div class="logs">${S.recording.preview.map(esc).join('<br>')||'En attente de vos saisies…'}</div>
   <div class="row"><button class="sec" onclick="call('record_cancel')">Annuler</button><button ${busy?'disabled':''} onclick="call('record_stop')">${ph==='header'?"✓ En-tête terminé (ou pas d'en-tête)":'✓ Ligne terminée'}</button></div></div>`}
  else if(st==='review'){const r=S.review;if(!edit)edit={headerSteps:JSON.parse(JSON.stringify(r.headerSteps)),lineSteps:JSON.parse(JSON.stringify(r.lineSteps))};
-  h+=`<div class="card">${stepsBar(4)}<h2>3. Vérifiez ce que PharmAgent a compris</h2><p>Pour chaque saisie, le champ du bon à utiliser. « Texte fixe » retape toujours la même valeur.</p>`+(r.warnings||[]).map(w=>`<div class="alert w">${esc(w)}</div>`).join('');
+  h+=`<div class="card">${stepsBar(4)}<h2>3. Vérifiez ce qu'Agent Floki a compris</h2><p>Pour chaque saisie, le champ du bon à utiliser. « Texte fixe » retape toujours la même valeur.</p>`+(r.warnings||[]).map(w=>`<div class="alert w">${esc(w)}</div>`).join('');
   for(const part of ['headerSteps','lineSteps']){const list=edit[part];if(!list.length)continue;h+=`<h2 style="margin-top:14px">${part==='headerSteps'?'En-tête':'Chaque ligne'}</h2><table><tr><th>#</th><th>Action</th><th>Valeur de la démo</th><th>Champ du bon</th></tr>`;
    list.forEach((s,i)=>{const act={fill:'Saisie',select:'Liste',type:'Saisie',pick:'Choix dans la liste',click:'Clic',press:'Touche',key:'Touche'}[s.kind]||s.kind;
     const val=s.kind==='click'?s.text:s.kind==='press'||s.kind==='key'?s.key:s.value;
@@ -2277,8 +2277,8 @@ function render(){if(!S)return;const st=S.status;
  else if(st==='running'){const t=S.task;const pc=t.total?Math.round(100*t.done/t.total):0;h+=`<div class="card"><h2>${t.test?'Test sur l\'exemple':'Saisie du bon '+esc(t.documentNumber)}</h2><div class="bar"><i style="width:${pc}%"></i></div>
   <p>${t.done} / ${t.total} ligne(s) · ${esc(t.current||'')}</p>${S.profile&&S.profile.mode==='desktop'?'<p class="muted">Ne touchez pas au clavier. Touche <b>Échap</b> pour arrêter.</p>':''}</div>`}
  else{const p=S.profile||{};const lr=S.lastResult;h+=`<div class="card"><h2><span style="display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:8px;background:${st==='paused'?'var(--warn)':'var(--brand)'};box-shadow:0 0 10px ${st==='paused'?'var(--warn)':'var(--brand)'}"></span>${st==='paused'?'Agent en pause':'Prêt : en attente des bons approuvés'}</h2>
-  <p>Dès qu'un bon est approuvé dans PharmAgent (téléphone ou ordinateur), il est ${p.mode==='file'?'écrit automatiquement dans une copie du fichier « '+esc((p.filePath||'').split(/[\\/]/).pop())+' », qui s\'ouvre':'saisi ici automatiquement dans l\'ERP'+(p.mode==='web'?' (navigateur PharmAgent)':' « '+esc(p.windowTitle||'')+' »')}.</p>
-  ${p.mode==='desktop'&&/numbers|excel|libreoffice|calc/i.test(p.windowTitle||'')?`<div class="alert w"><b>« ${esc(p.windowTitle)} » est un tableur.</b> Le mode clavier y est peu fiable. Passez en <b>mode Fichier</b> : PharmAgent écrit directement dans le fichier, sans démo.<div class="row"><button onclick="setupMode='file';call('change_setup')">Passer en mode Fichier</button></div></div>`:''}
+  <p>Dès qu'un bon est approuvé dans PharmAgent (téléphone ou ordinateur), il est ${p.mode==='file'?'écrit automatiquement dans une copie du fichier « '+esc((p.filePath||'').split(/[\\/]/).pop())+' », qui s\'ouvre':'saisi ici automatiquement dans l\'ERP'+(p.mode==='web'?' (navigateur Agent Floki)':' « '+esc(p.windowTitle||'')+' »')}.</p>
+  ${p.mode==='desktop'&&/numbers|excel|libreoffice|calc/i.test(p.windowTitle||'')?`<div class="alert w"><b>« ${esc(p.windowTitle)} » est un tableur.</b> Le mode clavier y est peu fiable. Passez en <b>mode Fichier</b> : Agent Floki écrit directement dans le fichier, sans démo.<div class="row"><button onclick="setupMode='file';call('change_setup')">Passer en mode Fichier</button></div></div>`:''}
   ${lr?`<div class="alert ${lr.status==='done'?'g':'e'}"><b>${lr.test?'Test':'Dernier bon'} ${esc(lr.documentNumber)}</b> · ${esc(lr.at)}<br>${esc(lr.message)}</div>`:''}
   ${lr&&lr.skipped&&lr.skipped.length?`<div class="alert w"><b>Champs non remplis (${lr.skipped.length})</b><ul style="margin:6px 0 0 16px">${lr.skipped.map(s=>`<li>${esc(s)}</li>`).join('')}</ul><div class="row" style="margin-top:8px"><button class="sec" onclick="call('pharmsync').then(()=>alert('Mémorisation lancée — naviguez vers le formulaire BL dans l\\'ERP puis cliquez Mémoriser.'))">Corriger maintenant</button><button class="sec" onclick="alert('Les champs manquants ont été enregistrés dans le dossier de formation.')">Corriger plus tard</button></div></div>`:''}
   <div class="row">${p.mode==='file'?'':`<button ${busy?'disabled':''} onclick="call('test_run')">▶ Tester avec l'exemple</button>`}${p.mode==='web'?`<button class="sec" ${busy?'disabled':''} onclick="call('pharmsync').then(r=>alert('PharmSync : '+JSON.stringify(r)))">🔍 PharmSync</button>`:''}${p.mode==='web'?`<button class="sec" ${busy?'disabled':''} onclick="call('memorize').then(()=>alert('Mapping mémorisé.'))">💾 Mémoriser</button>`:''}

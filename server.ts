@@ -1220,7 +1220,7 @@ app.post('/api/agent-client/support', (req, res) => {
       logs: Array.isArray(b.logs) ? b.logs.slice(-200).map((l) => String(l).slice(0, 300)) : [], profile: store.getProfile(ph.id) ?? null,
       queue: store.getDrafts(ph.id).filter((d) => d.status === 'approved').slice(0, 10).map((d) => ({ id: d.id, n: d.extractedData.documentNumber, execution: d.execution })) },
   });
-  store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent local', action: `Aide à distance : informations envoyées (code ${code})`, level: 'info' });
+  store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent Floki', action: `Aide à distance : informations envoyées (code ${code})`, level: 'info' });
   res.json({ code });
 });
 
@@ -1303,7 +1303,7 @@ app.put('/api/agent-client/profile', (req, res) => {
     const filePath = typeof b.filePath === 'string' ? b.filePath.slice(0, 1000) : '';
     if (!filePath) { res.status(400).json({ error: 'Choisissez le fichier à remplir.' }); return; }
     const profile = store.saveProfile({ pharmacyId: ph.id, mode: 'file', filePath, headerSteps: [], lineSteps: [], recordedAt: new Date().toISOString() });
-    store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent local', action: `Réglage : remplissage direct du fichier « ${filePath.split(/[\\/]/).pop()} »`, level: 'info' });
+    store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent Floki', action: `Réglage : remplissage direct du fichier « ${filePath.split(/[\\/]/).pop()} »`, level: 'info' });
     res.json({ profile });
     return;
   }
@@ -1312,7 +1312,7 @@ app.put('/api/agent-client/profile', (req, res) => {
   const lines = sanitizeSteps(b.lineSteps);
   const error = header.error ?? lines.error;
   if (error) {
-    store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent local', action: 'Démo refusée par le garde-fou', level: 'blocked', details: error });
+    store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent Floki', action: 'Démo refusée par le garde-fou', level: 'blocked', details: error });
     res.status(400).json({ error });
     return;
   }
@@ -1327,7 +1327,7 @@ app.put('/api/agent-client/profile', (req, res) => {
     lineSteps: lines.steps,
     recordedAt: new Date().toISOString(),
   });
-  store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent local', action: `Démo enregistrée (${b.mode === 'web' ? 'ERP web' : 'logiciel installé'}) — ${lines.steps.length} étapes par ligne`, level: 'info' });
+  store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent Floki', action: `Démo enregistrée (${b.mode === 'web' ? 'ERP web' : 'logiciel installé'}) — ${lines.steps.length} étapes par ligne`, level: 'info' });
   res.json({ profile });
 });
 
@@ -1353,7 +1353,7 @@ app.post('/api/agent-client/claim', (req, res) => {
   store.touchAgent(ph.id, {});
   const draft = store.claimNextExecution(ph.id);
   if (!draft) { res.json({ task: null }); return; }
-  store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent local', action: `Saisie démarrée : ${draft.extractedData.documentNumber || draft.id} (${draft.extractedData.lineItems.length} lignes)`, level: 'info' });
+  store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent Floki', action: `Saisie démarrée : ${draft.extractedData.documentNumber || draft.id} (${draft.extractedData.lineItems.length} lignes)`, level: 'info' });
   const payload = buildTaskPayload(draft);
   res.json({ task: { ...payload, validationLevel: ph.validationLevel ?? 1 } });
 });
@@ -1373,7 +1373,7 @@ app.post('/api/agent-client/tasks/:draftId/result', (req, res) => {
   if (!draft) { res.status(409).json({ error: 'Cette saisie n\'est pas en cours (déjà terminée ou relancée).' }); return; }
   const okCount = lines?.filter((l) => l.ok).length ?? 0;
   store.addAuditLog({
-    pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent local',
+    pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent Floki',
     action: b.status === 'done'
       ? `Saisie terminée : ${draft.extractedData.documentNumber || draft.id} — ${okCount} ligne(s) en ${Math.round((b.durationMs ?? 0) / 1000)} s`
       : `Saisie en échec : ${draft.extractedData.documentNumber || draft.id}`,
