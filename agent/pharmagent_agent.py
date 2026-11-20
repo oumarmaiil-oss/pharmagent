@@ -1130,7 +1130,10 @@ class WebDriver:
             except Exception as e:  # navigateur absent : on essaie le suivant
                 last_err = e
         else:
-            raise RuntimeError(f"Impossible d'ouvrir le navigateur : {last_err}")
+            raise RuntimeError(
+                f"Impossible d'ouvrir le navigateur ({last_err}). "
+                "Solution : ouvrez un Terminal et tapez : python -m playwright install chromium"
+            )
         self.ctx.add_init_script(RECORDER_JS)
         self.ctx.expose_binding("__pharmagentRecord", self._binding)
         self.ctx.on("response", self._on_response)
@@ -1660,8 +1663,8 @@ class Engine:
                 self.setup = {"mode": "desktop", "windowTitle": title}
             self._persist()
             self.status_override = "prepare"  # sinon « Changer d'ERP » laisse le panneau bloqué sur le choix
-            if mode == "web":
-                self.web.open(self.setup["erpUrl"])
+            # Le navigateur s'ouvre seulement quand l'utilisateur clique « Afficher l'ERP »
+            # ou lors de la première saisie — pas au moment du setup (évite plantage Playwright)
             return True
         if name == "mac_permissions":
             mac_request_permissions()
@@ -2256,7 +2259,7 @@ function render(){if(!S)return;const st=S.status;
   if(m==='file')h+=`<p>Choisissez votre fichier de réception (modèle vide). Pour chaque bon approuvé, Agent Floki crée à côté une copie remplie, <b>« nom du fichier - N° du bon »</b>, et l'ouvre. Votre modèle n'est jamais modifié.</p>
    <div class="row"><button class="sec" ${busy?'disabled':''} onclick="pickFile()">Choisir le fichier…</button></div>
    <label class="l">ou collez son chemin (Mac : clic droit sur le fichier, touche Option › « Copier … en tant que nom de chemin »)</label><input id="fpath" placeholder="/Users/…/Reception.numbers" value="${esc(filePick||'')}" oninput="filePick=this.value.trim().replace(/^['\"]|['\"]$/g,'')">${filePick?`<p class="muted">Fichier : <b>${esc(filePick)}</b></p><div class="row"><button ${busy?'disabled':''} onclick="call('setup',{mode:'file',filePath:filePick})">Utiliser ce fichier</button></div>`:''}`;
-  else if(m==='web')h+=`<label class="l">Adresse de l'ERP</label><input id="url" placeholder="https://erp.mapharmacie.sn" oninput="urlPick=this.value" value="${esc(urlPick??(S.setup.erpUrl||''))}"><div class="row"><button class="big" ${busy?'disabled':''} onclick="call('setup',{mode:'web',erpUrl:$('#url').value})">Ouvrir l'ERP dans le navigateur Agent Floki</button></div><p class="muted">Un navigateur dédié s'ouvre : connectez-vous à l'ERP une fois, la session est conservée.</p>`;
+  else if(m==='web')h+=`<label class="l">Adresse de l'ERP</label><input id="url" placeholder="https://erp.mapharmacie.sn" oninput="urlPick=this.value" value="${esc(urlPick??(S.setup.erpUrl||''))}"><div class="row"><button class="big" ${busy?'disabled':''} onclick="call('setup',{mode:'web',erpUrl:$('#url').value})">Continuer →</button></div><p class="muted">Le navigateur Agent Floki s'ouvrira à l'étape suivante.</p>`;
   else h+=`<label class="l">Fenêtre de l'ERP (ouvrez d'abord le logiciel)</label><select id="win" onchange="winPick=this.value"><option value="">— Choisissez la fenêtre de l'ERP —</option>${(winList||[]).map(w=>`<option ${w===(winPick??S.setup.windowTitle)?'selected':''}>${esc(w)}</option>`).join('')}</select>
    <div class="row"><button class="sec" onclick="loadWins()">Actualiser la liste</button><button ${busy?'disabled':''} onclick="call('setup',{mode:'desktop',windowTitle:$('#win').value})">Continuer</button></div>
    ${macAlert()}`;
