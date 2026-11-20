@@ -59,7 +59,9 @@ export function blockingReason(draft: DraftRecord): string | undefined {
     return 'Photo illisible : reprenez-la à plat, bien éclairée, le bon entier dans le cadre, sans compression (pas de capture WhatsApp).';
   }
   if (!lines.length) {
-    return 'Aucune ligne de produit lue : photo trop petite, floue ou coupée. Reprenez-la à plat, le bon entier dans le cadre.';
+    return data.source === 'fichier'
+      ? "Ce fichier ne contient aucune ligne de produit à saisir (modèle vide ?). Pour REMPLIR un tableau Excel, choisissez « Autre (tableau Excel) » au lieu de « Bon de livraison »."
+      : 'Aucune ligne de produit lue : photo trop petite, floue ou coupée. Reprenez-la à plat, le bon entier dans le cadre.';
   }
   return undefined;
 }

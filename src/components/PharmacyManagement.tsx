@@ -1,6 +1,7 @@
-import { Building2, ChevronDown, ChevronUp, Download, Loader2, Plus, Upload } from 'lucide-react';
+import { Building2, ChevronRight, Download, Loader2, Plus, Upload } from 'lucide-react';
 import { useRef, useState } from 'react';
-import PharmacyAdmin, { SOFTWARE_OPTIONS } from './PharmacyAdmin.tsx';
+import CredentialsDialog from './CredentialsDialog.tsx';
+import { SOFTWARE_OPTIONS } from './PharmacyAdmin.tsx';
 import type { DashboardSnapshot, OwnerAccount, TargetSoftwareType } from '../types/pharmagent.ts';
 
 interface Props {
@@ -13,11 +14,10 @@ interface Props {
 }
 
 
-export default function PharmacyManagement({ token, snapshot, onRefresh }: Props) {
+export default function PharmacyManagement({ token, snapshot, onRefresh, onOpen }: Props & { onOpen: (id: string) => void }) {
   const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<{ name: string; code: string; password: string } | null>(null);
   const [form, setForm] = useState({ name: '', city: '', region: '', pharmacist: '', targetSoftware: SOFTWARE_OPTIONS[0] as TargetSoftwareType });
 
@@ -47,34 +47,12 @@ export default function PharmacyManagement({ token, snapshot, onRefresh }: Props
 
   return (
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
-      <BackupCard token={token} />
-
-      {credentials && (
-        // Fenêtre au centre de l'écran : impossible de manquer le mot de passe, où que l'on ait cliqué
-        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" role="dialog" aria-modal="true">
-          <div className="w-full max-w-md rounded-2xl border border-emerald-500/40 bg-slate-900 p-5 space-y-3 shadow-2xl">
-            <div className="text-base font-semibold text-white">Connexion de {credentials.name}</div>
-            <p className="text-xs text-slate-400">Sur l'écran de connexion, tapez simplement ces deux informations (majuscules ou minuscules).</p>
-            <div className="rounded-xl bg-slate-950 border border-slate-700 p-3 space-y-2 text-sm">
-              <div className="flex justify-between gap-3"><span className="text-slate-400">Identifiant</span><span className="font-mono font-bold tracking-widest text-emerald-300" data-testid="cred-code">{credentials.code}</span></div>
-              <div className="flex justify-between gap-3"><span className="text-slate-400">Mot de passe</span><span className="font-mono font-bold tracking-wider text-emerald-300" data-testid="cred-password">{credentials.password}</span></div>
-            </div>
-            <p className="text-xs text-amber-300">Notez-le maintenant : il ne sera plus affiché. Le pharmacien peut le changer ensuite dans « Mon compte ».</p>
-            <div className="flex gap-2">
-              <button
-                onClick={() => { void navigator.clipboard?.writeText(`Identifiant : ${credentials.code}\nMot de passe : ${credentials.password}`); }}
-                className="flex-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-sm py-2 rounded-lg"
-              >Copier</button>
-              <button onClick={() => setCredentials(null)} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold py-2 rounded-lg">J'ai noté</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {credentials && <CredentialsDialog c={credentials} onClose={() => setCredentials(null)} />}
 
       {/* En-tête */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-white">Mes Officines</h1>
+          <h1 className="text-xl font-bold text-white">Officines</h1>
           <p className="text-slate-400 text-sm">{pharmacies.length} officine{pharmacies.length > 1 ? 's' : ''} enregistrée{pharmacies.length > 1 ? 's' : ''}</p>
         </div>
         <button
@@ -135,12 +113,11 @@ export default function PharmacyManagement({ token, snapshot, onRefresh }: Props
         <div className="space-y-3">
           {pharmacies.map((ph) => {
             const stat = snapshot?.stats.find((s) => s.pharmacyId === ph.id);
-            const isOpen = expandedId === ph.id;
             return (
               <div key={ph.id} className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
                 <div
                   className="flex items-center gap-4 p-4 cursor-pointer hover:bg-slate-800/40"
-                  onClick={() => setExpandedId(isOpen ? null : ph.id)}
+                  onClick={() => onOpen(ph.id)}
                 >
                   <div className="w-9 h-9 rounded-lg bg-emerald-500/15 flex items-center justify-center flex-shrink-0">
                     <Building2 size={18} className="text-emerald-400" />
@@ -154,14 +131,10 @@ export default function PharmacyManagement({ token, snapshot, onRefresh }: Props
                       <span className="badge-pending px-2 py-0.5 rounded-full">{stat!.pendingDrafts} en attente</span>
                     )}
                     <span className="text-slate-500 mono text-xs">{ph.usedThisMonth}/{ph.monthlyQuota}</span>
-                    {isOpen ? <ChevronUp size={16} className="text-slate-500" /> : <ChevronDown size={16} className="text-slate-500" />}
+                    <span className="flex items-center gap-1 text-emerald-300">Ouvrir <ChevronRight size={15} /></span>
                   </div>
                 </div>
 
-                {isOpen && (
-                  <PharmacyAdmin key={ph.id} ph={ph} token={token} onChanged={onRefresh}
-                    onCredentials={(c) => setCredentials({ name: c.account === 'equipe' ? `${c.name} — compte Équipe` : c.name, code: c.code, password: c.password })} />
-                )}
               </div>
             );
           })}
@@ -171,7 +144,7 @@ export default function PharmacyManagement({ token, snapshot, onRefresh }: Props
   );
 }
 
-function BackupCard({ token }: { token: string }) {
+export function BackupCard({ token }: { token: string }) {
   const input = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);

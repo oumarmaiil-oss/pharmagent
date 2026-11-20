@@ -1,17 +1,16 @@
 import { useEffect, useState } from 'react';
 import type { DashboardSnapshot, OwnerAccount } from './types/pharmagent.ts';
 import AgentDeployment from './components/AgentDeployment.tsx';
-import AuditLog from './components/AuditLog.tsx';
 import GuideCenter from './components/GuideCenter.tsx';
 import Layout from './components/Layout.tsx';
 import LoginScreen from './components/LoginScreen.tsx';
 import PharmacistWorkspace from './components/PharmacistWorkspace.tsx';
+import AdminCenter from './components/AdminCenter.tsx';
 import OrderPlanner from './components/OrderPlanner.tsx';
 import PharmacyAccount from './components/PharmacyAccount.tsx';
+import PharmacySpace, { type SpaceTab } from './components/PharmacySpace.tsx';
 import PharmacyManagement from './components/PharmacyManagement.tsx';
 import SupervisionDashboard from './components/SupervisionDashboard.tsx';
-import TrainingCenter from './components/TrainingCenter.tsx';
-import UIGrounding from './components/UIGrounding.tsx';
 
 export type AppTab =
   | 'dashboard'
@@ -23,6 +22,7 @@ export type AppTab =
   | 'deployment'
   | 'account'
   | 'orders'
+  | 'admin'
   | 'guide';
 
 export interface PharmacySession {
@@ -35,7 +35,8 @@ export type SessionState =
   | { kind: 'owner'; token: string; owner: OwnerAccount }
   | ({ kind: 'pharmacy'; token: string } & PharmacySession);
 
-const OWNER_TABS: AppTab[] = ['dashboard', 'workspace', 'orders', 'pharmacies', 'training', 'grounding', 'audit', 'deployment', 'guide'];
+// Superviseur : 4 entrées. On entre dans une officine depuis « Officines » (Bons · Commande · Agent · Fiche).
+const OWNER_TABS: AppTab[] = ['dashboard', 'pharmacies', 'admin', 'guide'];
 
 function tabsFor(s: SessionState): AppTab[] {
   if (s.kind === 'owner') return OWNER_TABS;
@@ -49,6 +50,7 @@ export default function App() {
   const [tab, setTab] = useState<AppTab>('dashboard');
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [selectedPharmacyId, setSelectedPharmacyId] = useState<string>('');
+  const [space, setSpace] = useState<{ id: string; tab: SpaceTab } | null>(null);
   const [loading, setLoading] = useState(false);
 
   // Restauration de session depuis le localStorage (vérifiée par le serveur)
@@ -149,17 +151,22 @@ export default function App() {
       pendingCount={snapshot?.pendingDrafts.length ?? 0}
       loading={loading}
     >
-      {session.kind === 'owner' && current === 'dashboard' && <SupervisionDashboard {...commonProps} owner={session.owner} onChangeTab={setTab} />}
-      {session.kind === 'owner' && current === 'pharmacies' && <PharmacyManagement {...commonProps} owner={session.owner} />}
-      {session.kind === 'owner' && current === 'training' && <TrainingCenter {...commonProps} owner={session.owner} />}
-      {session.kind === 'owner' && current === 'grounding' && <UIGrounding token={session.token} />}
-      {session.kind === 'owner' && current === 'audit' && <AuditLog token={session.token} />}
-      {current === 'workspace' && <PharmacistWorkspace {...commonProps} />}
-      {current === 'orders' && (
-        <OrderPlanner token={session.token} pharmacyId={session.kind === 'pharmacy' ? session.pharmacy.id : selectedPharmacyId}
-          canImport={session.kind === 'owner' || session.user.profile === 'pharmacien'} />
+      {session.kind === 'owner' && current === 'dashboard' && (
+        <SupervisionDashboard {...commonProps} owner={session.owner}
+          onSelectPharmacy={(id) => { setSelectedPharmacyId(id); setSpace({ id, tab: 'bons' }); }}
+          onChangeTab={(t) => setTab(t === 'workspace' ? 'pharmacies' : t === 'audit' ? 'admin' : t)} />
       )}
-      {current === 'deployment' && <AgentDeployment token={session.token} snapshot={snapshot} selectedPharmacyId={selectedPharmacyId} onSelectPharmacy={setSelectedPharmacyId} />}
+      {session.kind === 'owner' && current === 'pharmacies' && (space
+        ? <PharmacySpace pharmacyId={space.id} tab={space.tab} onTab={(t) => setSpace({ ...space, tab: t })} onBack={() => setSpace(null)}
+            token={session.token} snapshot={snapshot} onRefresh={commonProps.onRefresh} />
+        : <PharmacyManagement {...commonProps} owner={session.owner} onOpen={(id) => { setSelectedPharmacyId(id); setSpace({ id, tab: 'bons' }); }} />)}
+      {session.kind === 'owner' && current === 'admin' && <AdminCenter {...commonProps} owner={session.owner} />}
+      {session.kind === 'pharmacy' && current === 'workspace' && <PharmacistWorkspace {...commonProps} embedded />}
+      {session.kind === 'pharmacy' && current === 'orders' && (
+        <OrderPlanner token={session.token} pharmacyId={session.pharmacy.id}
+          canImport={session.user.profile === 'pharmacien'} />
+      )}
+      {session.kind === 'pharmacy' && current === 'deployment' && <AgentDeployment token={session.token} snapshot={snapshot} selectedPharmacyId={selectedPharmacyId} onSelectPharmacy={setSelectedPharmacyId} />}
       {session.kind === 'pharmacy' && current === 'account' && (
         <PharmacyAccount token={session.token} session={session} onTeamAccountCreated={() => saveSession({ ...session, teamAccount: true })} />
       )}

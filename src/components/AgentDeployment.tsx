@@ -46,7 +46,7 @@ function CopyLine({ text }: { text: string }) {
   );
 }
 
-export default function AgentDeployment({ token, snapshot, selectedPharmacyId, onSelectPharmacy }: Props) {
+export default function AgentDeployment({ token, snapshot, selectedPharmacyId, onSelectPharmacy, embedded = false }: Props & { embedded?: boolean }) {
   const pharmacies = snapshot?.pharmacies ?? [];
   const phId = selectedPharmacyId || pharmacies[0]?.id || '';
   const [info, setInfo] = useState<AgentInfo | null>(null);
@@ -101,13 +101,13 @@ export default function AgentDeployment({ token, snapshot, selectedPharmacyId, o
             <h1 className="text-xl font-bold text-white">Agent local</h1>
             <p className="text-sm text-slate-300">Le petit programme installé sur le PC de l'officine qui saisit les bons approuvés dans l'ERP.</p>
           </div>
-          <select
+          {!embedded && <select
             value={phId}
             onChange={(e) => onSelectPharmacy(e.target.value)}
             className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-emerald-500"
           >
             {pharmacies.map((ph) => <option key={ph.id} value={ph.id}>{ph.name}</option>)}
-          </select>
+          </select>}
         </div>
       </div>
 

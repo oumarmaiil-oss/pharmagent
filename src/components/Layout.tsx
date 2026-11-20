@@ -9,7 +9,7 @@ import {
   LogOut,
   Monitor,
   ShieldAlert,
-  Stethoscope, ShoppingCart } from 'lucide-react';
+  Stethoscope, ShoppingCart, Settings } from 'lucide-react';
 import type { AppTab } from '../App.tsx';
 import ServerStatus from './ServerStatus.tsx';
 
@@ -39,7 +39,8 @@ export default function Layout({ tab, onTabChange, tabs, userName, userRole, onL
     { id: 'dashboard', label: 'Tableau de bord', icon: <LayoutDashboard size={18} /> },
     { id: 'workspace', label: 'Poste Pharmacien', icon: <Stethoscope size={18} />, badge: pendingCount || undefined },
     { id: 'orders', label: 'Commande', icon: <ShoppingCart size={18} /> },
-    { id: 'pharmacies', label: 'Mes Officines', icon: <Building2 size={18} /> },
+    { id: 'pharmacies', label: tabs.includes('admin') ? 'Officines' : 'Mes Officines', icon: <Building2 size={18} />, badge: tabs.includes('admin') ? pendingCount || undefined : undefined },
+    { id: 'admin', label: 'Administration', icon: <Settings size={18} /> },
     { id: 'training', label: 'Mémoire & Entraînement', icon: <BookOpen size={18} /> },
     { id: 'grounding', label: 'Inspecteur UI', icon: <Monitor size={18} /> },
     { id: 'audit', label: 'Journal Garde-Fou', icon: <ShieldAlert size={18} /> },

@@ -14,7 +14,7 @@ const readAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
 
 interface Report { sheet: string; columns: string[]; linesWritten: number; fieldsFilled: string[]; converted: boolean }
 
-export default function GenericFill({ token, pharmacyId }: { token: string; pharmacyId: string }) {
+export default function GenericFill({ token, pharmacyId, bare = false }: { token: string; pharmacyId: string; bare?: boolean }) {
   const [doc, setDoc] = useState<File | null>(null);
   const [template, setTemplate] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
@@ -51,8 +51,8 @@ export default function GenericFill({ token, pharmacyId }: { token: string; phar
 
   const pick = 'flex-1 min-w-0 flex items-center gap-2 text-left text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-3 py-2 rounded-xl truncate';
   return (
-    <section className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
-      <h2 className="text-sm font-semibold text-white flex items-center gap-2"><Wand2 size={15} className="text-emerald-400" /> Remplir un tableau à partir d'un document</h2>
+    <section className={bare ? 'space-y-3' : 'bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3'}>
+      {!bare && <h2 className="text-sm font-semibold text-white flex items-center gap-2"><Wand2 size={15} className="text-emerald-400" /> Remplir un tableau à partir d'un document</h2>}
       <p className="text-[11px] text-slate-400 leading-relaxed">
         Registre mutuelle, formulaire de recueil, tableau maison… : l'IA lit le document (photo, PDF, Excel, CSV) et remplit les colonnes de votre tableau
         (Excel, LibreOffice, Numbers, CSV). Les lignes existantes et les formules sont gardées. Rien n'est saisi dans votre logiciel.

@@ -121,3 +121,8 @@ test('lecture douteuse mais total qui recoupe : pas bloqué, simple alerte', () 
   const c = draftChecks(draft([line({ confidence: 0.5 })], 1000), TODAY);
   assert.deepEqual(c.map((x) => x.level), ['warn']);
 });
+
+test('fichier sans aucune ligne : message qui oriente vers « Autre (tableau Excel) »', () => {
+  const d = draft([], 0);
+  assert.match(blockingReason({ ...d, extractedData: { ...d.extractedData, source: 'fichier' } }) ?? '', /Autre \(tableau Excel\)/);
+});

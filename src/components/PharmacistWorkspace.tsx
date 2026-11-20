@@ -19,7 +19,8 @@ interface Props {
   onSelectPharmacy: (id: string) => void;
 }
 
-type DocType = 'bon_livraison' | 'facture' | 'mutuelle';
+// Seul le bon de livraison est saisi en stock (la facture n'en est qu'une copie). « Autre » = remplir un tableau Excel standard.
+type DocType = 'bon_livraison' | 'mutuelle' | 'autre';
 
 const readAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
   const reader = new FileReader();
@@ -67,18 +68,20 @@ async function zoomTiles(file: File, target = 1568): Promise<string[]> {
 
 const DOC_LABELS: Record<DocType, string> = {
   bon_livraison: 'Bon de livraison',
-  facture: 'Facture fournisseur',
   mutuelle: 'Feuille mutuelle',
+  autre: 'Autre (tableau Excel)',
 };
+// Libellé d'un brouillon existant (les anciens peuvent être des « facture »)
+const CATEGORY_LABEL: Record<string, string> = { bon_livraison: 'Bon de livraison', facture: 'Bon de livraison', mutuelle: 'Feuille mutuelle' };
 
 const SAMPLE_IMAGES = [
   { path: 'src/assets/images/sample_bon_livraison_1795017387838.jpg', label: 'Exemple : bon de livraison', type: 'bon_livraison' as DocType },
-  { path: 'src/assets/images/sample_facture_mutuelle_1795017386332.jpg', label: 'Exemple : facture', type: 'facture' as DocType },
+  { path: 'src/assets/images/sample_facture_mutuelle_1795017386332.jpg', label: 'Exemple : bon (facture)', type: 'bon_livraison' as DocType },
 ];
 
 const MAX_BYTES = 20 * 1024 * 1024;
 
-export default function PharmacistWorkspace({ token, snapshot, onRefresh, selectedPharmacyId, onSelectPharmacy }: Props) {
+export default function PharmacistWorkspace({ token, snapshot, onRefresh, selectedPharmacyId, onSelectPharmacy, embedded = false }: Props & { embedded?: boolean }) {
   const [doc, setDoc] = useState<{ dataUrl: string; name: string; isPdf: boolean; zooms?: string[] } | null>(null);
   const [samplePath, setSamplePath] = useState('');
   const [docType, setDocType] = useState<DocType>('bon_livraison');
@@ -199,7 +202,7 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
 
   return (
     <div className="p-4 sm:p-6 space-y-5 max-w-6xl mx-auto">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      {!embedded && <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold text-white">Poste Pharmacien</h1>
           <p className="text-slate-400 text-sm">Photo du bon → vérification → approbation → saisie automatique dans l'ERP</p>
@@ -212,7 +215,7 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
           <option value="">— Choisir une officine —</option>
           {pharmacies.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
-      </div>
+      </div>}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <div className="space-y-5">
@@ -232,6 +235,9 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
               ))}
             </div>
 
+            {docType === 'autre' ? (
+              selectedPharmacy ? <GenericFill token={token} pharmacyId={selectedPharmacy.id} bare /> : null
+            ) : (<>
             <div className="grid grid-cols-2 gap-2 mb-2">
               <button onClick={() => fileRef.current?.click()} className="flex items-center justify-center gap-2 text-sm font-medium bg-emerald-600/90 hover:bg-emerald-500 text-white py-3 rounded-xl">
                 <Upload size={17} /> Fichier ou scan
@@ -294,6 +300,7 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
               {loading ? <Loader2 size={17} className="animate-spin" /> : <ScanLine size={17} />}
               {loading ? 'Lecture du document…' : 'Analyser'}
             </button>
+            </>)}
           </section>
 
           {current?.extractionStatus === 'processing' && (
@@ -338,7 +345,7 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
                       <AlertCircle size={16} className="text-amber-400 flex-shrink-0" />
                       <div className="flex-1 min-w-0">
                         <div className="text-sm font-medium text-white truncate">{d.extractedData.documentNumber || `Document ${d.id.slice(-6)}`} · {d.extractedData.supplierOrOrg}</div>
-                        <div className="text-xs text-slate-500">{DOC_LABELS[d.documentCategory]} · {d.extractedData.lineItems.length} lignes · {new Date(d.createdAt).toLocaleDateString('fr-FR')}</div>
+                        <div className="text-xs text-slate-500">{CATEGORY_LABEL[d.documentCategory] ?? d.documentCategory} · {d.extractedData.lineItems.length} lignes · {new Date(d.createdAt).toLocaleDateString('fr-FR')}</div>
                       </div>
                       {expanded === d.id ? <ChevronUp size={16} className="text-slate-500" /> : <ChevronDown size={16} className="text-slate-500" />}
                     </button>
@@ -352,8 +359,6 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
               </div>
             )}
           </section>
-
-          {selectedPharmacy && <GenericFill token={token} pharmacyId={selectedPharmacy.id} />}
 
           {/* Envoyés à l'agent */}
           {selectedPharmacy && sent.length > 0 && (

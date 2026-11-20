@@ -1,5 +1,6 @@
 import { BookOpen, Building2, CheckCircle2, ClipboardCheck, Laptop, LifeBuoy, Printer, Smartphone, Wrench } from 'lucide-react';
 import { useState } from 'react';
+import ServerStatus from './ServerStatus.tsx';
 
 type Part = 'config' | 'usage' | 'help';
 
@@ -49,6 +50,7 @@ export default function GuideCenter({ standalone = false }: { standalone?: boole
             <div className="flex-1 min-w-0">
               <h1 className="text-xl sm:text-2xl font-bold text-white">Guide PharmAgent</h1>
               <p className="text-sm text-slate-300">Mise en place d'une officine et utilisation au quotidien.</p>
+              {standalone && <div className="mt-1"><ServerStatus /></div>}
             </div>
             <button onClick={() => window.print()} className="no-print w-full sm:w-auto justify-center flex items-center gap-2 text-sm text-slate-200 bg-slate-900/70 border border-slate-700 hover:border-emerald-500/50 px-3 py-2 rounded-lg">
               <Printer size={15} /> Imprimer / PDF
