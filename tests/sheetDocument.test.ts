@@ -53,3 +53,11 @@ test('bon Excel avec vraies dates et sans prix unitaire (déduit du montant)', (
 test('fichier sans colonnes reconnaissables : rien (l’IA prendra le relais)', () => {
   assert.equal(sheetToDelivery(Buffer.from('a;b\n1;2', 'utf-8')), undefined);
 });
+
+test('sous-total de page ignoré, total final lu dans une autre colonne', () => {
+  const csv = ['N° BL;BL-9;;', ';;;', 'Libellé;Qté;P.U.;Montant', 'A;2;100;200', 'Sous-total page 1;;;200', 'B;1;300;300', ';;TOTAL HT;500', ';;Net à payer;500'].join('\n');
+  const d = sheetToDelivery(Buffer.from(csv, 'utf-8'))!;
+  assert.equal(d.lineItems.length, 2);
+  assert.equal(d.totalAmountFCFA, 500);
+  assert.equal(d.totalHT, 500);
+});

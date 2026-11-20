@@ -88,16 +88,12 @@ export function sheetToDelivery(buf: Buffer, fileName = ''): ExtractedDocumentDa
   const at = (row: Row, f: ColumnField) => (cols[f] === undefined ? '' : row[cols[f] as number]);
 
   const lines: ExtractedLineItem[] = [];
-  let printedTotal: number | undefined;
   for (const row of rows.slice(header + 1)) {
     const designation = cellText(at(row, 'product'));
     const quantity = parseAmount(at(row, 'quantity'));
     if (!designation) continue;
-    // Ligne de total en bas du tableau (« Total », « Net à payer ») : sert au recoupement, pas un produit
-    if (/^(total|sous total|net a payer|montant total|total general|a reporter|report)\b/.test(normLabel(designation))) {
-      printedTotal = parseAmount(at(row, 'lineTotal')) ?? row.map(parseAmount).filter((x): x is number => x !== undefined).pop();
-      continue;
-    }
+    // Sous-totaux, reports, totaux : jamais des produits (le total final est lu plus bas, dans n'importe quelle colonne)
+    if (/^(total|totaux|sous total|net a payer|montant total|total general|a reporter|report)\b/.test(normLabel(designation))) continue;
     if (quantity === undefined) continue;
     const lineTotal = parseAmount(at(row, 'lineTotal'));
     const pu = parseAmount(at(row, 'purchase')) ?? (lineTotal !== undefined && quantity ? lineTotal / quantity : 0);
@@ -138,13 +134,26 @@ export function sheetToDelivery(buf: Buffer, fileName = ''): ExtractedDocumentDa
   });
   if (!head.documentNumber) head.documentNumber = fileName.replace(/\.[^.]+$/, '');
 
+  // Totaux en bas du bon : « Net à payer », « Total TTC », « Total HT », « Total » — libellé dans n'importe quelle colonne, montant à sa droite.
+  // Les sous-totaux de page et les reports sont ignorés.
+  const totals: { final?: number; generic?: number; ht?: number } = {};
+  for (const row of rows.slice(header + 1)) {
+    row.forEach((cell, c) => {
+      const t = normLabel(cellText(cell));
+      const kind = /^(net a payer|total ttc|montant ttc|total general|net)$/.test(t) ? 'final' : /^(total ht|montant ht total|total hors taxes?)$/.test(t) ? 'ht' : /^(total|totaux|montant total)$/.test(t) ? 'generic' : undefined;
+      if (!kind || totals[kind] !== undefined) return;
+      const amount = row.slice(c + 1).map(parseAmount).find((x) => x !== undefined && x > 0);
+      if (amount !== undefined) totals[kind] = amount;
+    });
+  }
   const computed = lines.reduce((s, l) => s + (l.lineTotal ?? l.quantity * l.unitPriceFCFA), 0);
   return {
     documentType: lines.some((l) => l.quantity < 0) ? 'avoir' : 'bon_livraison',
     documentCount: 1, photoQuality: 'bonne',
     documentNumber: head.documentNumber, supplierOrOrg: head.supplier, recipientPharmacy: '',
     documentDate: head.documentDate, currency: 'FCFA',
-    totalAmountFCFA: printedTotal ?? Math.round(computed * 100) / 100,
+    totalAmountFCFA: totals.final ?? totals.generic ?? totals.ht ?? Math.round(computed * 100) / 100,
+    ...(totals.ht !== undefined ? { totalHT: totals.ht } : {}),
     agentObservations: `Fichier lu directement (${lines.length} lignes), sans lecture d'image.`,
     lineItems: lines,
   };
