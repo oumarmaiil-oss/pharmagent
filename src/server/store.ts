@@ -714,6 +714,26 @@ class PharmAgentStore {
     return d;
   }
 
+  /** « Corriger » : le bon revient « à valider » (modifiable), la saisie précédente est oubliée. */
+  reopenDraft(draftId: string): DraftRecord | undefined {
+    const d = this.db.drafts.find((x) => x.id === draftId);
+    if (!d || d.status !== 'approved') return undefined;
+    d.status = 'pending';
+    d.execution = undefined;
+    d.approvedBy = undefined;
+    d.updatedAt = now();
+    this.persist();
+    return d;
+  }
+
+  deleteDraft(draftId: string): boolean {
+    const before = this.db.drafts.length;
+    this.db.drafts = this.db.drafts.filter((x) => x.id !== draftId);
+    if (this.db.drafts.length === before) return false;
+    this.persist();
+    return true;
+  }
+
   // ── Audit ─────────────────────────────────────────────
 
   addAuditLog(params: { pharmacyId: string; actorId: string; actorName: string; action: string; level: AuditLevel; details?: string }): void {

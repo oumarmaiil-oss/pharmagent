@@ -124,4 +124,54 @@ for label in ("Ajouter au panier", "Enregistrer le brouillon", "Commandes", "Qua
 check("saut de ligne et tabulation neutralisés", A.format_value("product", "DOLI\nPRANE\t1000\r\n", None) == "DOLI PRANE 1000", A.format_value("product", "DOLI\nPRANE\t1000\r\n", None))
 check("mise à jour refusée sans HTTPS", A.self_update("http://pirate.example") is None)
 
+# Clavier : jamais de frappe si la fenêtre active est inconnue ou si le logiciel n'est pas ouvert
+real_fg, real_act = A.foreground_title, A.activate_window
+A.foreground_title = lambda: None
+check("fenêtre active inconnue : considérée comme PAS le logiciel", A.foreground_is("Numbers") is False)
+A.activate_window = lambda t: False
+try:
+    A.KeyPlayer.ensure_window(types.SimpleNamespace(title="Numbers")); ok = False
+except A.StepError as e:
+    ok = "n'est pas ouvert" in str(e)
+check("logiciel fermé : arrêt avant toute frappe, message clair", ok)
+A.foreground_title = lambda: "Mail"; A.activate_window = lambda t: True
+try:
+    A.KeyPlayer.ensure_window(types.SimpleNamespace(title="Numbers")); ok = False
+except A.StepError as e:
+    ok = "premier plan" in str(e)
+check("autre fenêtre au premier plan : arrêt", ok)
+A.foreground_title, A.activate_window = real_fg, real_act
+calls = []
+A.SYSTEM = "Darwin"
+A.subprocess.run = lambda args, **k: calls.append(args) or R("absent\n")
+check("Mac : un logiciel fermé n'est jamais lancé", A.activate_window("Numbers") is False and "is running" in " ".join(calls[-1]))
+A.subprocess.run, A.SYSTEM = real_run, real_system
+
+# Mode fichier : le bon est écrit dans une copie du modèle, sans démo ni frappe
+import base64 as _b64
+tmpd = pathlib.Path(tempfile.mkdtemp())
+tpl = tmpd / "Reception.xlsx"; tpl.write_bytes(b"MODELE")
+opened, sent = [], []
+A.open_file = lambda p_: opened.append(p_)
+class _Api:
+    def call(self, m, path, body=None, timeout=30):
+        sent.append((m, path, body))
+        if path.endswith("/fill-file"):
+            return {"fileBase64": _b64.b64encode(b"REMPLI").decode(), "report": {"linesWritten": 2, "missingLabels": []}}
+        return {}
+eng = types.SimpleNamespace(profile={"mode": "file", "filePath": str(tpl)}, stop_flag=threading.Event(), task=None, last_result=None,
+                            api=_Api(), _persist=lambda: None, _pending_products=[], web=None)
+A.Engine._run_task(eng, {"id": "dr-1", "header": {"documentNumber": "BL/77"}, "lines": [{"index": 0, "product": "A"}, {"index": 1, "product": "B"}]})
+out = tmpd / "Reception - BL-77.xlsx"
+check("mode fichier : copie remplie créée à côté du modèle, modèle intact", out.read_bytes() == b"REMPLI" and tpl.read_bytes() == b"MODELE", list(tmpd.iterdir()))
+check("mode fichier : la copie s'ouvre", opened == [str(out)])
+res = [b for m, p_, b in sent if p_.endswith("/result")][0]
+check("mode fichier : résultat « fait » envoyé au serveur", res["status"] == "done" and "Reception - BL-77.xlsx" in res["message"], res)
+A.Engine._run_task(eng, {"id": "dr-2", "header": {"documentNumber": "BL/77"}, "lines": [{"index": 0}]})
+check("deuxième bon au même numéro : nouveau fichier, rien n'est écrasé", (tmpd / "Reception - BL-77 (2).xlsx").exists())
+tpl.unlink()
+A.Engine._run_task(eng, {"id": "dr-3", "header": {}, "lines": [{"index": 0}]})
+res = [b for m, p_, b in sent if p_ == "/api/agent-client/tasks/dr-3/result"][0]
+check("modèle déplacé : échec clair, rien d'écrit", res["status"] == "failed" and "introuvable" in res["message"], res)
+
 check.exit()

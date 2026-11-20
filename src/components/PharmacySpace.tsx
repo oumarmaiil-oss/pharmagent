@@ -2,7 +2,7 @@
 // PharmAgent — Intérieur d'une officine (superviseur) : Bons · Commande · Agent · Fiche
 // ============================================================
 
-import { ArrowLeft, Building2, ClipboardList, Laptop, Settings2, ShoppingCart } from 'lucide-react';
+import { ArrowLeft, Building2, ClipboardList, FileSpreadsheet, HeartPulse, Laptop, Settings2, ShoppingCart } from 'lucide-react';
 import { useState } from 'react';
 import type { DashboardSnapshot } from '../types/pharmagent.ts';
 import AgentDeployment from './AgentDeployment.tsx';
@@ -11,7 +11,7 @@ import OrderPlanner from './OrderPlanner.tsx';
 import PharmacistWorkspace from './PharmacistWorkspace.tsx';
 import PharmacyAdmin from './PharmacyAdmin.tsx';
 
-export type SpaceTab = 'bons' | 'commande' | 'agent' | 'fiche';
+export type SpaceTab = 'bons' | 'mutuelle' | 'commande' | 'autre' | 'agent' | 'fiche';
 
 interface Props {
   pharmacyId: string;
@@ -24,7 +24,8 @@ interface Props {
 }
 
 const TABS: Array<[SpaceTab, string, React.ReactNode]> = [
-  ['bons', 'Bons', <ClipboardList key="b" size={15} />], ['commande', 'Commande', <ShoppingCart key="c" size={15} />],
+  ['bons', 'Bons', <ClipboardList key="b" size={15} />], ['mutuelle', 'Mutuelle', <HeartPulse key="m" size={15} />],
+  ['commande', 'Commande', <ShoppingCart key="c" size={15} />], ['autre', 'Autre', <FileSpreadsheet key="o" size={15} />],
   ['agent', 'Agent', <Laptop key="a" size={15} />], ['fiche', 'Fiche', <Settings2 key="f" size={15} />],
 ];
 
@@ -57,7 +58,10 @@ export default function PharmacySpace({ pharmacyId, tab, onTab, onBack, token, s
           ))}
         </div>
       </div>
-      {tab === 'bons' && <PharmacistWorkspace token={token} snapshot={snapshot} onRefresh={onRefresh} selectedPharmacyId={ph.id} onSelectPharmacy={noop} embedded />}
+      {(tab === 'bons' || tab === 'mutuelle' || tab === 'autre') && (
+        <PharmacistWorkspace key={tab} token={token} snapshot={snapshot} onRefresh={onRefresh} selectedPharmacyId={ph.id} onSelectPharmacy={noop} embedded
+          docMode={tab === 'bons' ? 'bon_livraison' : tab === 'mutuelle' ? 'mutuelle' : 'autre'} />
+      )}
       {tab === 'commande' && <div className="p-4 sm:p-6 max-w-6xl mx-auto"><OrderPlanner token={token} pharmacyId={ph.id} canImport /></div>}
       {tab === 'agent' && <AgentDeployment token={token} snapshot={snapshot} selectedPharmacyId={ph.id} onSelectPharmacy={noop} embedded />}
       {tab === 'fiche' && (

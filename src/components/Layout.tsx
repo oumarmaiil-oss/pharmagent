@@ -9,7 +9,7 @@ import {
   LogOut,
   Monitor,
   ShieldAlert,
-  Stethoscope, ShoppingCart, Settings } from 'lucide-react';
+  Stethoscope, ShoppingCart, Settings, FileSpreadsheet, HeartPulse } from 'lucide-react';
 import type { AppTab } from '../App.tsx';
 import ServerStatus from './ServerStatus.tsx';
 
@@ -37,8 +37,10 @@ interface Props {
 export default function Layout({ tab, onTabChange, tabs, userName, userRole, onLogout, pendingCount, loading, children }: Props) {
   const allItems: NavItem[] = [
     { id: 'dashboard', label: 'Tableau de bord', icon: <LayoutDashboard size={18} /> },
-    { id: 'workspace', label: 'Poste Pharmacien', icon: <Stethoscope size={18} />, badge: pendingCount || undefined },
+    { id: 'workspace', label: 'Bons', icon: <Stethoscope size={18} />, badge: pendingCount || undefined },
+    { id: 'mutuelle', label: 'Mutuelle', icon: <HeartPulse size={18} /> },
     { id: 'orders', label: 'Commande', icon: <ShoppingCart size={18} /> },
+    { id: 'autre', label: 'Autre', icon: <FileSpreadsheet size={18} /> },
     { id: 'pharmacies', label: tabs.includes('admin') ? 'Officines' : 'Mes Officines', icon: <Building2 size={18} />, badge: tabs.includes('admin') ? pendingCount || undefined : undefined },
     { id: 'admin', label: 'Administration', icon: <Settings size={18} /> },
     { id: 'training', label: 'Mémoire & Entraînement', icon: <BookOpen size={18} /> },
@@ -131,9 +133,10 @@ export default function Layout({ tab, onTabChange, tabs, userName, userRole, onL
             key={item.id}
             onClick={() => onTabChange(item.id)}
             title={item.label}
-            className={`relative flex-1 flex justify-center py-3 ${tab === item.id ? 'text-emerald-400' : 'text-slate-500'}`}
+            className={`relative flex-1 min-w-0 flex flex-col items-center gap-0.5 pt-2 pb-1.5 ${tab === item.id ? 'text-emerald-400' : 'text-slate-500'}`}
           >
             {item.icon}
+            <span className="text-[9px] leading-none truncate max-w-full px-0.5">{item.label}</span>
             {item.badge ? (
               <span className="absolute top-1.5 right-1/2 translate-x-4 bg-amber-500 text-black text-[10px] font-bold min-w-4 h-4 px-1 rounded-full flex items-center justify-center">
                 {item.badge > 9 ? '9+' : item.badge}

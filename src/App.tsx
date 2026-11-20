@@ -23,6 +23,8 @@ export type AppTab =
   | 'account'
   | 'orders'
   | 'admin'
+  | 'mutuelle'
+  | 'autre'
   | 'guide';
 
 export interface PharmacySession {
@@ -40,7 +42,10 @@ const OWNER_TABS: AppTab[] = ['dashboard', 'pharmacies', 'admin', 'guide'];
 
 function tabsFor(s: SessionState): AppTab[] {
   if (s.kind === 'owner') return OWNER_TABS;
-  return s.user.profile === 'pharmacien' ? ['workspace', 'orders', 'deployment', 'account', 'guide'] : ['workspace', 'orders', 'account', 'guide'];
+  // Pharmacie : Bons · Mutuelle · Commande · Autre (+ Agent pour le Pharmacien), Mon compte, Guide
+  return s.user.profile === 'pharmacien'
+    ? ['workspace', 'mutuelle', 'orders', 'autre', 'deployment', 'account', 'guide']
+    : ['workspace', 'mutuelle', 'orders', 'autre', 'account', 'guide'];
 }
 
 const firstTab = (s: SessionState): AppTab => (s.kind === 'owner' ? 'dashboard' : 'workspace');
@@ -161,7 +166,10 @@ export default function App() {
             token={session.token} snapshot={snapshot} onRefresh={commonProps.onRefresh} />
         : <PharmacyManagement {...commonProps} owner={session.owner} onOpen={(id) => { setSelectedPharmacyId(id); setSpace({ id, tab: 'bons' }); }} />)}
       {session.kind === 'owner' && current === 'admin' && <AdminCenter {...commonProps} owner={session.owner} />}
-      {session.kind === 'pharmacy' && current === 'workspace' && <PharmacistWorkspace {...commonProps} embedded />}
+      {session.kind === 'pharmacy' && (current === 'workspace' || current === 'mutuelle' || current === 'autre') && (
+        <PharmacistWorkspace key={current} {...commonProps} embedded canDelete={session.user.profile === 'pharmacien'}
+          docMode={current === 'workspace' ? 'bon_livraison' : current === 'mutuelle' ? 'mutuelle' : 'autre'} />
+      )}
       {session.kind === 'pharmacy' && current === 'orders' && (
         <OrderPlanner token={session.token} pharmacyId={session.pharmacy.id}
           canImport={session.user.profile === 'pharmacien'} />

@@ -853,12 +853,39 @@ app.post('/api/drafts/:draftId/reject', (req, res) => {
   res.json({ ok: true, draft: updated });
 });
 
+// Une saisie « en cours » depuis plus de 3 minutes est considérée comme bloquée (ordinateur éteint, agent arrêté)
+const STUCK_MS = 3 * 60 * 1000;
+const isFreshRun = (d: DraftRecord) => d.execution?.status === 'running' && Date.now() - Date.parse(d.execution.startedAt ?? d.execution.queuedAt) < STUCK_MS;
+
+app.post('/api/drafts/:draftId/reopen', (req, res) => {
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
+  const actor = requireApprover(req, res, draft.pharmacyId);
+  if (!actor) return;
+  if (isFreshRun(draft)) { res.status(400).json({ error: "Saisie en cours : attendez qu'elle se termine." }); return; }
+  const updated = store.reopenDraft(draft.id);
+  if (!updated) { res.status(400).json({ error: 'Seul un bon déjà envoyé peut être repris pour correction.' }); return; }
+  store.addAuditLog({ pharmacyId: draft.pharmacyId, actorId: actor.actor.id, actorName: actor.displayName, action: `Bon repris pour correction : ${draft.extractedData.documentNumber || draft.id}`, level: 'info' });
+  res.json({ draft: updated });
+});
+
+app.post('/api/drafts/:draftId/delete', (req, res) => {
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
+  const actor = requirePharmacist(req, res, draft.pharmacyId);   // l'Équipe ne supprime pas
+  if (!actor) return;
+  if (isFreshRun(draft)) { res.status(400).json({ error: "Saisie en cours : attendez qu'elle se termine." }); return; }
+  store.deleteDraft(draft.id);
+  store.addAuditLog({ pharmacyId: draft.pharmacyId, actorId: actor.actor.id, actorName: actor.displayName, action: `Bon supprimé : ${draft.extractedData.documentNumber || draft.id} (${draft.extractedData.supplierOrOrg || 'fournisseur inconnu'})`, level: 'warning' });
+  res.json({ ok: true });
+});
+
 app.post('/api/drafts/:draftId/requeue', (req, res) => {
   const draft = store.getDraft(req.params.draftId);
   if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
   const actor = requireApprover(req, res, draft.pharmacyId);
   if (!actor) return;
-  if (draft.execution?.status === 'running') { res.status(400).json({ error: 'Saisie déjà en cours.' }); return; }
+  if (isFreshRun(draft)) { res.status(400).json({ error: "Saisie en cours : attendez qu'elle se termine (ou 3 minutes si l'ordinateur ne répond plus)." }); return; }
   const updated = store.requeueExecution(draft.id);
   if (!updated) { res.status(400).json({ error: 'Seul un brouillon approuvé peut être renvoyé à l\'agent.' }); return; }
   store.addAuditLog({ pharmacyId: draft.pharmacyId, actorId: actor.actor.id, actorName: actor.displayName, action: `Saisie relancée : ${draft.extractedData.documentNumber || draft.id}`, level: 'info' });
@@ -948,6 +975,32 @@ app.post('/api/drafts/:draftId/rematch', async (req, res) => {
   }
 });
 
+function fillDraftWorkbook(draft: DraftRecord, buf: Buffer) {
+  const t = buildTaskPayload(draft);
+  return fillWorkbook(
+    buf,
+    { supplier: t.header.supplier, documentNumber: t.header.documentNumber, documentDate: t.header.documentDate },
+    t.lines.map((l, i) => ({ product: l.product, cip: l.cip, quantity: l.quantity, lotNumber: l.lotNumber, expiryDate: l.expiryDate, purchasePrice: l.purchasePrice, salePrice: l.salePrice,
+      freeUnits: l.freeUnits, discountPercent: draft.extractedData.lineItems[i]?.discountPercent ?? '', vatRate: draft.extractedData.lineItems[i]?.vatRate ?? '', lineTotal: l.lineTotal })),
+  );
+}
+
+// Agent en mode « fichier » : il envoie le fichier de la pharmacie, reçoit le fichier rempli et l'enregistre à côté
+app.post('/api/agent-client/tasks/:draftId/fill-file', async (req, res) => {
+  const ph = requireAgent(req, res);
+  if (!ph) return;
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft || draft.pharmacyId !== ph.id) { res.status(404).json({ error: 'Bon introuvable.' }); return; }
+  const { fileBase64 } = req.body as { fileBase64?: string };
+  if (!fileBase64) { res.status(400).json({ error: 'Fichier requis.' }); return; }
+  try {
+    const { buffer, report } = await fillDraftWorkbook(draft, Buffer.from(fileBase64.replace(/^data:[^,]+,/, ''), 'base64'));
+    res.json({ fileBase64: buffer.toString('base64'), report: { ...report, missingLabels: report.missing.map((f) => FIELD_LABELS[f]) } });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
 app.post('/api/drafts/:draftId/fill-excel', async (req, res) => {
   const draft = store.getDraft(req.params.draftId);
   if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
@@ -957,13 +1010,7 @@ app.post('/api/drafts/:draftId/fill-excel', async (req, res) => {
   const { fileBase64 } = req.body as { fileBase64?: string };
   if (!fileBase64) { res.status(400).json({ error: 'Fichier Excel requis (.xlsx).' }); return; }
   try {
-    const t = buildTaskPayload(draft);
-    const { buffer, report } = await fillWorkbook(
-      Buffer.from(fileBase64.replace(/^data:[^,]+,/, ''), 'base64'),
-      { supplier: t.header.supplier, documentNumber: t.header.documentNumber, documentDate: t.header.documentDate },
-      t.lines.map((l, i) => ({ product: l.product, cip: l.cip, quantity: l.quantity, lotNumber: l.lotNumber, expiryDate: l.expiryDate, purchasePrice: l.purchasePrice, salePrice: l.salePrice,
-        freeUnits: l.freeUnits, discountPercent: draft.extractedData.lineItems[i]?.discountPercent ?? '', vatRate: draft.extractedData.lineItems[i]?.vatRate ?? '', lineTotal: l.lineTotal })),
-    );
+    const { buffer, report } = await fillDraftWorkbook(draft, Buffer.from(fileBase64.replace(/^data:[^,]+,/, ''), 'base64'));
     store.addAuditLog({ pharmacyId: draft.pharmacyId, actorId: actor.actor.id, actorName: actor.displayName, action: `Fichier Excel rempli : ${report.linesWritten} ligne(s) dans « ${report.sheet} »`, level: 'info' });
     res.json({ fileBase64: buffer.toString('base64'), report: { ...report, missingLabels: report.missing.map((f) => FIELD_LABELS[f]) } });
   } catch (err) {
@@ -1194,7 +1241,16 @@ app.put('/api/agent-client/profile', (req, res) => {
   const ph = requireAgent(req, res);
   if (!ph) return;
   const b = req.body as Partial<AgentProfile>;
-  if (b.mode !== 'web' && b.mode !== 'desktop') { res.status(400).json({ error: 'mode doit être "web" ou "desktop".' }); return; }
+  if (b.mode === 'file') {
+    // Fichier Excel / Numbers rempli directement : aucune démo, aucune frappe au clavier
+    const filePath = typeof b.filePath === 'string' ? b.filePath.slice(0, 1000) : '';
+    if (!filePath) { res.status(400).json({ error: 'Choisissez le fichier à remplir.' }); return; }
+    const profile = store.saveProfile({ pharmacyId: ph.id, mode: 'file', filePath, headerSteps: [], lineSteps: [], recordedAt: new Date().toISOString() });
+    store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent local', action: `Réglage : remplissage direct du fichier « ${filePath.split(/[\\/]/).pop()} »`, level: 'info' });
+    res.json({ profile });
+    return;
+  }
+  if (b.mode !== 'web' && b.mode !== 'desktop') { res.status(400).json({ error: 'mode doit être "web", "desktop" ou "file".' }); return; }
   const header = sanitizeSteps(b.headerSteps);
   const lines = sanitizeSteps(b.lineSteps);
   const error = header.error ?? lines.error;

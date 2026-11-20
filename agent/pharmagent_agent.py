@@ -18,6 +18,7 @@ Panneau de contrôle : http://127.0.0.1:8765 (s'ouvre automatiquement).
 from __future__ import annotations
 
 import argparse
+import base64
 import difflib
 import hashlib
 import json
@@ -48,7 +49,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-AGENT_VERSION = "2.2.6"
+AGENT_VERSION = "2.3.0"
 DEFAULT_SERVER = "https://pharmagent.onrender.com"
 PANEL_PORT = int(os.environ.get("PHARMAGENT_PORT", "8765"))
 POLL_SECONDS = float(os.environ.get("PHARMAGENT_POLL", "5"))
@@ -172,6 +173,10 @@ class StepError(Exception):
 
 class Aborted(Exception):
     pass
+
+
+class _FileDone(Exception):
+    """Fin normale du mode fichier (porte le message de résultat)."""
 
 
 # ─── Champs et mise en forme des valeurs ────────────────────────────────────
@@ -421,16 +426,63 @@ def activate_window(title: str) -> bool:
             return True
         if SYSTEM == "Darwin":
             safe = title.replace('"', "")
-            return subprocess.run(["osascript", "-e", f'tell application "{safe}" to activate'], timeout=8).returncode == 0
+            # « is running » ne lance pas l'application : un logiciel fermé reste fermé, rien n'est tapé
+            script = f'if application "{safe}" is running then\ntell application "{safe}" to activate\nreturn "ok"\nend if\nreturn "absent"'
+            r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=8)
+            return r.returncode == 0 and r.stdout.strip() == "ok"
         r = subprocess.run(["xdotool", "search", "--name", title, "windowactivate"], capture_output=True, timeout=5)
         return r.returncode == 0
     except Exception:
         return False
 
 
+SHEET_EXT = (".xlsx", ".xls", ".xlsm", ".numbers", ".ods", ".csv")
+
+
+def pick_file() -> str:
+    """Fenêtre « Ouvrir » du système pour choisir le fichier Excel / Numbers à remplir (rien à taper)."""
+    if SYSTEM == "Darwin":
+        r = subprocess.run(["osascript", "-e", 'POSIX path of (choose file with prompt "Fichier Excel ou Numbers à remplir par PharmAgent")'],
+                           capture_output=True, text=True, timeout=600)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    if SYSTEM == "Windows":
+        ps = ("Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; "
+              "$d.Filter = 'Tableur (*.xlsx;*.xls;*.xlsm;*.ods;*.csv)|*.xlsx;*.xls;*.xlsm;*.ods;*.csv|Tous les fichiers|*.*'; "
+              "$d.Title = 'Fichier Excel a remplir par PharmAgent'; if ($d.ShowDialog() -eq 'OK') { $d.FileName }")
+        r = subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", ps], capture_output=True, text=True, timeout=600)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    r = subprocess.run(["zenity", "--file-selection", "--title=Fichier à remplir"], capture_output=True, text=True, timeout=600)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def open_file(path: str) -> None:
+    try:
+        if SYSTEM == "Windows":
+            os.startfile(path)  # type: ignore[attr-defined]
+        elif SYSTEM == "Darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
+    except Exception as e:
+        log.info("Ouverture du fichier impossible : %s", e)
+
+
+def filled_path(template: str, document_number: str) -> Path:
+    """Un nouveau fichier par bon, à côté du modèle : le modèle n'est jamais modifié ni écrasé."""
+    src = Path(template)
+    num = re.sub(r"[^\w.-]+", "-", document_number or "bon").strip("-")[:40] or "bon"
+    out = src.with_name(f"{src.stem} - {num}.xlsx")
+    k = 2
+    while out.exists():
+        out = src.with_name(f"{src.stem} - {num} ({k}).xlsx")
+        k += 1
+    return out
+
+
 def foreground_is(title: str) -> bool:
+    # Sécurité : si l'on ne sait pas quelle fenêtre est au premier plan, on considère que ce n'est PAS le logiciel
     fg = foreground_title()
-    return True if fg is None else title_matches(fg, title)
+    return fg is not None and title_matches(fg, title)
 
 
 def mac_accessibility_ok() -> bool:
@@ -623,12 +675,18 @@ class KeyPlayer:
             self.stop_event.set()
 
     def ensure_window(self) -> None:
+        if not self.title:
+            raise StepError("Aucun logiciel choisi : refaites le réglage dans le panneau de l'agent.")
         if foreground_is(self.title):
             return
-        activate_window(self.title)
+        if not activate_window(self.title):
+            raise StepError(f"Le logiciel « {self.title} » n'est pas ouvert : rien n'a été tapé. Ouvrez-le sur l'écran de saisie, puis renvoyez le bon.")
         time.sleep(0.5)
-        if not foreground_is(self.title):
-            raise StepError(f"La fenêtre « {self.title} » n'est pas au premier plan. Ouvrez l'ERP sur l'écran de saisie.")
+        if foreground_is(self.title):
+            return
+        if foreground_title() is None:
+            raise StepError("Impossible de vérifier la fenêtre au premier plan : rien n'a été tapé. Sur Mac, autorisez Terminal dans Réglages Système › Confidentialité et sécurité › Automatisation et Accessibilité.")
+        raise StepError(f"La fenêtre « {self.title} » n'est pas au premier plan (une autre fenêtre a pris la main) : saisie arrêtée. Ouvrez l'écran de saisie puis renvoyez le bon.")
 
     def press(self, combo: str) -> None:
         parts = combo.split("+")
@@ -660,6 +718,8 @@ class KeyPlayer:
             if kind == "type":
                 text = value_for(st, values)
                 if text:
+                    if check_each_step and not foreground_is(self.title):
+                        self.ensure_window()
                     self.kb.type(text)
                 if st.get("field") in ("product", "cip"):
                     time.sleep(0.7)  # laisse la liste de recherche de l'ERP se remplir
@@ -1296,7 +1356,7 @@ class Engine:
                 status = "paused" if self.paused else "ready"
             prof = None
             if self.profile:
-                prof = {k: self.profile.get(k) for k in ("mode", "erpUrl", "formUrl", "windowTitle", "recordedAt")}
+                prof = {k: self.profile.get(k) for k in ("mode", "erpUrl", "formUrl", "windowTitle", "filePath", "recordedAt")}
                 prof["lineSteps"] = len(self.profile.get("lineSteps") or [])
                 prof["headerSteps"] = len(self.profile.get("headerSteps") or [])
             return {
@@ -1353,6 +1413,21 @@ class Engine:
         return fut
 
     def _handle(self, name: str, p: Dict[str, Any]) -> Any:
+        if name == "pick_file":
+            return pick_file()
+        if name == "setup" and p.get("mode") == "file":
+            path = (p.get("filePath") or "").strip()
+            if not path or not Path(path).is_file():
+                raise ValueError("Choisissez le fichier à remplir (bouton « Choisir le fichier »).")
+            if not path.lower().endswith(SHEET_EXT):
+                raise ValueError("Ce n'est pas un fichier de tableur (Excel, Numbers, LibreOffice ou CSV).")
+            res = self.api.call("PUT", "/api/agent-client/profile", {"mode": "file", "filePath": path})
+            self.profile = res.get("profile")
+            self.setup = {"mode": "file", "filePath": path}
+            self.status_override = None
+            self._persist()
+            log.info("Réglage : remplissage direct de %s (aucune démo).", Path(path).name)
+            return True
         if name == "setup":
             mode = p.get("mode")
             if mode not in ("web", "desktop"):
@@ -1385,6 +1460,11 @@ class Engine:
             return True
         if name == "open_erp":
             cfg = self.profile or self.setup
+            if cfg.get("mode") == "file":
+                if not Path(cfg.get("filePath", "")).is_file():
+                    raise ValueError("Fichier introuvable : il a été déplacé ou renommé. « Changer d'ERP » pour le choisir à nouveau.")
+                open_file(cfg["filePath"])
+                return True
             if cfg.get("mode") == "web":
                 self.web.open(cfg.get("formUrl") or cfg.get("erpUrl"))
             elif cfg.get("mode") == "desktop":
@@ -1414,6 +1494,11 @@ class Engine:
         if name == "test_run":
             if not self.profile:
                 raise ValueError("Enregistrez d'abord la démo.")
+            if self.profile.get("mode") == "file":
+                if not Path(self.profile.get("filePath", "")).is_file():
+                    raise ValueError("Fichier introuvable : il a été déplacé ou renommé. « Changer d'ERP » pour le choisir à nouveau.")
+                log.info("Fichier prêt : %s. Approuvez un bon dans PharmAgent, le fichier rempli s'ouvrira.", Path(self.profile["filePath"]).name)
+                return True
             self._run_task({"id": "", "header": self.sample.get("header", {}), "lines": [self.sample.get("line", {})], "test": True})
             return True
         if name == "pause":
@@ -1546,7 +1631,26 @@ class Engine:
         player: Optional[KeyPlayer] = None
         log.info("%s : %s (%d ligne(s)).", "Test" if is_test else "Saisie", self.task["documentNumber"], len(lines))
         try:
-            if prof.get("mode") == "web":
+            if prof.get("mode") == "file":
+                template = prof.get("filePath", "")
+                if not Path(template).is_file():
+                    raise StepError("Fichier à remplir introuvable (déplacé ou renommé) : choisissez-le à nouveau dans le panneau de l'agent, puis renvoyez le bon.")
+                if not task.get("id"):
+                    raise StepError("Le test se fait avec un vrai bon approuvé.")
+                self.task["current"] = Path(template).name
+                res = self.api.call("POST", f"/api/agent-client/tasks/{task['id']}/fill-file",
+                                    {"fileBase64": base64.b64encode(Path(template).read_bytes()).decode()})
+                out = filled_path(template, header.get("documentNumber", ""))
+                out.write_bytes(base64.b64decode(res["fileBase64"]))
+                rep = res.get("report") or {}
+                results = [{"index": l.get("index", i), "ok": True} for i, l in enumerate(lines)]
+                self.task["done"] = len(lines)
+                miss = rep.get("missingLabels") or []
+                message = (f"Fichier rempli : « {out.name} » ({rep.get('linesWritten', len(lines))} ligne(s), à côté du modèle)"
+                           + (f" · colonnes absentes du modèle : {', '.join(miss)}" if miss else "") + ". Vérifiez puis validez.")
+                open_file(str(out))
+                lines = []  # rien à taper
+            elif prof.get("mode") == "web":
                 self.web.open(prof.get("formUrl") or prof.get("erpUrl"))
                 page = self.web.erp_page(prof.get("erpUrl"), prof.get("formUrl"))
                 page.bring_to_front()
@@ -1560,7 +1664,7 @@ class Engine:
                 self.web.run_steps(page, prof.get("headerSteps") or [], header, self.stop_flag.is_set, captured)
             else:
                 player = KeyPlayer(prof.get("windowTitle", ""), self.stop_flag)
-                player.run(prof.get("headerSteps") or [], header, check_each_step=SYSTEM == "Windows")
+                player.run(prof.get("headerSteps") or [], header, check_each_step=True)
             for line in lines:
                 idx = line.get("index", 0)
                 label = line.get("product") or line.get("designation") or "?"
@@ -1573,14 +1677,18 @@ class Engine:
                 if prof.get("mode") == "web":
                     self.web.run_steps(page, prof.get("lineSteps") or [], values, self.stop_flag.is_set, captured)
                 else:
-                    player.run(prof.get("lineSteps") or [], values, check_each_step=SYSTEM == "Windows")
+                    player.run(prof.get("lineSteps") or [], values, check_each_step=True)
                 results.append({"index": idx, "ok": True})
                 self.task["done"] += 1
             skipped = [r for r in results if not r["ok"]]
+            if prof.get("mode") == "file":
+                raise _FileDone(message)
             message = f"{len(results) - len(skipped)} ligne(s) saisie(s) en {time.time() - started:.1f} s"
             if skipped:
                 message += f", {len(skipped)} ignorée(s) (nouveaux produits)"
             message += ". Vérifiez puis validez dans l'ERP."
+        except _FileDone as e:
+            message = str(e)
         except (StepError, GuardrailError, Aborted) as e:
             status, message = "failed", str(e)
         except Exception as e:  # toujours signalée au serveur, jamais de bon bloqué « en cours »
@@ -1769,7 +1877,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:8px 6px;b
 <details class="card"><summary class="muted" style="cursor:pointer">Journal de l'agent</summary><div class="logs" id="logs"></div></details>
 </div>
 <script>
-let S=null, busy=false, edit=null, winList=null, setupMode=null, winPick=null, urlPick=null;
+let S=null, busy=false, edit=null, winList=null, setupMode=null, winPick=null, urlPick=null, filePick=null;
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function call(cmd, body){busy=true;render();try{const r=await fetch('/api/'+cmd,{method:'POST',headers:{'Content-Type':'application/json','X-PharmAgent':'1'},body:JSON.stringify(body||{})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Erreur');return d.result}catch(e){alert(e.message);throw e}finally{busy=false;await refresh()}}
@@ -1791,8 +1899,11 @@ function render(){if(!S)return;const st=S.status;
   <div class="code">${S.pairingCode?esc(S.pairingCode):'…'}</div><p class="muted">Le code est valable 15 minutes. Cette page se met à jour toute seule.</p></div>`}
  else if(st==='setup'){const m=setupMode||S.setup.mode||'web';h+=`<div class="card">${stepsBar(1)}<h2>1. Où se trouve l'ERP de l'officine ?</h2>
   <div class="grid2" style="margin-top:12px"><button class="choice ${m==='web'?'on':''}" onclick="setupMode='web';render()"><div class="t">🌐 Site web</div><div class="d">L'ERP s'ouvre dans un navigateur (adresse https://…)</div></button>
-  <button class="choice ${m==='desktop'?'on':''}" onclick="setupMode='desktop';loadWins()"><div class="t">🖥️ Logiciel installé ou autre</div><div class="d">Un programme sur cet ordinateur : ERP, Excel, Numbers, logiciel inconnu…</div></button></div>`;
-  if(m==='web')h+=`<label class="l">Adresse de l'ERP</label><input id="url" placeholder="https://erp.mapharmacie.sn" oninput="urlPick=this.value" value="${esc(urlPick??(S.setup.erpUrl||''))}"><div class="row"><button class="big" ${busy?'disabled':''} onclick="call('setup',{mode:'web',erpUrl:$('#url').value})">Ouvrir l'ERP dans le navigateur PharmAgent</button></div><p class="muted">Un navigateur dédié s'ouvre : connectez-vous à l'ERP une fois, la session est conservée.</p>`;
+  <button class="choice ${m==='desktop'?'on':''}" onclick="setupMode='desktop';loadWins()"><div class="t">🖥️ Logiciel installé</div><div class="d">Un logiciel de pharmacie sur cet ordinateur (saisie au clavier, démo une fois)</div></button>
+  <button class="choice ${m==='file'?'on':''}" onclick="setupMode='file';render()"><div class="t">📄 Fichier Excel ou Numbers</div><div class="d">Le bon est écrit directement dans le fichier : aucune démo, aucune frappe</div></button></div>`;
+  if(m==='file')h+=`<p>Choisissez votre fichier de réception (modèle vide). Pour chaque bon approuvé, PharmAgent crée à côté une copie remplie, <b>« nom du fichier - N° du bon »</b>, et l'ouvre. Votre modèle n'est jamais modifié.</p>
+   <div class="row"><button class="sec" ${busy?'disabled':''} onclick="pickFile()">Choisir le fichier…</button></div>${filePick?`<p class="muted">Fichier : <b>${esc(filePick)}</b></p><div class="row"><button ${busy?'disabled':''} onclick="call('setup',{mode:'file',filePath:filePick})">Utiliser ce fichier</button></div>`:''}`;
+  else if(m==='web')h+=`<label class="l">Adresse de l'ERP</label><input id="url" placeholder="https://erp.mapharmacie.sn" oninput="urlPick=this.value" value="${esc(urlPick??(S.setup.erpUrl||''))}"><div class="row"><button class="big" ${busy?'disabled':''} onclick="call('setup',{mode:'web',erpUrl:$('#url').value})">Ouvrir l'ERP dans le navigateur PharmAgent</button></div><p class="muted">Un navigateur dédié s'ouvre : connectez-vous à l'ERP une fois, la session est conservée.</p>`;
   else h+=`<label class="l">Fenêtre de l'ERP (ouvrez d'abord le logiciel)</label><select id="win" onchange="winPick=this.value"><option value="">— Choisissez la fenêtre de l'ERP —</option>${(winList||[]).map(w=>`<option ${w===(winPick??S.setup.windowTitle)?'selected':''}>${esc(w)}</option>`).join('')}</select>
    <div class="row"><button class="sec" onclick="loadWins()">Actualiser la liste</button><button ${busy?'disabled':''} onclick="call('setup',{mode:'desktop',windowTitle:$('#win').value})">Continuer</button></div>
    ${macAlert()}`;
@@ -1821,12 +1932,13 @@ function render(){if(!S)return;const st=S.status;
  else if(st==='running'){const t=S.task;const pc=t.total?Math.round(100*t.done/t.total):0;h+=`<div class="card"><h2>${t.test?'Test sur l\'exemple':'Saisie du bon '+esc(t.documentNumber)}</h2><div class="bar"><i style="width:${pc}%"></i></div>
   <p>${t.done} / ${t.total} ligne(s) · ${esc(t.current||'')}</p>${S.profile&&S.profile.mode==='desktop'?'<p class="muted">Ne touchez pas au clavier. Touche <b>Échap</b> pour arrêter.</p>':''}</div>`}
  else{const p=S.profile||{};const lr=S.lastResult;h+=`<div class="card"><h2><span style="display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:8px;background:${st==='paused'?'var(--warn)':'var(--brand)'};box-shadow:0 0 10px ${st==='paused'?'var(--warn)':'var(--brand)'}"></span>${st==='paused'?'Agent en pause':'Prêt : en attente des bons approuvés'}</h2>
-  <p>Dès qu'un bon est approuvé dans PharmAgent (téléphone ou ordinateur), il est saisi ici automatiquement dans l'ERP${p.mode==='web'?' (navigateur PharmAgent)':' « '+esc(p.windowTitle||'')+' »'}.</p>
+  <p>Dès qu'un bon est approuvé dans PharmAgent (téléphone ou ordinateur), il est ${p.mode==='file'?'écrit automatiquement dans une copie du fichier « '+esc((p.filePath||'').split(/[\\/]/).pop())+' », qui s\'ouvre':'saisi ici automatiquement dans l\'ERP'+(p.mode==='web'?' (navigateur PharmAgent)':' « '+esc(p.windowTitle||'')+' »')}.</p>
   ${lr?`<div class="alert ${lr.status==='done'?'g':'e'}"><b>${lr.test?'Test':'Dernier bon'} ${esc(lr.documentNumber)}</b> · ${esc(lr.at)}<br>${esc(lr.message)}</div>`:''}
-  <div class="row"><button ${busy?'disabled':''} onclick="call('test_run')">▶ Tester avec l'exemple</button><button class="sec" onclick="call('open_erp')">Afficher l'ERP</button><button class="sec" onclick="call('pause',{paused:${st!=='paused'}})">${st==='paused'?'Reprendre':'Mettre en pause'}</button><button class="sec" onclick="edit=null;call('redo_demo')">Refaire la démo</button></div>
+  <div class="row"><button ${busy?'disabled':''} onclick="call('test_run')">▶ Tester avec l'exemple</button><button class="sec" onclick="call('open_erp')">Afficher l'ERP</button><button class="sec" onclick="call('pause',{paused:${st!=='paused'}})">${st==='paused'?'Reprendre':'Mettre en pause'}</button>${p.mode==='file'?`<button class="sec" onclick="call('change_setup')">Changer de fichier</button>`:`<button class="sec" onclick="edit=null;call('redo_demo')">Refaire la démo</button>`}</div>
   <p class="muted" style="margin-top:14px">Démo du ${p.recordedAt?new Date(p.recordedAt).toLocaleString('fr-FR'):'—'} · ${p.headerSteps||0} étape(s) d'en-tête · ${p.lineSteps||0} par ligne</p></div>`;
   h+=`<div class="card"><h2>Cet ordinateur</h2><p>Relié à <b>${esc(S.pharmacyName)}</b> · serveur ${esc(S.server)}</p><div class="row"><button class="sec red" onclick="if(confirm('Délier cet ordinateur de l\\'officine ?'))call('unpair')">Délier l'ordinateur</button></div></div>`}
  if(a.dataset.h!==h){a.innerHTML=h;a.dataset.h=h}}
+async function pickFile(){busy=true;render();try{const r=await fetch('/api/pick_file',{method:'POST',headers:{'X-PharmAgent':'1','Content-Type':'application/json'},body:'{}'});const d=await r.json();if(d.result)filePick=d.result}catch(e){}busy=false;render()}
 async function loadWins(){try{const r=await fetch('/api/windows',{method:'POST',headers:{'X-PharmAgent':'1'}});winList=(await r.json()).result||[]}catch(e){winList=[]}render()}
 refresh();setInterval(()=>{if(!busy&&!(S&&S.status==='review'))refresh()},1000);
 </script></body></html>
@@ -1876,7 +1988,7 @@ class Panel(BaseHTTPRequestHandler):
             return self._json(403, {"error": "Accès refusé."})
         name = self.path.removeprefix("/api/") if hasattr(str, "removeprefix") else self.path[5:]
         allowed = {"setup", "open_erp", "windows", "record_start", "record_stop", "record_cancel", "review_save",
-                   "redo_demo", "change_setup", "test_run", "pause", "unpair", "mac_permissions", "quit"}
+                   "redo_demo", "change_setup", "test_run", "pause", "unpair", "mac_permissions", "quit", "pick_file"}
         if name not in allowed:
             return self._json(404, {"error": "Commande inconnue."})
         length = min(int(self.headers.get("Content-Length") or 0), 2_000_000)
@@ -1884,7 +1996,7 @@ class Panel(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
         except ValueError:
             payload = {}
-        timeout = 600 if name == "test_run" else 120
+        timeout = 600 if name in ("test_run", "pick_file") else 120
         try:
             result = self.engine.submit(name, payload).result(timeout=timeout)
             self._json(200, {"result": result})

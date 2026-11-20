@@ -42,7 +42,8 @@ export interface AgentPresence {
   state?: string;              // ex. « En attente », « Saisie en cours »
 }
 
-export type ErpMode = 'web' | 'desktop';
+/** web : ERP dans un navigateur ; desktop : logiciel installé (clavier) ; file : fichier Excel/Numbers rempli directement. */
+export type ErpMode = 'web' | 'desktop' | 'file';
 
 // Étape d'une recette enregistrée pendant la démo (interprétée par l'agent)
 export interface RecipeStep {
@@ -65,6 +66,7 @@ export interface AgentProfile {
   erpUrl?: string;
   formUrl?: string;            // écran de saisie où la démo a été faite
   windowTitle?: string;
+  filePath?: string;           // mode « file » : chemin du fichier à remplir sur l'ordinateur
   headerSteps: RecipeStep[];
   lineSteps: RecipeStep[];
   recordedAt?: string;

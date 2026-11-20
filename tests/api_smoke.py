@@ -156,6 +156,24 @@ try:
     check("libellés du bon gardés en un clic", status == 200 and body["draft"]["extractedData"]["lineItems"][0]["match"]["erpLabel"] == "PRODUIT INCONNU 5MG CP B/30", body)
     check("puis approbation possible", call("POST", f"/api/drafts/{did2}/approve", {}, team_b)[1] == 200)
 
+    # Bon envoyé : Corriger (retour « à valider »), Supprimer (Pharmacien seulement), Renvoyer si bloqué
+    check("Corriger : le bon revient « à valider »", call("POST", f"/api/drafts/{did2}/reopen", {}, team_b)[1] == 200
+          and call("GET", f"/api/drafts/{did2}", token=owner)[0]["draft"]["status"] == "pending")
+    call("POST", f"/api/drafts/{did2}/approve", {}, team_b)
+    check("Supprimer : refusé à l'Équipe", call("POST", f"/api/drafts/{did2}/delete", {}, team_b)[1] == 403)
+    # Mode fichier de l'agent : l'agent envoie le modèle, reçoit le fichier rempli
+    import io, openpyxl
+    agent_key = [p for p in call("GET", "/api/dashboard", token=owner)[0]["pharmacies"] if p["id"] == pb][0]["agentKey"]
+    akey = lambda m, path, b=None: (lambda r: (json.loads(r.read()), r.status))(urllib.request.urlopen(urllib.request.Request(B + path, data=json.dumps(b).encode() if b is not None else None, headers={"Content-Type": "application/json", "X-Agent-Key": agent_key}, method=m), timeout=30))
+    prof = akey("PUT", "/api/agent-client/profile", {"mode": "file", "filePath": "/Users/test/Reception.xlsx"})[0]["profile"]
+    check("agent : réglage « fichier » enregistré sans démo", prof["mode"] == "file" and prof["filePath"].endswith("Reception.xlsx"))
+    wbm = openpyxl.Workbook(); wsm = wbm.active; wsm.append(["Fournisseur :", ""]); wsm.append([]); wsm.append(["Désignation", "Quantité", "Prix achat", "Lot"])
+    bufm = io.BytesIO(); wbm.save(bufm)
+    filled = akey("POST", f"/api/agent-client/tasks/{did2}/fill-file", {"fileBase64": base64.b64encode(bufm.getvalue()).decode()})[0]
+    wsf = openpyxl.load_workbook(io.BytesIO(base64.b64decode(filled["fileBase64"]))).active
+    check("agent : fichier rempli renvoyé (produit + quantité)", wsf["A4"].value == "PRODUIT INCONNU 5MG CP B/30" and wsf["B4"].value == 3, [c.value for c in wsf[4]])
+    check("Supprimer : autorisé au Pharmacien", call("POST", f"/api/drafts/{did2}/delete", {}, user_c)[1] == 200 and call("GET", f"/api/drafts/{did2}", token=owner)[1] == 404)
+
     # Journal des ventes → proposition de commande → panier
     sales_csv = "Date;Désignation;Qté vendue\n01/11/2026;DOLIPRANE 1000MG CP B/8;12\n10/11/2026;DOLIPRANE 1000MG CP B/8;8\n10/11/2026;AMOXICILLINE 500MG GELULE B/12;5\n"
     check("journal des ventes : réservé au Pharmacien", call("POST", f"/api/pharmacies/{pb}/sales/import", {"fileBase64": b64(sales_csv)}, team_b)[1] == 403)

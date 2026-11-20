@@ -81,10 +81,13 @@ const SAMPLE_IMAGES = [
 
 const MAX_BYTES = 20 * 1024 * 1024;
 
-export default function PharmacistWorkspace({ token, snapshot, onRefresh, selectedPharmacyId, onSelectPharmacy, embedded = false }: Props & { embedded?: boolean }) {
+export default function PharmacistWorkspace({ token, snapshot, onRefresh, selectedPharmacyId, onSelectPharmacy, embedded = false, canDelete = true, docMode }: Props & { embedded?: boolean; canDelete?: boolean; docMode?: DocType }) {
   const [doc, setDoc] = useState<{ dataUrl: string; name: string; isPdf: boolean; zooms?: string[] } | null>(null);
   const [samplePath, setSamplePath] = useState('');
-  const [docType, setDocType] = useState<DocType>('bon_livraison');
+  const [pickedType, setDocType] = useState<DocType>('bon_livraison');
+  // Onglet imposé (Bons / Mutuelle / Autre) : plus de choix du type dans le formulaire
+  const docType = docMode ?? pickedType;
+  const inTab = (d: DraftRecord) => !docMode || (docMode === 'mutuelle' ? d.documentCategory === 'mutuelle' : d.documentCategory !== 'mutuelle');
   const [taskPrompt, setTaskPrompt] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -105,8 +108,8 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
     if (!local) return d;
     return Date.parse(local.updatedAt) >= Date.parse(d.updatedAt) ? local : d;
   };
-  const pending = (snapshot?.pendingDrafts ?? []).filter((d) => d.pharmacyId === selectedPharmacyId).map(fresh).filter((d) => d.extractionStatus !== 'processing');
-  const sent = (snapshot?.recentDrafts ?? []).filter((d) => d.pharmacyId === selectedPharmacyId).map(fresh);
+  const pending = (snapshot?.pendingDrafts ?? []).filter((d) => d.pharmacyId === selectedPharmacyId && inTab(d)).map(fresh).filter((d) => d.extractionStatus !== 'processing');
+  const sent = (snapshot?.recentDrafts ?? []).filter((d) => d.pharmacyId === selectedPharmacyId && inTab(d)).map(fresh);
   const allKnown = [...pending, ...sent];
   const current = currentId ? (allKnown.find((d) => d.id === currentId) ?? localDrafts[currentId] ?? null) : null;
 
@@ -200,6 +203,14 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
 
   const preview = doc ? (doc.isPdf ? null : doc.dataUrl) : samplePath ? `/${samplePath}` : null;
 
+  if (docMode === 'autre') {
+    return (
+      <div className="p-4 sm:p-6 max-w-3xl mx-auto">
+        {selectedPharmacy ? <GenericFill token={token} pharmacyId={selectedPharmacy.id} /> : null}
+      </div>
+    );
+  }
+
   return (
     <div className="p-4 sm:p-6 space-y-5 max-w-6xl mx-auto">
       {!embedded && <div className="flex flex-wrap items-center justify-between gap-3">
@@ -223,7 +234,7 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
           <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
             <h2 className="text-sm font-semibold text-white mb-4 flex items-center gap-2"><ScanLine size={16} className="text-emerald-400" /> Analyser un document</h2>
 
-            <div className="grid grid-cols-3 gap-2 mb-4">
+            {!docMode && <div className="grid grid-cols-3 gap-2 mb-4">
               {(Object.keys(DOC_LABELS) as DocType[]).map((t) => (
                 <button
                   key={t}
@@ -233,7 +244,7 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
                   {DOC_LABELS[t]}
                 </button>
               ))}
-            </div>
+            </div>}
 
             {docType === 'autre' ? (
               selectedPharmacy ? <GenericFill token={token} pharmacyId={selectedPharmacy.id} bare /> : null
@@ -378,7 +389,7 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
                       <div className="flex-1 min-w-0 text-sm text-white truncate">{d.extractedData.documentNumber || d.id} · <span className="text-slate-400">{d.extractedData.supplierOrOrg}</span></div>
                       <button onClick={() => void downloadWithAuth(`/api/drafts/${d.id}/download`, token, 'brouillon.xlsx')} className="text-slate-400 hover:text-white" title="Excel"><Download size={14} /></button>
                     </div>
-                    <ExecutionDetail draftId={d.id} execution={d.execution} token={token} onChanged={onRefresh} />
+                    <ExecutionDetail draftId={d.id} execution={d.execution} token={token} onChanged={onRefresh} canDelete={canDelete} />
                   </div>
                 ))}
               </div>

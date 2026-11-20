@@ -48,7 +48,7 @@ try:
         ("POST", f"/api/pharmacies/{A}/pair"), ("GET", f"/api/drafts/{did}"), ("POST", f"/api/drafts/{did}/approve"),
         ("POST", f"/api/drafts/{did}/reject"), ("POST", f"/api/drafts/{did}/requeue"), ("POST", f"/api/drafts/{did}/lines/0/match"),
         ("PATCH", f"/api/drafts/{did}/lines/0"), ("POST", f"/api/drafts/{did}/rematch"), ("POST", f"/api/drafts/{did}/fill-excel"),
-        ("GET", f"/api/drafts/{did}/download"), ("POST", f"/api/drafts/{did}/accept-labels"),
+        ("GET", f"/api/drafts/{did}/download"), ("POST", f"/api/drafts/{did}/accept-labels"), ("POST", f"/api/drafts/{did}/reopen"), ("POST", f"/api/drafts/{did}/delete"),
     ]
     body = {"fileBase64": "AA==", "productId": "x", "erpLabel": "PIRATE", "quantity": 999, "lines": [{"label": "x", "quantity": 1}], "code": "000000"}
     forged = tokB[:-4] + ("AAAA" if not tokB.endswith("AAAA") else "BBBB")
@@ -74,7 +74,7 @@ try:
         check(f"Équipe refusée : {p}", call(m, p, {"fileBase64": "AA==", "code": "1"}, teamA)[0] == 403)
 
     # Agent : sans clé ou avec une fausse clé, rien
-    agent = [("POST", "/api/agent-client/heartbeat"), ("GET", "/api/agent-client/profile"), ("PUT", "/api/agent-client/profile"), ("GET", "/api/agent-client/sample"),
+    agent = [("POST", f"/api/agent-client/tasks/{did}/fill-file"), ("POST", "/api/agent-client/heartbeat"), ("GET", "/api/agent-client/profile"), ("PUT", "/api/agent-client/profile"), ("GET", "/api/agent-client/sample"),
              ("POST", "/api/agent-client/claim"), ("POST", f"/api/agent-client/tasks/{did}/result"), ("POST", "/api/agent-client/catalog")]
     for label, h in (("sans clé", None), ("fausse clé", {"X-Agent-Key": "ak-faux"})):
         ok = [(m, p, st) for m, p in agent for st in [call(m, p, {}, None, h)[0]] if st != 401]
