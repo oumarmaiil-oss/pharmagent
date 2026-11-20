@@ -47,6 +47,12 @@ test('bon déjà importé détecté (même fournisseur et numéro, casse et espa
   store.finalizeExtraction(c.id, { ...empty, documentNumber: 'BL-2026-2', supplierOrOrg: 'Laborex' }, [], 0);
   assert.equal(store.getDraft(b.id)!.duplicateOf?.id, a.id);
   assert.equal(store.getDraft(c.id)!.duplicateOf, undefined);
+  // même bon lu différemment (photo puis PDF) ; même numéro chez un autre grossiste = pas un doublon
+  const d = newDraft(ph.id); const e = newDraft(ph.id);
+  store.finalizeExtraction(d.id, { ...empty, documentNumber: 'BL-2026-1', supplierOrOrg: 'Laborex (eurapharma), Dakar' }, [], 0);
+  store.finalizeExtraction(e.id, { ...empty, documentNumber: 'BL-2026-1', supplierOrOrg: 'UbiPharm Sénégal' }, [], 0);
+  assert.ok([a.id, b.id].includes(store.getDraft(d.id)!.duplicateOf?.id ?? ''));
+  assert.equal(store.getDraft(e.id)!.duplicateOf, undefined);
 });
 
 test('sauvegarde puis restauration', async () => {

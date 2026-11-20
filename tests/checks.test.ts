@@ -98,3 +98,13 @@ test('lignes incertaines regroupées en une seule alerte', () => {
   const c = draftChecks(draft([line({ confidence: 0.6 }), line({ confidence: 0.7 })], 2000), TODAY);
   assert.deepEqual(c.map((x) => x.text), ['Lecture incertaine (toutes les lignes) : comparez avec la photo.']);
 });
+
+test('seconde lecture : seulement si le total manque ou ne recoupe pas', async () => {
+  const { needsSecondLook } = await import('../src/components/draftChecks.ts');
+  assert.equal(needsSecondLook(draft([line({})], 1000).extractedData), false);
+  assert.equal(needsSecondLook(draft([line({})], 0).extractedData), true);
+  assert.equal(needsSecondLook(draft([line({})], 5000).extractedData), true);
+  assert.equal(needsSecondLook(draft([], 0, {}).extractedData), true);
+  assert.equal(needsSecondLook({ ...draft([], 0).extractedData, documentType: 'ordonnance' }), false);
+  assert.equal(needsSecondLook({ ...draft([line({})], 0).extractedData, documentCount: 2 }), false);
+});

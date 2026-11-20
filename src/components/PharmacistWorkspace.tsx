@@ -40,6 +40,29 @@ async function shrinkImage(file: File, maxSide = 1600): Promise<string | null> {
   }
 }
 
+// Deux agrandissements (moitié haute, moitié basse) de la photo d'origine : lots et petits chiffres lisibles par l'IA
+async function zoomTiles(file: File, target = 1568): Promise<string[]> {
+  try {
+    const bmp = await createImageBitmap(file);
+    const vertical = bmp.height >= bmp.width;
+    const out: string[] = [];
+    for (const start of [0, 0.45]) {
+      const sx = vertical ? 0 : Math.round(bmp.width * start), sy = vertical ? Math.round(bmp.height * start) : 0;
+      const sw = vertical ? bmp.width : Math.round(bmp.width * 0.55), sh = vertical ? Math.round(bmp.height * 0.55) : bmp.height;
+      const scale = Math.min(2, target / Math.max(sw, sh));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(sw * scale); canvas.height = Math.round(sh * scale);
+      const ctx = canvas.getContext('2d')!;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(bmp, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+      out.push(canvas.toDataURL('image/jpeg', 0.85));
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 const DOC_LABELS: Record<DocType, string> = {
   bon_livraison: 'Bon de livraison',
   facture: 'Facture fournisseur',
@@ -54,7 +77,7 @@ const SAMPLE_IMAGES = [
 const MAX_BYTES = 20 * 1024 * 1024;
 
 export default function PharmacistWorkspace({ token, snapshot, onRefresh, selectedPharmacyId, onSelectPharmacy }: Props) {
-  const [doc, setDoc] = useState<{ dataUrl: string; name: string; isPdf: boolean } | null>(null);
+  const [doc, setDoc] = useState<{ dataUrl: string; name: string; isPdf: boolean; zooms?: string[] } | null>(null);
   const [samplePath, setSamplePath] = useState('');
   const [docType, setDocType] = useState<DocType>('bon_livraison');
   const [taskPrompt, setTaskPrompt] = useState('');
@@ -92,7 +115,8 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
     const isPdf = file.type === 'application/pdf';
     // Photo réduite sur le téléphone : envoi plus rapide, et sous la limite de 5 Mo de l'IA
     const dataUrl = (!isPdf && await shrinkImage(file)) || await readAsDataUrl(file);
-    setDoc({ dataUrl, name: file.name, isPdf });
+    const zooms = isPdf ? [] : await zoomTiles(file);
+    setDoc({ dataUrl, name: file.name, isPdf, zooms });
     setSamplePath('');
     setError('');
   };
@@ -104,7 +128,7 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
     let polling = false;
     try {
       const body: Record<string, unknown> = { pharmacyId: selectedPharmacyId, documentHint: docType, taskPrompt: taskPrompt || undefined };
-      if (doc) body.imageBase64 = doc.dataUrl; else body.sampleAssetPath = samplePath;
+      if (doc) { body.imageBase64 = doc.dataUrl; if (doc.zooms?.length) body.zoomBase64 = doc.zooms; } else body.sampleAssetPath = samplePath;
       const r = await fetch('/api/agent/extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },

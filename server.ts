@@ -12,12 +12,13 @@ import zlib from 'zlib';
 import * as XLSX from 'xlsx';
 import {
   extractDocument,
+  SECOND_LOOK_EFFORT,
   groundTargetInterface,
   resolveProductMatches,
 } from './src/server/aiAgent.ts';
 import { fillWorkbook, FIELD_LABELS } from './src/server/excelFill.ts';
 import { matchColumn, type ColumnField } from './src/server/vocabulary.ts';
-import { blockingReason } from './src/components/draftChecks.ts';
+import { blockingReason, needsSecondLook } from './src/components/draftChecks.ts';
 import { checkTextSafety } from './src/server/guardrail.ts';
 import { AUTO_THRESHOLD, matchLines, normalizeSupplier } from './src/server/productMatcher.ts';
 import { store, type CatalogRowInput } from './src/server/store.ts';
@@ -844,8 +845,8 @@ app.get('/api/drafts/:draftId/download', (req, res) => {
 // ─── Agent IA : extraction document (image ou PDF) ───────
 
 app.post('/api/agent/extract', async (req, res) => {
-  const { pharmacyId, imageBase64, sampleAssetPath, documentHint, taskPrompt } = req.body as {
-    pharmacyId?: string; imageBase64?: string; sampleAssetPath?: string; documentHint?: DocumentCategory; taskPrompt?: string;
+  const { pharmacyId, imageBase64, sampleAssetPath, documentHint, taskPrompt, zoomBase64 } = req.body as {
+    pharmacyId?: string; imageBase64?: string; sampleAssetPath?: string; documentHint?: DocumentCategory; taskPrompt?: string; zoomBase64?: unknown;
   };
 
   const owner = getOwnerSession(req);
@@ -868,6 +869,12 @@ app.post('/api/agent/extract', async (req, res) => {
     res.status(400).json({ error: 'Format non pris en charge : utilisez une photo (JPG, PNG) ou un PDF.' }); return;
   }
 
+  // Agrandissements facultatifs d'une photo (faits par le téléphone) : au plus 2, images uniquement
+  const zooms = (Array.isArray(zoomBase64) && resolved.mimeType !== 'application/pdf' ? zoomBase64 : []).slice(0, 2).flatMap((z) => {
+    const m = typeof z === 'string' ? /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(z) : null;
+    return m ? [{ mimeType: m[1], base64: m[2] }] : [];
+  });
+
   const actorId = owner?.id ?? pharmacyUser!.id;
   const actorName = owner?.fullName ?? pharmacyUser!.fullName;
   const category = documentHint ?? 'bon_livraison';
@@ -884,7 +891,16 @@ app.post('/api/agent/extract', async (req, res) => {
   // Traitement IA en arrière-plan (ne bloque plus la réponse HTTP)
   (async () => {
     try {
-      const extraction = await extractDocument({ imageBase64: resolved.base64, mimeType: resolved.mimeType, documentHint: category, taskPrompt });
+      const params = { imageBase64: resolved.base64, mimeType: resolved.mimeType, documentHint: category, taskPrompt, zooms };
+      const extraction = await extractDocument(params);
+      // Total absent ou qui ne recoupe pas les lignes : une seconde lecture plus attentive, gardée si elle est cohérente
+      if (needsSecondLook(extraction.data)) {
+        try {
+          const second = await extractDocument({ ...params, effort: SECOND_LOOK_EFFORT });
+          extraction.tokensConsumed += second.tokensConsumed;
+          if (!needsSecondLook(second.data)) extraction.data = second.data;
+        } catch { /* la première lecture reste valable */ }
+      }
       const data = extraction.data;
       data.lineItems = (data.lineItems ?? []).filter((l) => l.designation?.trim());
       const matched = await matchDocumentLines(effPharmacyId, data);

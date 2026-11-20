@@ -60,6 +60,28 @@ export function blockingReason(draft: DraftRecord): string | undefined {
   return undefined;
 }
 
+/** Recoupement des totaux : HT ou TTC, remise déjà incluse ou non, montants de ligne imprimés ou recalculés. */
+export function totalsCheck(data: DraftRecord['extractedData']) {
+  const lines = data.lineItems ?? [];
+  const computed = lines.reduce((s, l) => s + netLine(l.quantity || 0, l.unitPriceFCFA || 0, l.discountPercent), 0);
+  const gross = lines.reduce((s, l) => s + (l.quantity || 0) * (l.unitPriceFCFA || 0), 0);
+  const printedLines = lines.every((l) => typeof l.lineTotal === 'number') ? lines.reduce((s, l) => s + (l.lineTotal ?? 0), 0) : undefined;
+  const withVat = lines.reduce((s, l) => s + netLine(l.quantity || 0, l.unitPriceFCFA || 0, l.discountPercent) * (1 + (l.vatRate ?? 0) / 100), 0);
+  const printed = data.totalAmountFCFA || 0;
+  const targets = [printed, data.totalHT, data.totalHT !== undefined && data.totalTVA !== undefined ? data.totalHT + data.totalTVA : undefined,
+    data.totalTVA !== undefined ? printed - data.totalTVA : undefined].filter((x): x is number => typeof x === 'number' && x > 0);
+  const sums = [computed, gross, withVat, printedLines].filter((x): x is number => typeof x === 'number');
+  return { computed, printed, targets, matches: targets.some((t) => sums.some((s) => close(s, t))) };
+}
+
+/** Lecture à refaire plus attentivement : bon ou facture dont le total manque ou ne recoupe pas les lignes. */
+export function needsSecondLook(data: DraftRecord['extractedData']): boolean {
+  if (!['bon_livraison', 'facture'].includes(data.documentType) || (data.documentCount ?? 1) > 1) return false;
+  const lines = data.lineItems ?? [];
+  if (!lines.length) return data.photoQuality !== 'illisible';
+  return !totalsCheck(data).matches;
+}
+
 export function draftChecks(draft: DraftRecord, today = new Date()): DraftCheck[] {
   if (draft.extractionStatus === 'processing' || draft.extractionStatus === 'error') return [];
   const out: DraftCheck[] = [];
@@ -75,19 +97,11 @@ export function draftChecks(draft: DraftRecord, today = new Date()): DraftCheck[
   // Un relevé de mutuelle n'affiche souvent que la part remboursée : pas de recoupement avec le total
   const isClaim = draft.documentCategory === 'mutuelle';
 
-  // Recoupement des totaux : HT ou TTC, remise déjà incluse ou non, montants de ligne imprimés ou recalculés
   const cur = data.currency || 'FCFA';
-  const computed = lines.reduce((s, l) => s + netLine(l.quantity || 0, l.unitPriceFCFA || 0, l.discountPercent), 0);
-  const gross = lines.reduce((s, l) => s + (l.quantity || 0) * (l.unitPriceFCFA || 0), 0);
-  const printedLines = lines.every((l) => typeof l.lineTotal === 'number') ? lines.reduce((s, l) => s + (l.lineTotal ?? 0), 0) : undefined;
-  const withVat = lines.reduce((s, l) => s + netLine(l.quantity || 0, l.unitPriceFCFA || 0, l.discountPercent) * (1 + (l.vatRate ?? 0) / 100), 0);
-  const printed = data.totalAmountFCFA || 0;
-  const targets = [printed, data.totalHT, data.totalHT !== undefined && data.totalTVA !== undefined ? data.totalHT + data.totalTVA : undefined,
-    data.totalTVA !== undefined ? printed - data.totalTVA : undefined].filter((x): x is number => typeof x === 'number' && x > 0);
-  const sums = [computed, gross, withVat, printedLines].filter((x): x is number => typeof x === 'number');
+  const { computed, printed, targets, matches } = totalsCheck(data);
   if (isClaim) {
     // rien : le total du relevé est la part prise en charge, pas la somme des lignes
-  } else if (targets.length && lines.length && !targets.some((t) => sums.some((s) => close(s, t)))) {
+  } else if (targets.length && lines.length && !matches) {
     out.push({ level: 'error', text: `Le total des lignes (${money(computed, cur)}) ne correspond pas au total du bon (${money(printed || targets[0], cur)}) : une quantité ou un prix est peut-être mal lu.` });
   } else if (!targets.length && lines.length) {
     out.push({ level: 'warn', text: 'Total du bon non lu : impossible de recouper les quantités et les prix.' });

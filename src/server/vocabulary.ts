@@ -76,6 +76,7 @@ Règles de lecture des documents réels :
   Ignore les coches, « OK », signatures, tampons et références internes manuscrites (ex. « 2026/12345 ») : ce ne sont ni le numéro du document ni des produits.
 - Des pastilles ou autocollants peuvent cacher une case : ne devine pas, baisse la confidence de la ligne.
 - Impression matricielle pâle : O/D/0, I/1, S/5, B/8 se confondent. Choisis la lecture qui donne un nom de médicament qui existe (DOLIPRANE et non DDLIPRANE) et des chiffres cohérents (quantité × prix = montant).
+  Les numéros de lot ne se recoupent avec rien : si un seul caractère du lot ou de la péremption n'est pas net, confidence de la ligne au plus 0,7.
 - Lot et péremption peuvent être sur une seconde ligne sous le produit : rattache-les au produit au-dessus.
 - Un produit qui vient d'être livré n'est presque jamais déjà périmé : si tu lis une date passée, relis-la ; si le doute reste, baisse la confidence.
 - Un même document peut avoir deux volets (bon de prélèvement + facture, ou original + copie) avec les mêmes lignes : ne compte chaque ligne qu'une fois.

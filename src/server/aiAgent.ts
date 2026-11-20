@@ -12,6 +12,9 @@ import type {
 import { DOCUMENT_READING_RULES, EXTRACTION_GLOSSARY } from './vocabulary.ts';
 
 const MODEL = process.env.CLAUDE_MODEL || 'claude-haiku-5-5';
+const EFFORT = (process.env.CLAUDE_EFFORT || 'low') as 'low' | 'medium' | 'high';
+/** Seconde lecture, plus attentive, quand la première est incohérente. */
+export const SECOND_LOOK_EFFORT = 'medium';
 
 let client: Anthropic | undefined;
 function getClient(): Anthropic {
@@ -54,13 +57,15 @@ function countAiCall(): void {
   usage.count++;
 }
 
-async function ask<T>(content: Anthropic.ContentBlockParam[], schema: Record<string, unknown>): Promise<{ data: T; tokens: number }> {
+type Effort = 'low' | 'medium' | 'high';
+
+async function ask<T>(content: Anthropic.ContentBlockParam[], schema: Record<string, unknown>, effort: Effort = EFFORT): Promise<{ data: T; tokens: number }> {
   countAiCall();
   try {
     const res = await getClient().messages.create({
       model: MODEL,
       max_tokens: 8000,
-      output_config: { effort: 'low', format: { type: 'json_schema', schema } },
+      output_config: { effort, format: { type: 'json_schema', schema } },
       messages: [{ role: 'user', content }],
     });
     if (res.stop_reason === 'refusal') throw new Error("L'IA a refusé d'analyser ce document.");
@@ -83,7 +88,16 @@ export async function extractDocument(params: {
   mimeType: string;
   documentHint: DocumentCategory;
   taskPrompt?: string;
+  effort?: Effort;
+  /** Agrandissements (haut, bas) de la même photo, faits par le téléphone, pour les petits caractères. */
+  zooms?: Array<{ base64: string; mimeType: string }>;
 }): Promise<{ data: ExtractedDocumentData; tokensConsumed: number }> {
+  const zooms = (params.zooms ?? []).slice(0, 2);
+  const zoomClause = zooms.length
+    ? `Les ${zooms.length} images après la première sont des agrandissements (haut puis bas) de la MÊME page, pour lire les petits caractères ` +
+      `(lots, péremptions, chiffres). Ce ne sont pas d'autres documents : ne les compte pas dans documentCount et ne duplique aucune ligne. ` +
+      `Pour un caractère douteux, l'agrandissement fait foi.\n`
+    : '';
   const missionClause = params.taskPrompt?.trim()
     ? `\nInstruction spécifique : "${params.taskPrompt.trim()}". Réponds dans agentObservations.`
     : '';
@@ -91,9 +105,11 @@ export async function extractDocument(params: {
   const { data, tokens } = await ask<ExtractedDocumentData>(
     [
       documentBlock(params.mimeType, params.imageBase64),
+      ...zooms.map((z) => documentBlock(z.mimeType, z.base64)),
       {
         type: 'text',
         text:
+          zoomClause +
           `Tu es l'agent PharmAgent d'une officine pharmaceutique. ` +
           `Analyse ce document (type probable : ${params.documentHint}). ` +
           `Extrais l'en-tête (numéro, fournisseur/organisme, pharmacie destinataire, date, montant total FCFA) ` +
@@ -154,6 +170,7 @@ export async function extractDocument(params: {
       },
       required: ['documentType', 'documentCount', 'photoQuality', 'documentNumber', 'supplierOrOrg', 'recipientPharmacy', 'documentDate', 'totalAmountFCFA', 'lineItems'],
     },
+    params.effort,
   );
 
   return { data, tokensConsumed: tokens };

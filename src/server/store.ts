@@ -529,10 +529,13 @@ class PharmAgentStore {
     draft.tokensConsumed = tokens;
     draft.extractionStatus = 'ready';
     const key = (s?: string) => (s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    // Même fournisseur = même premier mot (« Laborex (eurapharma), Dakar » = « LABOREX EURAPHARMA ») ; inconnu d'un côté = on se fie au numéro
+    const brand = (s?: string) => (s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().match(/[a-z0-9]+/)?.[0] ?? '';
+    const sameSupplier = (a?: string, b?: string) => !brand(a) || !brand(b) || brand(a) === brand(b);
     const number = key(data.documentNumber);
     const dup = number ? this.db.drafts.find((d) => d.id !== id && d.pharmacyId === draft.pharmacyId && d.status !== 'rejected'
       && d.extractionStatus !== 'error' && key(d.extractedData.documentNumber) === number
-      && key(d.extractedData.supplierOrOrg) === key(data.supplierOrOrg)) : undefined;
+      && sameSupplier(d.extractedData.supplierOrOrg, data.supplierOrOrg)) : undefined;
     draft.duplicateOf = dup ? { id: dup.id, createdAt: dup.createdAt, status: dup.status } : undefined;
     draft.updatedAt = now();
     this.persist();
