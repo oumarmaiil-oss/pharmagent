@@ -1,5 +1,5 @@
 import {
-  AlertCircle, Camera, CheckCircle2, ChevronDown, ChevronUp, Download, FileText, Loader2, RefreshCw, ScanLine,
+  AlertCircle, Camera, CheckCircle2, ChevronDown, ChevronUp, Download, FileSpreadsheet, FileText, Loader2, RefreshCw, ScanLine,
   ShieldCheck, ThumbsDown, ThumbsUp, Upload, XCircle,
 } from 'lucide-react';
 import { useRef, useState } from 'react';
@@ -366,11 +366,62 @@ function DraftPanel(props: DraftProps) {
   );
 }
 
+interface FillReportView { sheet: string; linesWritten: number; headerFilled: string[]; missingLabels: string[] }
+
+function FillExcelButton({ draftId, token }: { draftId: string; token: string }) {
+  const input = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await fetch(`/api/drafts/${draftId}/fill-excel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ fileBase64: await readAsDataUrl(file) }),
+      });
+      const data = await r.json() as { fileBase64?: string; report?: FillReportView; error?: string };
+      if (!r.ok || !data.fileBase64 || !data.report) { setMsg({ ok: false, text: data.error ?? 'Remplissage impossible.' }); return; }
+      const bytes = Uint8Array.from(atob(data.fileBase64), (c) => c.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = file.name.replace(/\.xlsx$/i, '') + '_rempli.xlsx';
+      a.click(); URL.revokeObjectURL(url);
+      const rep = data.report;
+      setMsg({ ok: true, text: `${rep.linesWritten} ligne(s) ajoutée(s) dans « ${rep.sheet} »` + (rep.headerFilled.length ? ` · en-tête : ${rep.headerFilled.join(', ')}` : '') + (rep.missingLabels.length ? ` · colonnes non trouvées : ${rep.missingLabels.join(', ')}` : '') + '. Le fichier rempli a été téléchargé : ouvrez-le pour vérifier.' });
+    } catch {
+      setMsg({ ok: false, text: 'Connexion impossible. Réessayez.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <button
+        onClick={() => input.current?.click()}
+        disabled={busy}
+        className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium px-3 py-2 rounded-xl disabled:opacity-50"
+      >
+        {busy ? <Loader2 size={14} className="animate-spin" /> : <FileSpreadsheet size={14} />} Remplir mon fichier Excel
+      </button>
+      <input ref={input} type="file" accept=".xlsx" className="hidden" onChange={onFile} />
+      {msg && <p className={`text-[11px] ${msg.ok ? 'text-emerald-300' : 'text-red-300'}`}>{msg.text}</p>}
+    </div>
+  );
+}
+
 function DraftBody({ draft, token, busy, onDecide, onUpdated, onRefresh }: DraftProps) {
   const toReview = countToReview(draft);
   return (
     <div className="space-y-3">
       <DraftLines draft={draft} token={token} onUpdated={onUpdated} />
+
+      <FillExcelButton draftId={draft.id} token={token} />
 
       {draft.extractedData.agentObservations && (
         <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg px-3 py-2 text-xs text-blue-200">💡 {draft.extractedData.agentObservations}</div>

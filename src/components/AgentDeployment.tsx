@@ -201,9 +201,13 @@ export default function AgentDeployment({ token, snapshot, selectedPharmacyId, o
           </div>
           <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-4 space-y-3">
             <div className="flex items-center gap-2 text-sm font-semibold text-white"><Apple size={16} className="text-slate-200" /> macOS</div>
-            <p className="text-[11px] text-slate-400">Ouvrez <b>Terminal</b> (Launchpad › Autres › Terminal), collez cette ligne puis appuyez sur Entrée :</p>
+            <a href="/install/mac.zip" className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-sm font-semibold">
+              <Download size={15} /> Télécharger l'installeur Mac
+            </a>
+            <p className="text-[11px] text-slate-400">Ouvrez <b>PharmAgent-Mac.zip</b>, puis double-cliquez sur <b>PharmAgent-Mac.command</b>. La première fois, le Mac demande confirmation : <b>clic droit › Ouvrir</b>. Le Terminal installe tout seul (1 à 3 minutes) : laissez-le ouvert, réduisez-le.</p>
+            <p className="text-[11px] text-slate-400">Ensuite, l'application <b>PharmAgent</b> (Launchpad ou dossier Applications) relance tout par un double-clic.</p>
+            <p className="text-[11px] text-slate-500">Autre méthode, dans le Terminal :</p>
             <CopyLine text={`curl -fsSL ${origin}/install/install.sh | bash`} />
-            <p className="text-[11px] text-slate-500">Rien d'autre à installer : Python et le navigateur sont gérés automatiquement (1 à 3 minutes).</p>
           </div>
         </div>
       </section>

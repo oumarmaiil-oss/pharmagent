@@ -88,8 +88,8 @@ export default function GuideCenter({ standalone = false }: { standalone?: boole
               <Step n={1} title="Installer l'agent">
                 <p><b>Windows :</b> sur ce PC, ouvrez <K>{site}/install/windows</K> : le fichier <b>PharmAgent-Installer.bat</b> se télécharge. Double-cliquez dessus.</p>
                 <p className="text-slate-400">Si Windows affiche « Windows a protégé votre ordinateur » : <b>Informations complémentaires</b> › <b>Exécuter quand même</b>. Si le navigateur bloque le téléchargement : <b>Conserver</b>.</p>
-                <p><b>Mac :</b> ouvrez <b>Terminal</b> (Launchpad › Autres), collez la ligne suivante puis Entrée :</p>
-                <p><K>curl -fsSL {site}/install/install.sh | bash</K></p>
+                <p><b>Mac :</b> sur ce Mac, ouvrez <K>{site}/install/mac.zip</K> : ouvrez le fichier téléchargé, puis double-cliquez sur <b>PharmAgent-Mac.command</b> (la première fois : clic droit › Ouvrir). Le Terminal s'ouvre et installe tout seul : laissez-le ouvert, réduisez-le.</p>
+                <p className="text-slate-400">Ensuite, l'application <b>PharmAgent</b> (dossier Applications) relance tout par un double-clic. Autre méthode, dans le Terminal : <K>curl -fsSL {site}/install/install.sh | bash</K></p>
                 <p className="text-slate-400">Aucun droit administrateur, rien d'autre à installer : Python est géré automatiquement (1 à 3 minutes selon la connexion).</p>
               </Step>
               <Step n={2} title="Relier l'ordinateur à l'officine">

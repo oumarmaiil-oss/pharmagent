@@ -8,12 +8,14 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import zlib from 'zlib';
 import * as XLSX from 'xlsx';
 import {
   extractDocument,
   groundTargetInterface,
   resolveProductMatches,
 } from './src/server/aiAgent.ts';
+import { fillWorkbook, FIELD_LABELS } from './src/server/excelFill.ts';
 import { checkTextSafety } from './src/server/guardrail.ts';
 import { AUTO_THRESHOLD, matchLines, normalizeSupplier } from './src/server/productMatcher.ts';
 import { store, type CatalogRowInput } from './src/server/store.ts';
@@ -717,6 +719,29 @@ app.post('/api/drafts/:draftId/rematch', async (req, res) => {
   }
 });
 
+app.post('/api/drafts/:draftId/fill-excel', async (req, res) => {
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
+  const actor = requirePharmacyOrOwner(req, res, draft.pharmacyId);
+  if (!actor) return;
+  if (draft.extractionStatus === 'processing' || draft.extractionStatus === 'error') { res.status(400).json({ error: 'Analyse non terminée : rien à écrire.' }); return; }
+  const { fileBase64 } = req.body as { fileBase64?: string };
+  if (!fileBase64) { res.status(400).json({ error: 'Fichier Excel requis (.xlsx).' }); return; }
+  try {
+    const t = buildTaskPayload(draft);
+    const { buffer, report } = await fillWorkbook(
+      Buffer.from(fileBase64.replace(/^data:[^,]+,/, ''), 'base64'),
+      { supplier: t.header.supplier, documentNumber: t.header.documentNumber, documentDate: t.header.documentDate },
+      t.lines.map((l) => ({ product: l.product, cip: l.cip, quantity: l.quantity, lotNumber: l.lotNumber, expiryDate: l.expiryDate, purchasePrice: l.purchasePrice, salePrice: l.salePrice })),
+    );
+    store.addAuditLog({ pharmacyId: draft.pharmacyId, actorId: actor.actor.id, actorName: actor.displayName, action: `Fichier Excel rempli : ${report.linesWritten} ligne(s) dans « ${report.sheet} »`, level: 'info' });
+    res.json({ fileBase64: buffer.toString('base64'), report: { ...report, missingLabels: report.missing.map((f) => FIELD_LABELS[f]) } });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: msg.startsWith('Aucune ligne') ? msg : `Fichier illisible : utilisez un fichier Excel .xlsx (Numbers : Fichier › Exporter vers › Excel). ${msg}` });
+  }
+});
+
 app.get('/api/drafts/:draftId/download', (req, res) => {
   const draft = store.getDraft(req.params.draftId);
   if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
@@ -948,6 +973,25 @@ app.post('/api/agent-client/catalog', (req, res) => {
 
 // ─── Installation de l'agent (public : aucun secret dedans) ─
 
+// ZIP d'un seul fichier, avec le droit d'exécution : un .command téléchargé tel quel n'est pas exécutable sur Mac.
+function zipSingleFile(name: string, content: Buffer, mode = 0o755): Buffer {
+  const nameBuf = Buffer.from(name, 'utf-8');
+  const crc = zlib.crc32(content);
+  const dosDate = ((2026 - 1980) << 9) | (1 << 5) | 1;
+  const local = Buffer.alloc(30);
+  local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(10, 4); local.writeUInt16LE(0x0800, 6);
+  local.writeUInt16LE(dosDate, 12); local.writeUInt32LE(crc, 14);
+  local.writeUInt32LE(content.length, 18); local.writeUInt32LE(content.length, 22); local.writeUInt16LE(nameBuf.length, 26);
+  const central = Buffer.alloc(46);
+  central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE((3 << 8) | 20, 4); central.writeUInt16LE(10, 6); central.writeUInt16LE(0x0800, 8);
+  central.writeUInt16LE(dosDate, 14); central.writeUInt32LE(crc, 16);
+  central.writeUInt32LE(content.length, 20); central.writeUInt32LE(content.length, 24); central.writeUInt16LE(nameBuf.length, 28);
+  central.writeUInt32LE(((0o100000 | mode) << 16) >>> 0, 38);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(1, 8); end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(central.length + nameBuf.length, 12); end.writeUInt32LE(local.length + nameBuf.length + content.length, 16);
+  return Buffer.concat([local, nameBuf, content, central, nameBuf, end]);
+}
 function agentFile(name: string): string {
   return fs.readFileSync(path.join(AGENT_DIR, name), 'utf-8');
 }
@@ -966,6 +1010,14 @@ app.get('/install/windows', (req, res) => {
 
 app.get('/install/windows.ps1', (req, res) => {
   sendScript(res, agentFile('install.ps1').replaceAll('__SERVER_URL__', publicBaseUrl(req)), 'install.ps1', 'text/plain', true);
+});
+
+app.get('/install/mac.zip', (req, res) => {
+  const script = `#!/bin/bash\n# PharmAgent — installation et lancement (macOS)\ncurl -fsSL "${publicBaseUrl(req)}/install/install.sh" | bash\n`;
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', 'attachment; filename="PharmAgent-Mac.zip"');
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(zipSingleFile('PharmAgent-Mac.command', Buffer.from(script, 'utf-8')));
 });
 
 app.get('/install/mac', (req, res) => {

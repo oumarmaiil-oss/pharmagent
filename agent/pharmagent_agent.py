@@ -25,8 +25,11 @@ import logging
 import logging.handlers
 import os
 import platform
+import plistlib
 import queue
 import re
+import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -45,12 +48,14 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-AGENT_VERSION = "2.1.0"
+AGENT_VERSION = "2.2.0"
 DEFAULT_SERVER = "https://pharmagent.onrender.com"
 PANEL_PORT = int(os.environ.get("PHARMAGENT_PORT", "8765"))
 POLL_SECONDS = float(os.environ.get("PHARMAGENT_POLL", "5"))
 HEARTBEAT_SECONDS = 20
 SYSTEM = platform.system()  # 'Windows' | 'Darwin' | 'Linux'
+# Applications qui ne sont jamais l'ERP (évite de surveiller Finder par erreur)
+IGNORED_APPS = {"Finder", "Terminal", "iTerm2", "Python", "PharmAgent", "osascript", "System Events", "Réglages Système", "System Settings", "SystemUIServer", "Dock"}
 
 
 def app_home() -> Path:
@@ -318,7 +323,7 @@ def list_windows() -> List[str]:
                     if n:
                         buf = ctypes.create_unicode_buffer(n + 1)
                         user32.GetWindowTextW(hwnd, buf, n + 1)
-                        if buf.value.strip() and buf.value not in ("Program Manager",):
+                        if buf.value.strip() and buf.value not in ("Program Manager",) and "PharmAgent" not in buf.value:
                             titles.append(buf.value)
                 return True
 
@@ -329,9 +334,9 @@ def list_windows() -> List[str]:
                 ["osascript", "-e", 'tell application "System Events" to get name of every process whose background only is false'],
                 capture_output=True, text=True, timeout=8,
             ).stdout
-            return sorted({x.strip() for x in out.split(",") if x.strip()})
+            return sorted({x.strip() for x in out.split(",") if x.strip()} - IGNORED_APPS)
         out = subprocess.run(["wmctrl", "-l"], capture_output=True, text=True, timeout=5).stdout
-        return sorted({" ".join(l.split()[3:]) for l in out.splitlines() if len(l.split()) > 3})
+        return sorted({t for t in (" ".join(l.split()[3:]) for l in out.splitlines() if len(l.split()) > 3) if "PharmAgent" not in t})
     except Exception:
         return []
 
@@ -347,10 +352,12 @@ def foreground_title() -> Optional[str]:
             user32.GetWindowTextW(hwnd, buf, n + 1)
             return buf.value
         if SYSTEM == "Darwin":
-            return subprocess.run(
+            r = subprocess.run(
                 ["osascript", "-e", 'tell application "System Events" to get name of first process whose frontmost is true'],
                 capture_output=True, text=True, timeout=5,
-            ).stdout.strip()
+            )
+            # Échec d'osascript (autorisation refusée) : on ne bloque pas la démo sur une réponse vide
+            return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
         r = subprocess.run(["xdotool", "getactivewindow", "getwindowname"], capture_output=True, text=True, timeout=3)
         return r.stdout.strip() if r.returncode == 0 else None
     except Exception:
@@ -413,6 +420,58 @@ def mac_accessibility_ok() -> bool:
         return True
 
 
+def mac_input_monitoring_ok() -> bool:
+    if SYSTEM != "Darwin":
+        return True
+    try:
+        import ctypes
+        cg = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        cg.CGPreflightListenEventAccess.restype = ctypes.c_bool
+        return bool(cg.CGPreflightListenEventAccess())
+    except Exception:
+        return True
+
+
+_MAC_ACCESSIBILITY_PROMPT = '''
+import ctypes
+ax = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
+cf = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+key = ctypes.c_void_p.in_dll(ax, "kAXTrustedCheckOptionPrompt")
+val = ctypes.c_void_p.in_dll(cf, "kCFBooleanTrue")
+keys = (ctypes.c_void_p * 1)(key.value)
+vals = (ctypes.c_void_p * 1)(val.value)
+cf.CFDictionaryCreate.restype = ctypes.c_void_p
+cf.CFDictionaryCreate.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p]
+opts = cf.CFDictionaryCreate(None, keys, vals, 1, None, None)
+ax.AXIsProcessTrustedWithOptions.argtypes = [ctypes.c_void_p]
+ax.AXIsProcessTrustedWithOptions.restype = ctypes.c_bool
+ax.AXIsProcessTrustedWithOptions(opts)
+'''
+
+_MAC_LISTEN_PROMPT = '''
+import ctypes
+cg = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+cg.CGRequestListenEventAccess.restype = ctypes.c_bool
+cg.CGRequestListenEventAccess()
+'''
+
+
+def mac_request_permissions() -> None:
+    # Appels faits dans un sous-processus : macOS rattache la demande à l'application qui a lancé l'agent
+    # (Terminal, PharmAgent…), et un éventuel plantage ne touche pas l'agent.
+    if SYSTEM != "Darwin":
+        return
+    for code in (_MAC_ACCESSIBILITY_PROMPT, _MAC_LISTEN_PROMPT):
+        try:
+            subprocess.run([sys.executable, "-c", code], capture_output=True, timeout=25)
+        except Exception as e:
+            log.info("Demande d'autorisation macOS impossible : %s", e)
+    try:
+        subprocess.run(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"], timeout=8)
+    except Exception:
+        pass
+
+
 # ─── Enregistrement / rejeu clavier (logiciel installé) ─────────────────────
 
 KEY_NAMES = ["tab", "enter", "up", "down", "left", "right", "esc", "delete", "home", "end", "page_up", "page_down", "insert"] + [f"f{i}" for i in range(1, 13)]
@@ -428,6 +487,7 @@ class KeyRecorder:
         self.buf = ""
         self.mods: set = set()
         self.fg_ok = True
+        self.fg_title = ""
         self._stop = threading.Event()
         self._listener = None
 
@@ -446,13 +506,21 @@ class KeyRecorder:
 
     def _watch_foreground(self) -> None:
         while not self._stop.is_set():
-            self.fg_ok = foreground_is(self.window_title)
+            fg = foreground_title()
+            self.fg_title = fg or ""
+            self.fg_ok = True if fg is None else title_matches(fg, self.window_title)
             time.sleep(0.3)
 
     def _flush(self) -> None:
         if self.buf:
             self.steps.append({"kind": "type", "value": self.buf})
             self.buf = ""
+
+    def snapshot(self) -> List[Dict[str, Any]]:
+        ev = [{"type": st["kind"], "value": st.get("value"), "key": st.get("key")} for st in list(self.steps)]
+        if self.buf:
+            ev.append({"type": "type", "value": self.buf})
+        return ev
 
     @staticmethod
     def _mod_name(key) -> Optional[str]:
@@ -1165,6 +1233,7 @@ class Engine:
         self.pairing: Optional[Dict[str, Any]] = None
         self.recording: Optional[Dict[str, Any]] = None
         self.key_recorder: Optional[KeyRecorder] = None
+        self._last_update_check = time.time()
         self.review: Optional[Dict[str, Any]] = None
         self.setup: Dict[str, Any] = dict(self.cfg.get("setup") or {})
         self.task: Optional[Dict[str, Any]] = None
@@ -1206,14 +1275,24 @@ class Engine:
                 "version": AGENT_VERSION, "os": SYSTEM, "server": self.api.server, "serverOk": self.server_ok,
                 "paired": paired, "pharmacyName": self.cfg.get("pharmacyName", ""), "status": status,
                 "pairingCode": (self.pairing or {}).get("code"), "profile": prof, "setup": self.setup,
-                "recording": {"phase": self.recording["phase"], "count": len(self.recording["events"]),
-                              "preview": self._preview(self.recording)} if self.recording else None,
+                "recording": self._recording_view(),
                 "review": self.review, "sample": self.sample, "task": self.task, "lastResult": self.last_result,
                 "browserOpen": self.web.ctx is not None,
-                "accessibilityOk": mac_accessibility_ok(), "lastError": self.last_error,
+                "accessibilityOk": mac_accessibility_ok(), "inputMonitoringOk": mac_input_monitoring_ok(), "lastError": self.last_error,
                 "fields": {"header": HEADER_FIELDS, "line": LINE_FIELDS},
                 "logs": list(LOG_LINES)[-60:],
             }
+
+    def _recording_view(self) -> Optional[Dict[str, Any]]:
+        rec = self.recording
+        if not rec:
+            return None
+        if self.key_recorder:
+            evs = self.key_recorder.snapshot()
+            return {"phase": rec["phase"], "count": len(evs), "preview": self._preview({"events": evs}),
+                    "fgOk": self.key_recorder.fg_ok, "fgTitle": self.key_recorder.fg_title,
+                    "wanted": self.setup.get("windowTitle", "")}
+        return {"phase": rec["phase"], "count": len(rec["events"]), "preview": self._preview(rec)}
 
     @staticmethod
     def _preview(rec: Dict[str, Any]) -> List[str]:
@@ -1261,10 +1340,20 @@ class Engine:
                 title = (p.get("windowTitle") or "").strip()
                 if not title:
                     raise ValueError("Choisissez la fenêtre de l'ERP.")
+                if title in IGNORED_APPS:
+                    raise ValueError(f"« {title} » n'est pas le logiciel de saisie : choisissez la fenêtre de l'ERP (par exemple Numbers ou Excel).")
                 self.setup = {"mode": "desktop", "windowTitle": title}
             self._persist()
+            self.status_override = "prepare"  # sinon « Changer d'ERP » laisse le panneau bloqué sur le choix
             if mode == "web":
                 self.web.open(self.setup["erpUrl"])
+            return True
+        if name == "mac_permissions":
+            mac_request_permissions()
+            return True
+        if name == "quit":
+            log.info("Arrêt demandé (remplacement par une version plus récente).")
+            self.shutdown.set()
             return True
         if name == "open_erp":
             cfg = self.profile or self.setup
@@ -1546,6 +1635,9 @@ class Engine:
     def loop(self) -> None:
         log.info("Agent PharmAgent %s démarré (%s) — serveur %s", AGENT_VERSION, SYSTEM, self.api.server)
         while not self.shutdown.is_set():
+            if time.time() - self._last_update_check > 1800 and not (self.recording or self.review or self.task):
+                self._last_update_check = time.time()
+                self_update(self.api.server)
             try:
                 name, payload, fut = self.commands.get_nowait()
             except queue.Empty:
@@ -1649,12 +1741,13 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:8px 6px;b
 <details class="card"><summary class="muted" style="cursor:pointer">Journal de l'agent</summary><div class="logs" id="logs"></div></details>
 </div>
 <script>
-let S=null, busy=false, edit=null, winList=null, setupMode=null;
+let S=null, busy=false, edit=null, winList=null, setupMode=null, winPick=null, urlPick=null;
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function call(cmd, body){busy=true;render();try{const r=await fetch('/api/'+cmd,{method:'POST',headers:{'Content-Type':'application/json','X-PharmAgent':'1'},body:JSON.stringify(body||{})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Erreur');return d.result}catch(e){alert(e.message);throw e}finally{busy=false;await refresh()}}
 async function refresh(){try{const r=await fetch('/api/state',{headers:{'X-PharmAgent':'1'}});S=await r.json();render()}catch(e){$('#pill').textContent='Agent arrêté';$('#pill').className='pill bad'}}
 const FL=()=>({...S.fields.header,...S.fields.line});
+const macAlert=()=>S.os==='Darwin'&&(!S.accessibilityOk||S.inputMonitoringOk===false)?`<div class="alert w">macOS bloque le clavier pour l'application qui a lancé PharmAgent (« Terminal » ou « PharmAgent »). Cliquez sur le bouton, puis activez cette application dans <b>Accessibilité</b> et <b>Surveillance de l'entrée</b>, et relancez PharmAgent.<div class="row"><button class="sec" onclick="call('mac_permissions')">Autoriser sur ce Mac</button></div></div>`:'';
 function sampleCard(phase){const s=phase==='header'?S.sample.header:S.sample.line;const f=phase==='header'?S.fields.header:S.fields.line;
  const fmt=(k,v)=>/Date$/.test(k)&&/^\d{4}-\d\d-\d\d$/.test(v)?v.split('-').reverse().join('/'):v;
  return '<div class="sample">'+Object.entries(f).filter(([k])=>s&&s[k]!==undefined&&s[k]!==''&&k!=='designation'&&k!=='lineTotal').map(([k,l])=>`<div>${esc(l)}</div><div><b>${esc(fmt(k,s[k]))}</b></div>`).join('')+'</div>'}
@@ -1670,21 +1763,23 @@ function render(){if(!S)return;const st=S.status;
   <div class="code">${S.pairingCode?esc(S.pairingCode):'…'}</div><p class="muted">Le code est valable 15 minutes. Cette page se met à jour toute seule.</p></div>`}
  else if(st==='setup'){const m=setupMode||S.setup.mode||'web';h+=`<div class="card">${stepsBar(1)}<h2>1. Où se trouve l'ERP de l'officine ?</h2>
   <div class="grid2" style="margin-top:12px"><button class="choice ${m==='web'?'on':''}" onclick="setupMode='web';render()"><div class="t">🌐 Site web</div><div class="d">L'ERP s'ouvre dans un navigateur (adresse https://…)</div></button>
-  <button class="choice ${m==='desktop'?'on':''}" onclick="setupMode='desktop';loadWins()"><div class="t">🖥️ Logiciel installé</div><div class="d">L'ERP est un programme sur cet ordinateur</div></button></div>`;
-  if(m==='web')h+=`<label class="l">Adresse de l'ERP</label><input id="url" placeholder="https://erp.mapharmacie.sn" value="${esc(S.setup.erpUrl||'')}"><div class="row"><button class="big" ${busy?'disabled':''} onclick="call('setup',{mode:'web',erpUrl:$('#url').value})">Ouvrir l'ERP dans le navigateur PharmAgent</button></div><p class="muted">Un navigateur dédié s'ouvre : connectez-vous à l'ERP une fois, la session est conservée.</p>`;
-  else h+=`<label class="l">Fenêtre de l'ERP (ouvrez d'abord le logiciel)</label><select id="win">${(winList||[]).map(w=>`<option ${w===S.setup.windowTitle?'selected':''}>${esc(w)}</option>`).join('')}</select>
+  <button class="choice ${m==='desktop'?'on':''}" onclick="setupMode='desktop';loadWins()"><div class="t">🖥️ Logiciel installé ou autre</div><div class="d">Un programme sur cet ordinateur : ERP, Excel, Numbers, logiciel inconnu…</div></button></div>`;
+  if(m==='web')h+=`<label class="l">Adresse de l'ERP</label><input id="url" placeholder="https://erp.mapharmacie.sn" oninput="urlPick=this.value" value="${esc(urlPick??(S.setup.erpUrl||''))}"><div class="row"><button class="big" ${busy?'disabled':''} onclick="call('setup',{mode:'web',erpUrl:$('#url').value})">Ouvrir l'ERP dans le navigateur PharmAgent</button></div><p class="muted">Un navigateur dédié s'ouvre : connectez-vous à l'ERP une fois, la session est conservée.</p>`;
+  else h+=`<label class="l">Fenêtre de l'ERP (ouvrez d'abord le logiciel)</label><select id="win" onchange="winPick=this.value"><option value="">— Choisissez la fenêtre de l'ERP —</option>${(winList||[]).map(w=>`<option ${w===(winPick??S.setup.windowTitle)?'selected':''}>${esc(w)}</option>`).join('')}</select>
    <div class="row"><button class="sec" onclick="loadWins()">Actualiser la liste</button><button ${busy?'disabled':''} onclick="call('setup',{mode:'desktop',windowTitle:$('#win').value})">Continuer</button></div>
-   ${S.os==='Darwin'&&!S.accessibilityOk?'<div class="alert w">macOS : autorisez le Terminal / Python dans Réglages Système › Confidentialité et sécurité › Accessibilité, puis relancez PharmAgent.</div>':''}`;
+   ${macAlert()}`;
   h+='</div>'}
  else if(st==='prepare'){h+=`<div class="card">${stepsBar(2)}<h2>2. Démonstration (une seule fois)</h2>
   <p>Ouvrez dans l'ERP l'écran de <b>réception d'un bon de livraison</b> (nouvelle réception). Vous allez saisir <b>l'en-tête puis une ligne</b>, normalement, pendant que PharmAgent observe.</p>
   <p>${S.setup.mode==='desktop'?'Logiciel installé : utilisez <b>uniquement le clavier</b> (Tab, Entrée, flèches) pour passer d\'un champ à l\'autre.':'Utilisez la souris ou le clavier comme d\'habitude.'}</p>
   <div class="alert w">Ne cliquez pas sur Valider à la fin : PharmAgent s'arrête toujours avant.</div>
+  ${S.setup.mode==='desktop'?`<p class="muted">Fenêtre surveillée : <b>${esc(S.setup.windowTitle||'')}</b> (« Changer d'ERP » pour en choisir une autre)</p>`:''}${macAlert()}
   <div class="row"><button class="sec" onclick="call('open_erp')">Afficher l'ERP</button><button class="sec" onclick="call('change_setup')">Changer d'ERP</button><button ${busy?'disabled':''} onclick="call('record_start',{phase:'header'})">▶ Commencer la démo</button></div></div>`}
  else if(st==='rec_header'||st==='rec_line'){const ph=st==='rec_header'?'header':'line';h+=`<div class="card">${stepsBar(ph==='header'?2:3)}<span class="rec">Enregistrement</span>
   <h2 style="margin-top:8px">${ph==='header'?"Saisissez l'en-tête du bon dans l'ERP":'Saisissez maintenant UNE ligne produit'}</h2><p>Utilisez ces valeurs d'exemple (c'est un brouillon : vous pourrez l'effacer) :</p>${sampleCard(ph)}
   ${ph==='line'?'<p class="muted">Pour le produit, tapez le début du nom puis <b>choisissez-le dans la liste</b> de l\'ERP, comme d\'habitude. Si l\'ERP a un bouton « Ajouter la ligne », cliquez dessus.</p>':''}
-  <p class="muted">Actions vues : <b>${S.recording.count}</b></p><div class="logs">${S.recording.preview.map(esc).join('<br>')||'En attente de vos saisies…'}</div>
+  <p class="muted">Actions vues : <b>${S.recording.count}</b></p>
+  ${S.recording.fgOk===undefined?'':(S.recording.fgOk?`<p class="muted">Fenêtre active : <b>${esc(S.recording.fgTitle)}</b> ✓</p>`:`<div class="alert w">La fenêtre active est « ${esc(S.recording.fgTitle)} », pas « ${esc(S.recording.wanted)} » : vos touches sont ignorées. Cliquez sur la barre de titre de « ${esc(S.recording.wanted)} ».</div>`)}${macAlert()}<div class="logs">${S.recording.preview.map(esc).join('<br>')||'En attente de vos saisies…'}</div>
   <div class="row"><button class="sec" onclick="call('record_cancel')">Annuler</button><button ${busy?'disabled':''} onclick="call('record_stop')">${ph==='header'?"✓ En-tête terminé (ou pas d'en-tête)":'✓ Ligne terminée'}</button></div></div>`}
  else if(st==='review'){const r=S.review;if(!edit)edit={headerSteps:JSON.parse(JSON.stringify(r.headerSteps)),lineSteps:JSON.parse(JSON.stringify(r.lineSteps))};
   h+=`<div class="card">${stepsBar(4)}<h2>3. Vérifiez ce que PharmAgent a compris</h2><p>Pour chaque saisie, le champ du bon à utiliser. « Texte fixe » retape toujours la même valeur.</p>`+(r.warnings||[]).map(w=>`<div class="alert w">${esc(w)}</div>`).join('');
@@ -1753,7 +1848,7 @@ class Panel(BaseHTTPRequestHandler):
             return self._json(403, {"error": "Accès refusé."})
         name = self.path.removeprefix("/api/") if hasattr(str, "removeprefix") else self.path[5:]
         allowed = {"setup", "open_erp", "windows", "record_start", "record_stop", "record_cancel", "review_save",
-                   "redo_demo", "change_setup", "test_run", "pause", "unpair"}
+                   "redo_demo", "change_setup", "test_run", "pause", "unpair", "mac_permissions", "quit"}
         if name not in allowed:
             return self._json(404, {"error": "Commande inconnue."})
         length = min(int(self.headers.get("Content-Length") or 0), 2_000_000)
@@ -1799,6 +1894,55 @@ def self_update(server: str) -> None:
 # ─── Démarrage ──────────────────────────────────────────────────────────────
 
 
+def ensure_mac_launcher(server: str) -> None:
+    """macOS : crée ou met à jour l'application « PharmAgent » (double-clic = ouvre le Terminal et lance l'agent),
+    puis le démarrage à l'ouverture de session par cette même application : une seule application à autoriser."""
+    if SYSTEM != "Darwin":
+        return
+    try:
+        agent = Path(__file__).resolve()
+        cmd = f"{shlex.quote(sys.executable)} {shlex.quote(str(agent))} --server {shlex.quote(server)}"
+        say = "PharmAgent tourne dans cette fenêtre : réduisez-la, ne la fermez pas."
+        shell_line = f"clear; echo {shlex.quote(say)}; {cmd}"
+        applescript = shell_line.replace("\\", "\\\\").replace('"', '\\"')
+        app = Path.home() / "Applications" / "PharmAgent.app"
+        stamp = hashlib.sha256((cmd + "|launcher-v1").encode()).hexdigest()
+        marker = HOME / "launcher.sha"
+        if app.exists() and marker.exists() and marker.read_text().strip() == stamp:
+            return
+        app.parent.mkdir(parents=True, exist_ok=True)
+        if app.exists():
+            shutil.rmtree(app)
+        lines = ['tell application "Terminal"', "activate", f'do script "{applescript}"', "end tell"]
+        args = ["osacompile", "-o", str(app)]
+        for line in lines:
+            args += ["-e", line]
+        subprocess.run(args, check=True, capture_output=True, timeout=30)
+        agents_dir = Path.home() / "Library" / "LaunchAgents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        (agents_dir / "com.pharmagent.agent.plist").write_bytes(plistlib.dumps(
+            {"Label": "com.pharmagent.agent", "ProgramArguments": ["/usr/bin/open", "-g", "-a", str(app)], "RunAtLoad": True}))
+        marker.write_text(stamp)
+        log.info("Application « PharmAgent » créée dans %s", app)
+    except Exception as e:
+        log.info("Application PharmAgent non créée : %s", e)
+
+
+def replace_running_agent(panel_url: str) -> bool:
+    """Demande à un agent d'une autre version, déjà lancé, de s'arrêter pour reprendre sa place."""
+    try:
+        hdr = {"X-PharmAgent": "1", "Content-Type": "application/json"}
+        with urllib.request.urlopen(urllib.request.Request(panel_url + "api/state", headers=hdr), timeout=3) as r:
+            old = json.loads(r.read())
+        if old.get("version") == AGENT_VERSION:
+            return False
+        urllib.request.urlopen(urllib.request.Request(panel_url + "api/quit", data=b"{}", method="POST", headers=hdr), timeout=5).read()
+        time.sleep(2.5)
+        return True
+    except Exception:
+        return False
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="PharmAgent — agent local de saisie")
     ap.add_argument("--server", help="Adresse du serveur PharmAgent")
@@ -1815,12 +1959,20 @@ def main() -> None:
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", PANEL_PORT), Panel)
     except OSError:
-        # Déjà lancé : on affiche simplement son panneau
-        if not args.background:
-            webbrowser.open(panel_url)
-        return
+        # Déjà lancé : un agent plus ancien est remplacé, sinon on affiche simplement son panneau
+        httpd = None
+        if replace_running_agent(panel_url):
+            try:
+                httpd = ThreadingHTTPServer(("127.0.0.1", PANEL_PORT), Panel)
+            except OSError:
+                httpd = None
+        if httpd is None:
+            if not args.background:
+                webbrowser.open(panel_url)
+            return
 
     self_update(server)
+    ensure_mac_launcher(server)
     engine = Engine(server)
     Panel.engine = engine
     threading.Thread(target=httpd.serve_forever, daemon=True).start()

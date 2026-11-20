@@ -47,23 +47,7 @@ AGENT="$APP_DIR/pharmagent_agent.py"
 
 step "5/5 Raccourci et démarrage automatique"
 if [ "$OS" = "Darwin" ]; then
-  mkdir -p "$HOME/Applications" "$HOME/Library/LaunchAgents"
-  rm -rf "$HOME/Applications/PharmAgent.app"
-  osacompile -o "$HOME/Applications/PharmAgent.app" \
-    -e "do shell script quoted form of \"$PY\" & \" \" & quoted form of \"$AGENT\" & \" --server $SERVER > /dev/null 2>&1 &\"" >/dev/null
-  PLIST="$HOME/Library/LaunchAgents/com.pharmagent.agent.plist"
-  cat > "$PLIST" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>com.pharmagent.agent</string>
-  <key>ProgramArguments</key><array><string>$PY</string><string>$AGENT</string><string>--background</string><string>--server</string><string>$SERVER</string></array>
-  <key>RunAtLoad</key><true/>
-  <key>StandardOutPath</key><string>/dev/null</string><key>StandardErrorPath</key><string>/dev/null</string>
-</dict></plist>
-EOF
-  launchctl unload "$PLIST" >/dev/null 2>&1 || true
-  echo "  Application « PharmAgent » ajoutée dans votre dossier Applications (Launchpad)."
+  echo "  L'application « PharmAgent » (dossier Applications) est créée au premier lancement de l'agent."
 else
   mkdir -p "$HOME/.local/share/applications" "$HOME/.config/autostart"
   cat > "$HOME/.local/share/applications/pharmagent.desktop" <<EOF
@@ -77,10 +61,17 @@ EOF
   sed 's/--server/--background --server/' "$HOME/.local/share/applications/pharmagent.desktop" > "$HOME/.config/autostart/pharmagent.desktop"
 fi
 
-if [ -z "${PHARMAGENT_INSTALL_NO_LAUNCH:-}" ]; then
-  nohup "$PY" "$AGENT" --server "$SERVER" >/dev/null 2>&1 &
-fi
-
 printf '\n\033[1;32m✓ Installation terminée.\033[0m\n'
 echo "  Le panneau PharmAgent s'ouvre dans le navigateur (http://127.0.0.1:8765)."
 echo "  Il affiche un code à 6 chiffres : saisissez-le dans PharmAgent › Agent local."
+
+if [ -z "${PHARMAGENT_INSTALL_NO_LAUNCH:-}" ]; then
+  # Arrête une ancienne version encore lancée, pour que la nouvelle prenne sa place
+  pkill -f "pharmagent_agent.py" >/dev/null 2>&1 || true
+  sleep 1
+  if [ "$OS" = "Darwin" ]; then
+    echo "  Laissez cette fenêtre ouverte (réduisez-la) : l'agent y tourne."
+    exec "$PY" "$AGENT" --server "$SERVER"
+  fi
+  nohup "$PY" "$AGENT" --server "$SERVER" >/dev/null 2>&1 &
+fi
