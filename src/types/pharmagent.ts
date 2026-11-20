@@ -40,6 +40,11 @@ export interface AgentPresence {
   os?: string;
   version?: string;
   state?: string;              // ex. « En attente », « Saisie en cours »
+  mode?: string;               // web | desktop | file
+  target?: string;             // fichier, fenêtre ou adresse visée
+  lastResult?: string;
+  lastError?: string;
+  logs?: string[];             // dernières lignes du journal de l'agent
 }
 
 /** web : ERP dans un navigateur ; desktop : logiciel installé (clavier) ; file : fichier Excel/Numbers rempli directement. */

@@ -12,7 +12,7 @@ interface Props {
 
 interface AgentInfo {
   presence: AgentPresence | null;
-  profile: { mode: 'web' | 'desktop'; erpUrl?: string; windowTitle?: string; recordedAt?: string; headerSteps: number; lineSteps: number; fields: string[] } | null;
+  profile: { mode: 'web' | 'desktop' | 'file'; erpUrl?: string; windowTitle?: string; filePath?: string; recordedAt?: string; headerSteps: number; lineSteps: number; fields: string[] } | null;
   queue: Array<{ id: string; documentNumber: string; supplier: string; lines: number; execution: DraftExecution }>;
 }
 
@@ -134,14 +134,15 @@ export default function AgentDeployment({ token, snapshot, selectedPharmacyId, o
                 <b className="text-slate-200">{p.hostname ?? '—'}</b> · {p.os ?? '—'} · agent v{p.version ?? '?'}
                 {p.state && <div className="mt-1">État : <span className="text-slate-200">{p.state}</span></div>}
               </div>
+              <AgentDiagnostic p={p} />
               {info.profile ? (
                 <div className="rounded-xl bg-slate-950/60 border border-slate-800 p-3 text-xs space-y-1.5">
                   <div className="flex items-center gap-1.5 text-slate-200 font-medium">
                     {info.profile.mode === 'web' ? <Globe size={13} className="text-sky-300" /> : <Monitor size={13} className="text-sky-300" />}
-                    {info.profile.mode === 'web' ? 'ERP web' : 'Logiciel installé'}
-                    <span className="text-slate-500 font-normal truncate">· {info.profile.erpUrl ?? info.profile.windowTitle}</span>
+                    {info.profile.mode === 'web' ? 'ERP web' : info.profile.mode === 'file' ? 'Fichier Excel / Numbers (sans démo)' : 'Logiciel installé'}
+                    <span className="text-slate-500 font-normal truncate">· {info.profile.filePath ?? info.profile.erpUrl ?? info.profile.windowTitle}</span>
                   </div>
-                  <div className="text-slate-500">Démo enregistrée {info.profile.recordedAt ? new Date(info.profile.recordedAt).toLocaleString('fr-FR') : ''} · {info.profile.lineSteps} étapes par ligne</div>
+                  {info.profile.mode !== 'file' && <div className="text-slate-500">Démo enregistrée {info.profile.recordedAt ? new Date(info.profile.recordedAt).toLocaleString('fr-FR') : ''} · {info.profile.lineSteps} étapes par ligne</div>}
                   <div className="flex flex-wrap gap-1">
                     {info.profile.fields.filter((f) => f !== 'const').map((f) => (
                       <span key={f} className="px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-300">{FIELD_LABEL[f] ?? f}</span>
@@ -228,6 +229,32 @@ export default function AgentDeployment({ token, snapshot, selectedPharmacyId, o
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+// Diagnostic envoyé par l'agent : version (à jour ou non), mode, dernier résultat, dernière erreur, journal
+function AgentDiagnostic({ p }: { p: AgentPresence }) {
+  const [latest, setLatest] = useState<string>('');
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    fetch('/agent/version').then((r) => r.json()).then((d: { version?: string }) => setLatest(d.version ?? '')).catch(() => setLatest(''));
+  }, []);
+  const old = latest && p.version && p.version !== latest;
+  const modeLabel = p.mode === 'file' ? 'Fichier Excel / Numbers' : p.mode === 'web' ? 'ERP web' : p.mode === 'desktop' ? 'Logiciel installé (clavier)' : '—';
+  return (
+    <div className="rounded-xl bg-slate-950/60 border border-slate-800 p-3 text-xs space-y-1.5" data-testid="agent-diagnostic">
+      <div className="font-medium text-slate-200">Diagnostic de l'agent</div>
+      {old && <div className="text-amber-300">Ancienne version (v{p.version}) : la v{latest} est disponible. Fermez la fenêtre de l'agent et relancez l'application PharmAgent.</div>}
+      <div className="text-slate-400">Mode : <span className="text-slate-200">{modeLabel}</span>{p.target ? <> · <span className="text-slate-300">{p.target}</span></> : null}</div>
+      {p.lastResult && <div className="text-slate-400">Dernier bon : <span className="text-slate-200">{p.lastResult}</span></div>}
+      {p.lastError && <div className="text-red-300">Erreur : {p.lastError}</div>}
+      {!!p.logs?.length && (
+        <div>
+          <button onClick={() => setOpen(!open)} className="text-sky-300 hover:text-sky-200">{open ? 'Masquer' : 'Voir'} le journal de l'agent</button>
+          {open && <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap text-[10px] text-slate-400 bg-black/40 rounded p-2">{p.logs.join('\n')}</pre>}
+        </div>
+      )}
     </div>
   );
 }

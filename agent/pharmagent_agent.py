@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-AGENT_VERSION = "2.3.0"
+AGENT_VERSION = "2.3.1"
 DEFAULT_SERVER = "https://pharmagent.onrender.com"
 PANEL_PORT = int(os.environ.get("PHARMAGENT_PORT", "8765"))
 POLL_SECONDS = float(os.environ.get("PHARMAGENT_POLL", "5"))
@@ -442,8 +442,9 @@ SHEET_EXT = (".xlsx", ".xls", ".xlsm", ".numbers", ".ods", ".csv")
 def pick_file() -> str:
     """Fenêtre « Ouvrir » du système pour choisir le fichier Excel / Numbers à remplir (rien à taper)."""
     if SYSTEM == "Darwin":
-        r = subprocess.run(["osascript", "-e", 'POSIX path of (choose file with prompt "Fichier Excel ou Numbers à remplir par PharmAgent")'],
-                           capture_output=True, text=True, timeout=600)
+        script = ('tell application (path to frontmost application as text)\n'
+                  'set f to choose file with prompt "Fichier Excel ou Numbers à remplir par PharmAgent"\nend tell\nPOSIX path of f')
+        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=600)
         return r.stdout.strip() if r.returncode == 0 else ""
     if SYSTEM == "Windows":
         ps = ("Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; "
@@ -1747,8 +1748,16 @@ class Engine:
 
     def _heartbeat(self) -> None:
         state = "Saisie en cours" if self.task else ("En pause" if self.paused else ("Démo à faire" if not self.profile else "En attente"))
+        prof = self.profile or {}
+        lr = self.last_result or {}
         r = self.api.call("POST", "/api/agent-client/heartbeat", {
             "hostname": socket.gethostname(), "os": f"{SYSTEM} {platform.release()}", "version": AGENT_VERSION, "state": state,
+            # Diagnostic visible dans l'onglet Agent du site : plus besoin d'être devant l'ordinateur pour savoir ce qui bloque
+            "mode": prof.get("mode") or self.setup.get("mode") or "",
+            "target": Path(prof.get("filePath") or "").name or prof.get("windowTitle") or prof.get("erpUrl") or "",
+            "lastResult": f"{lr.get('at', '')} {lr.get('documentNumber', '')} : {lr.get('message', '')}" if lr else "",
+            "lastError": self.last_error or "",
+            "logs": [f"{x['t']} {x['msg']}" for x in list(LOG_LINES)[-25:]],
         })
         self.server_ok = True
         self.last_error = ""
@@ -1902,7 +1911,8 @@ function render(){if(!S)return;const st=S.status;
   <button class="choice ${m==='desktop'?'on':''}" onclick="setupMode='desktop';loadWins()"><div class="t">🖥️ Logiciel installé</div><div class="d">Un logiciel de pharmacie sur cet ordinateur (saisie au clavier, démo une fois)</div></button>
   <button class="choice ${m==='file'?'on':''}" onclick="setupMode='file';render()"><div class="t">📄 Fichier Excel ou Numbers</div><div class="d">Le bon est écrit directement dans le fichier : aucune démo, aucune frappe</div></button></div>`;
   if(m==='file')h+=`<p>Choisissez votre fichier de réception (modèle vide). Pour chaque bon approuvé, PharmAgent crée à côté une copie remplie, <b>« nom du fichier - N° du bon »</b>, et l'ouvre. Votre modèle n'est jamais modifié.</p>
-   <div class="row"><button class="sec" ${busy?'disabled':''} onclick="pickFile()">Choisir le fichier…</button></div>${filePick?`<p class="muted">Fichier : <b>${esc(filePick)}</b></p><div class="row"><button ${busy?'disabled':''} onclick="call('setup',{mode:'file',filePath:filePick})">Utiliser ce fichier</button></div>`:''}`;
+   <div class="row"><button class="sec" ${busy?'disabled':''} onclick="pickFile()">Choisir le fichier…</button></div>
+   <label class="l">ou collez son chemin (Mac : clic droit sur le fichier, touche Option › « Copier … en tant que nom de chemin »)</label><input id="fpath" placeholder="/Users/…/Reception.numbers" value="${esc(filePick||'')}" oninput="filePick=this.value.trim().replace(/^['\"]|['\"]$/g,'')">${filePick?`<p class="muted">Fichier : <b>${esc(filePick)}</b></p><div class="row"><button ${busy?'disabled':''} onclick="call('setup',{mode:'file',filePath:filePick})">Utiliser ce fichier</button></div>`:''}`;
   else if(m==='web')h+=`<label class="l">Adresse de l'ERP</label><input id="url" placeholder="https://erp.mapharmacie.sn" oninput="urlPick=this.value" value="${esc(urlPick??(S.setup.erpUrl||''))}"><div class="row"><button class="big" ${busy?'disabled':''} onclick="call('setup',{mode:'web',erpUrl:$('#url').value})">Ouvrir l'ERP dans le navigateur PharmAgent</button></div><p class="muted">Un navigateur dédié s'ouvre : connectez-vous à l'ERP une fois, la session est conservée.</p>`;
   else h+=`<label class="l">Fenêtre de l'ERP (ouvrez d'abord le logiciel)</label><select id="win" onchange="winPick=this.value"><option value="">— Choisissez la fenêtre de l'ERP —</option>${(winList||[]).map(w=>`<option ${w===(winPick??S.setup.windowTitle)?'selected':''}>${esc(w)}</option>`).join('')}</select>
    <div class="row"><button class="sec" onclick="loadWins()">Actualiser la liste</button><button ${busy?'disabled':''} onclick="call('setup',{mode:'desktop',windowTitle:$('#win').value})">Continuer</button></div>

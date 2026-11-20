@@ -632,6 +632,7 @@ app.get('/api/pharmacies/:id/agent', (req, res) => {
     presence: ph.agent ?? null,
     profile: profile ? {
       mode: profile.mode, erpUrl: profile.erpUrl, windowTitle: profile.windowTitle, recordedAt: profile.recordedAt,
+      filePath: profile.filePath ? profile.filePath.split(/[\\/]/).pop() : undefined,
       headerSteps: profile.headerSteps.length, lineSteps: profile.lineSteps.length,
       fields: [...new Set([...profile.headerSteps, ...profile.lineSteps].map((s) => s.field).filter(Boolean))],
     } : null,
@@ -1224,9 +1225,13 @@ app.get('/api/agent-client/pair/status', (req, res) => {
 app.post('/api/agent-client/heartbeat', (req, res) => {
   const ph = requireAgent(req, res);
   if (!ph) return;
-  const { hostname, os, version, state } = req.body as Record<string, string | undefined>;
+  const { hostname, os, version, state, mode, target, lastResult, lastError } = req.body as Record<string, string | undefined>;
+  const logs = (req.body as { logs?: unknown }).logs;
+  const str = (v: unknown, n: number) => (typeof v === 'string' ? v.slice(0, n) : undefined);
   store.touchAgent(ph.id, {
-    hostname: hostname?.slice(0, 80), os: os?.slice(0, 80), version: version?.slice(0, 20), state: state?.slice(0, 120),
+    hostname: str(hostname, 80), os: str(os, 80), version: str(version, 20), state: str(state, 120),
+    mode: str(mode, 20), target: str(target, 200), lastResult: str(lastResult, 400), lastError: str(lastError, 400),
+    logs: Array.isArray(logs) ? logs.slice(-25).map((l) => String(l).slice(0, 240)) : undefined,
   });
   res.json({ pharmacy: { id: ph.id, name: ph.name }, profile: store.getProfile(ph.id) ?? null });
 });
