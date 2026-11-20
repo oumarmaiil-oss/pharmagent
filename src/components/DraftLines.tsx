@@ -106,7 +106,7 @@ function LineRow({ line, editable, busy, onChoose, onEdit }: {
     <div className={`px-3 py-2 text-xs ${review ? 'bg-amber-500/5' : ''}`}>
       <div className="flex items-baseline gap-2">
         <span className="font-mono text-amber-200/90 break-words min-w-0 flex-1">{line.designation}</span>
-        <span className="text-slate-300 flex-shrink-0">×{line.quantity}</span>
+        <span className="text-slate-300 flex-shrink-0">×{line.quantity}{line.freeUnits ? <span className="text-sky-300"> +{line.freeUnits} UG</span> : null}</span>
         <span className="text-slate-400 flex-shrink-0 w-16 text-right">{line.unitPriceFCFA.toLocaleString('fr-FR')}</span>
         {editable && !editing && (
           <button onClick={openEdit} className="flex-shrink-0 text-slate-500 hover:text-emerald-300" title="Corriger quantité, lot, péremption, prix"><Pencil size={12} /></button>

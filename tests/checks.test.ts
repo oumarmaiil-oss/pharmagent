@@ -49,6 +49,29 @@ test('nouveau produit signalé (non saisi par l\'agent)', () => {
   assert.ok(c.some((x) => x.level === 'warn' && x.text.includes('nouveau produit')));
 });
 
+test('facture HT/TTC avec remise et TVA : pas de fausse alerte', () => {
+  const lines = [line({ quantity: 10, unitPriceFCFA: 1000, discountPercent: 5, vatRate: 0, lineTotal: 9500 }), line({ quantity: 2, unitPriceFCFA: 5000, vatRate: 18, lineTotal: 10000 })];
+  const d = draft(lines, 21300, {});
+  d.extractedData.totalHT = 19500; d.extractedData.totalTVA = 1800;
+  assert.deepEqual(draftChecks(d, TODAY), []);
+});
+
+test('montant de ligne incohérent', () => {
+  const c = draftChecks(draft([line({ quantity: 10, unitPriceFCFA: 100, lineTotal: 1500 })], 1500), TODAY);
+  assert.ok(c.some((x) => x.level === 'error' && x.text.includes('ne donne pas le montant imprimé')));
+});
+
+test('relevé de mutuelle : le total (part remboursée) n\'est pas recoupé', () => {
+  const c = draftChecks(draft([line({ quantity: 2, unitPriceFCFA: 1200 })], 1920, { documentCategory: 'mutuelle' }), TODAY);
+  assert.ok(!c.some((x) => x.text.includes('ne correspond pas')));
+});
+
+test('avoir (quantités négatives) : une seule alerte claire', () => {
+  const c = draftChecks(draft([line({ quantity: -3 }), line({ quantity: -2 })], -500), TODAY);
+  assert.equal(c.length, 1);
+  assert.match(c[0].text, /Avoir/);
+});
+
 test('bon déjà importé', () => {
   const c = draftChecks(draft([line({})], 1000, { duplicateOf: { id: 'd0', createdAt: '2026-11-18T10:00:00Z', status: 'approved' } }), TODAY);
   assert.ok(c.some((x) => x.level === 'error' && x.text.includes('déjà importé')));

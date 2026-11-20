@@ -3,13 +3,16 @@
 // ============================================================
 
 import ExcelJS from 'exceljs';
+import * as XLSX from 'xlsx';
+import { FIELD_LABELS, HEADER_PATTERNS, matchColumn, normLabel, type ColumnField } from './vocabulary.ts';
 
-export type FillField = 'product' | 'cip' | 'quantity' | 'lot' | 'expiry' | 'purchase' | 'sale';
+export type FillField = Exclude<ColumnField, 'stock'>;
 
 export interface FillHeader { supplier: string; documentNumber: string; documentDate: string }
 export interface FillLine {
   product: string; cip: string; quantity: number; lotNumber: string; expiryDate: string;
   purchasePrice: number; salePrice: number | string;
+  freeUnits?: number | string; discountPercent?: number | string; vatRate?: number | string; lineTotal?: number | string;
 }
 export interface FillReport {
   sheet: string;
@@ -18,32 +21,19 @@ export interface FillReport {
   missing: FillField[];
   linesWritten: number;
   headerFilled: string[];
+  converted?: 'ods' | 'csv';
 }
 
-export const FIELD_LABELS: Record<FillField, string> = {
-  product: 'Désignation', cip: 'Code CIP', quantity: 'Quantité', lot: 'N° de lot',
-  expiry: 'Péremption', purchase: 'Prix d\'achat', sale: 'Prix de vente',
-};
+// .ods (LibreOffice) et .csv (Google Sheets, export simple) : convertis en .xlsx, la mise en forme est simplifiée
+function toXlsx(buf: Buffer): { xlsx: Buffer; converted?: 'ods' | 'csv' } {
+  const isZip = buf[0] === 0x50 && buf[1] === 0x4b;
+  if (isZip && !buf.subarray(0, 200).toString('latin1').includes('opendocument.spreadsheet')) return { xlsx: buf };
+  const converted = isZip ? 'ods' : 'csv';
+  const wb = isZip ? XLSX.read(buf, { type: 'buffer' }) : XLSX.read(buf.toString('utf-8').replace(/^\uFEFF/, ''), { type: 'string', raw: true });
+  return { xlsx: XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer, converted };
+}
 
-const norm = (v: unknown) =>
-  String(v ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-
-// L'ordre compte : le premier intitulé reconnu l'emporte (ex. « Date Exp. » est une péremption, pas une date)
-const COLUMN_RULES: Array<[FillField, RegExp]> = [
-  ['cip', /^(cip|ean)( \d+)?$|^code (cip|ean|barre|barres|produit)$|^code$/],
-  ['quantity', /^(qte|qty|quantite|nb|nombre)( |$)|quantite/],
-  ['expiry', /peremption|^exp( |$)|date exp|dlu|dluo|expir/],
-  ['lot', /(^|\s)lot(\s|$)/],
-  ['sale', /prix (de )?(vente|public)|^pv( |$)|^ppv|^vente$|tarif/],
-  ['purchase', /prix (d )?achat|^pa( |$)|^achat|cout|^p u( |$)|prix unitaire/],
-  ['product', /designation|libelle|produit|denomination|article|^nom$/],
-];
-
-const HEADER_RULES: Array<[keyof FillHeader, RegExp]> = [
-  ['supplier', /^(fournisseur|grossiste|laboratoire|expediteur|origine)$/],
-  ['documentNumber', /^(n bl|n bon|bl|numero bl|num bl|n de bl|n livraison|numero|numero de livraison|bon de livraison|n piece|n facture)$/],
-  ['documentDate', /^(date|date de livraison|date bl|date de reception|date reception)$/],
-];
+export { FIELD_LABELS };
 
 const colLetter = (n: number) => { let s = ''; for (let x = n; x > 0; x = Math.floor((x - 1) / 26)) s = String.fromCharCode(65 + ((x - 1) % 26)) + s; return s; };
 const isEmpty = (c: ExcelJS.Cell) => c.value === null || c.value === undefined || String(c.text ?? '').trim() === '';
@@ -51,11 +41,8 @@ const isEmpty = (c: ExcelJS.Cell) => c.value === null || c.value === undefined |
 function columnsOfRow(row: ExcelJS.Row): Partial<Record<FillField, number>> {
   const found: Partial<Record<FillField, number>> = {};
   row.eachCell({ includeEmpty: false }, (cell, col) => {
-    const text = norm(cell.text);
-    if (!text) return;
-    for (const [field, re] of COLUMN_RULES) {
-      if (re.test(text)) { if (found[field] === undefined) found[field] = col; break; }
-    }
+    const field = matchColumn(cell.text);
+    if (field && field !== 'stock' && found[field] === undefined) found[field] = col;
   });
   return found;
 }
@@ -72,8 +59,9 @@ export function toExpiryDisplay(iso: string): string {
 }
 
 export async function fillWorkbook(template: Buffer, header: FillHeader, lines: FillLine[]): Promise<{ buffer: Buffer; report: FillReport }> {
+  const { xlsx, converted } = toXlsx(template);
   const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(template as unknown as ExcelJS.Buffer);
+  await wb.xlsx.load(xlsx as unknown as ExcelJS.Buffer);
 
   let best: { ws: ExcelJS.Worksheet; row: number; cols: Partial<Record<FillField, number>>; score: number } | undefined;
   for (const ws of wb.worksheets) {
@@ -108,6 +96,10 @@ export async function fillWorkbook(template: Buffer, header: FillHeader, lines: 
     put('expiry', toExpiryDisplay(l.expiryDate));
     put('purchase', l.purchasePrice);
     put('sale', l.salePrice);
+    put('freeUnits', l.freeUnits ?? '');
+    put('discount', l.discountPercent ?? '');
+    put('vat', l.vatRate ?? '');
+    put('lineTotal', l.lineTotal ?? '');
     row.commit();
     target++; written++;
   }
@@ -120,8 +112,8 @@ export async function fillWorkbook(template: Buffer, header: FillHeader, lines: 
   const done = new Set<string>();
   for (let r = 1; r < headerRow; r++) {
     ws.getRow(r).eachCell({ includeEmpty: false }, (cell, col) => {
-      const text = norm(cell.text);
-      for (const [key, re] of HEADER_RULES) {
+      const text = normLabel(cell.text);
+      for (const [key, re] of HEADER_PATTERNS) {
         if (done.has(key) || !re.test(text) || !values[key]) continue;
         const right = ws.getRow(r).getCell(col + 1);
         const below = ws.getRow(r + 1).getCell(col);
@@ -134,12 +126,12 @@ export async function fillWorkbook(template: Buffer, header: FillHeader, lines: 
     });
   }
 
-  const missing = (['quantity', 'lot', 'expiry', 'purchase', 'sale'] as FillField[]).filter((f) => cols[f] === undefined);
+  const missing = (['quantity', 'lot', 'expiry', 'purchase'] as FillField[]).filter((f) => cols[f] === undefined);
   const out = await wb.xlsx.writeBuffer();
   const columns: Partial<Record<FillField, string>> = {};
   for (const [f, c] of Object.entries(cols) as Array<[FillField, number]>) columns[f] = colLetter(c);
   return {
     buffer: Buffer.from(out as ArrayBuffer),
-    report: { sheet: ws.name, headerRow, columns, missing, linesWritten: written, headerFilled },
+    report: { sheet: ws.name, headerRow, columns, missing, linesWritten: written, headerFilled, converted },
   };
 }

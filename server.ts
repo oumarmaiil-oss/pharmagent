@@ -16,6 +16,7 @@ import {
   resolveProductMatches,
 } from './src/server/aiAgent.ts';
 import { fillWorkbook, FIELD_LABELS } from './src/server/excelFill.ts';
+import { matchColumn, type ColumnField } from './src/server/vocabulary.ts';
 import { checkTextSafety } from './src/server/guardrail.ts';
 import { AUTO_THRESHOLD, matchLines, normalizeSupplier } from './src/server/productMatcher.ts';
 import { store, type CatalogRowInput } from './src/server/store.ts';
@@ -256,13 +257,9 @@ function buildDraftWorkbook(draft: DraftRecord): Buffer {
 }
 
 // Repère les colonnes d'un export ERP quel que soit leur intitulé exact
-const CATALOG_HEADERS: Array<[keyof CatalogRowInput, RegExp]> = [
-  ['cip', /^(cip|cip ?13|cip ?7|ean|ean ?13|code ?(cip|ean|barre|barres|produit)?)$/],
-  ['purchasePriceFCFA', /(prix.*achat|^p\.? ?a\.?( ?ht)?$|^pa ?(ht|ttc)?$|cout|^achat$|pamp)/],
-  ['salePriceFCFA', /(prix.*vente|prix.*public|^p\.? ?v\.?( ?ttc)?$|^ppv$|^pv ?(ttc)?$|^vente$|tarif)/],
-  ['stockQty', /(stock|^qte|quantite|^qty)/],
-  ['erpLabel', /(designation|libelle|produit|denomination|article|^nom)/],
-];
+const CATALOG_FIELDS: Partial<Record<ColumnField, keyof CatalogRowInput>> = {
+  product: 'erpLabel', cip: 'cip', purchase: 'purchasePriceFCFA', sale: 'salePriceFCFA', stock: 'stockQty',
+};
 
 function parseCatalogFile(base64: string): { rows: CatalogRowInput[]; columns: Partial<Record<keyof CatalogRowInput, string>> } {
   // CSV UTF-8 : sans codepage il serait lu en Latin-1 (« DÃ©signation »), et le BOM casse la 1re colonne
@@ -276,13 +273,10 @@ function parseCatalogFile(base64: string): { rows: CatalogRowInput[]; columns: P
   const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' });
   if (!raw.length) return { rows: [], columns: {} };
 
-  const norm = (h: string) => h.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
-  const headers = Object.keys(raw[0]);
   const columns: Partial<Record<keyof CatalogRowInput, string>> = {};
-  const used = new Set<string>();
-  for (const [field, re] of CATALOG_HEADERS) {
-    const h = headers.find((x) => !used.has(x) && re.test(norm(x)));
-    if (h) { columns[field] = h; used.add(h); }
+  for (const h of Object.keys(raw[0])) {
+    const target = CATALOG_FIELDS[matchColumn(h) ?? 'discount'];
+    if (target && !columns[target]) columns[target] = h;
   }
   const num = (v: unknown) => {
     const n = parseFloat(String(v).replace(/\s| /g, '').replace(',', '.'));
@@ -321,7 +315,8 @@ function buildTaskPayload(draft: DraftRecord) {
       expiryDate: toIsoDate(l.expiryDate) ?? l.expiryDate ?? '',
       purchasePrice: l.unitPriceFCFA,
       salePrice: l.salePriceFCFA ?? '',
-      lineTotal: l.quantity * l.unitPriceFCFA,
+      freeUnits: l.freeUnits || '',
+      lineTotal: l.lineTotal ?? l.quantity * l.unitPriceFCFA,
       skip: l.match?.status === 'new_product' ? "Nouveau produit : à créer d'abord dans l'ERP." : undefined,
     })),
   };
@@ -700,6 +695,10 @@ app.post('/api/drafts/:draftId/approve', (req, res) => {
   if (draft.extractionStatus === 'processing' || draft.extractionStatus === 'error') { res.status(400).json({ error: "Analyse non terminée ou en échec : rien à approuver." }); return; }
   const actor = requireApprover(req, res, draft.pharmacyId);
   if (!actor) return;
+  if (draft.extractedData.lineItems.some((l) => l.quantity < 0)) {
+    res.status(400).json({ error: "Avoir ou retour (quantités négatives) : PharmAgent ne le saisit pas. Traitez-le dans votre logiciel, puis rejetez ce brouillon." });
+    return;
+  }
   const toReview = draft.extractedData.lineItems.filter((l) => l.match?.status === 'to_review').length;
   if (toReview) {
     res.status(400).json({ error: `${toReview} ligne(s) à vérifier : choisissez le produit ERP avant d'approuver.` });
@@ -822,13 +821,14 @@ app.post('/api/drafts/:draftId/fill-excel', async (req, res) => {
     const { buffer, report } = await fillWorkbook(
       Buffer.from(fileBase64.replace(/^data:[^,]+,/, ''), 'base64'),
       { supplier: t.header.supplier, documentNumber: t.header.documentNumber, documentDate: t.header.documentDate },
-      t.lines.map((l) => ({ product: l.product, cip: l.cip, quantity: l.quantity, lotNumber: l.lotNumber, expiryDate: l.expiryDate, purchasePrice: l.purchasePrice, salePrice: l.salePrice })),
+      t.lines.map((l, i) => ({ product: l.product, cip: l.cip, quantity: l.quantity, lotNumber: l.lotNumber, expiryDate: l.expiryDate, purchasePrice: l.purchasePrice, salePrice: l.salePrice,
+        freeUnits: l.freeUnits, discountPercent: draft.extractedData.lineItems[i]?.discountPercent ?? '', vatRate: draft.extractedData.lineItems[i]?.vatRate ?? '', lineTotal: l.lineTotal })),
     );
     store.addAuditLog({ pharmacyId: draft.pharmacyId, actorId: actor.actor.id, actorName: actor.displayName, action: `Fichier Excel rempli : ${report.linesWritten} ligne(s) dans « ${report.sheet} »`, level: 'info' });
     res.json({ fileBase64: buffer.toString('base64'), report: { ...report, missingLabels: report.missing.map((f) => FIELD_LABELS[f]) } });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    res.status(400).json({ error: msg.startsWith('Aucune ligne') ? msg : `Fichier illisible : utilisez un fichier Excel .xlsx (Numbers : Fichier › Exporter vers › Excel). ${msg}` });
+    res.status(400).json({ error: msg.startsWith('Aucune ligne') ? msg : `Fichier illisible : utilisez un fichier Excel (.xlsx), LibreOffice (.ods) ou CSV. Numbers : Fichier › Exporter vers › Excel. ${msg}` });
   }
 });
 

@@ -2,6 +2,7 @@ import { Building2, Eye, EyeOff, Loader2, Lock, User } from 'lucide-react';
 import { useState } from 'react';
 import type { PharmacySession, SessionState } from '../App.tsx';
 import type { OwnerAccount } from '../types/pharmagent.ts';
+import ServerStatus from './ServerStatus.tsx';
 
 const LOGO = (
   <svg width="48" height="48" viewBox="0 0 32 32" fill="none">
@@ -73,6 +74,7 @@ export default function LoginScreen({ onLogin }: { onLogin: (s: SessionState) =>
           <div className="inline-flex items-center justify-center mb-4">{LOGO}</div>
           <h1 className="text-2xl font-bold text-white">PharmAgent</h1>
           <p className="text-slate-400 text-sm mt-1">Saisie automatique des bons de livraison</p>
+          <div className="mt-2"><ServerStatus /></div>
         </div>
 
         {/* Formulaire */}

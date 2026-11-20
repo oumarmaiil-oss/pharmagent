@@ -12,6 +12,7 @@ import {
   Stethoscope,
 } from 'lucide-react';
 import type { AppTab } from '../App.tsx';
+import ServerStatus from './ServerStatus.tsx';
 
 const LOGO = (
   <svg width="28" height="28" viewBox="0 0 32 32" fill="none">
@@ -55,6 +56,7 @@ export default function Layout({ tab, onTabChange, tabs, userName, userRole, onL
         {LOGO}
         <span className="font-semibold text-sm text-white">PharmAgent</span>
         {loading && <Activity size={13} className="text-emerald-400 animate-pulse" />}
+        <span className="ml-2"><ServerStatus /></span>
         <button onClick={onLogout} className="ml-auto text-slate-500 hover:text-red-400 p-1.5" title="Déconnexion">
           <LogOut size={16} />
         </button>
@@ -95,6 +97,7 @@ export default function Layout({ tab, onTabChange, tabs, userName, userRole, onL
 
         {/* Footer */}
         <div className="border-t border-slate-800 px-3 py-3">
+          <div className="px-2 pb-2"><ServerStatus /></div>
           {loading && (
             <div className="flex items-center gap-2 text-xs text-emerald-400 px-2 py-1 mb-2">
               <Activity size={12} className="animate-pulse" />

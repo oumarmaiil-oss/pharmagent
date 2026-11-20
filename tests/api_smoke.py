@@ -102,6 +102,15 @@ try:
     body, status, _ = call("POST", "/api/owner/restore", {"data": backup}, owner)
     names = [p["name"] for p in call("GET", "/api/dashboard", token=owner)[0]["pharmacies"]]
     check("restauration appliquée", status == 200 and "ZZ B" not in names and "ZZ A" in names, names)
+    now = "2026-11-20T10:00:00.000Z"
+    avoir = {"id": "dr-avoir-test", "pharmacyId": pa, "status": "pending", "extractionStatus": "ready", "documentCategory": "bon_livraison",
+             "extractedData": {"documentType": "bon_livraison", "documentNumber": "AV-1", "supplierOrOrg": "X", "recipientPharmacy": "", "documentDate": "", "currency": "FCFA", "totalAmountFCFA": -300,
+                               "lineItems": [{"designation": "Smecta", "quantity": -3, "unitPriceFCFA": 100, "confidence": 1, "match": {"status": "confirmed", "method": "manual", "score": 1, "erpLabel": "Smecta", "candidates": []}}]},
+             "columnMapping": [], "createdAt": now, "updatedAt": now, "actorId": "x", "actorName": "x", "tokensConsumed": 0}
+    backup["drafts"] = [avoir] + backup["drafts"]
+    call("POST", "/api/owner/restore", {"data": backup}, owner)
+    body, status, _ = call("POST", "/api/drafts/dr-avoir-test/approve", {}, owner)
+    check("un avoir (quantités négatives) n'est jamais envoyé à l'agent", status == 400 and "Avoir" in body.get("error", ""), body)
 
     data, status, headers = call("GET", "/install/mac.zip", raw=True)
     check("installeur Mac (zip)", status == 200 and data[:2] == b"PK" and b"PharmAgent-Mac.command" in data)

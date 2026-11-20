@@ -9,6 +9,7 @@ import type {
   GroundingAnalysisResult,
   TargetSoftwareType,
 } from '../types/pharmagent.ts';
+import { EXTRACTION_GLOSSARY } from './vocabulary.ts';
 
 const MODEL = process.env.CLAUDE_MODEL || 'claude-haiku-5-5';
 
@@ -99,8 +100,9 @@ export async function extractDocument(params: {
           `et chaque ligne : désignation recopiée EXACTEMENT comme imprimée (abréviations comprises, ne corrige rien), ` +
           `code CIP/EAN s'il figure sur la ligne, quantité entière, N° lot (lotNumber), ` +
           `date de péremption (expiryDate : colonne « Date Exp. », « Péremption », « DLU » ou « Exp », recopiée telle quelle, ex. 06/2028), ` +
-          `prix unitaire d'achat FCFA, prix public/vente FCFA s'il figure. ` +
-          `Ne devine jamais un chiffre illisible : baisse la confidence de la ligne.` +
+          `prix unitaire d'achat, prix public/vente s'il figure, UG, remise, TVA et montant de la ligne s'ils figurent. ` +
+          `Ne devine jamais un chiffre illisible : baisse la confidence de la ligne (sous 0,6).\n` +
+          EXTRACTION_GLOSSARY +
           missionClause,
       },
     ],
@@ -115,6 +117,8 @@ export async function extractDocument(params: {
         documentDate: str,
         currency: str,
         totalAmountFCFA: num,
+        totalHT: num,
+        totalTVA: num,
         agentObservations: str,
         lineItems: {
           type: 'array',
@@ -129,6 +133,10 @@ export async function extractDocument(params: {
               expiryDate: str,
               unitPriceFCFA: num,
               salePriceFCFA: num,
+              freeUnits: { type: 'integer' },
+              discountPercent: num,
+              vatRate: num,
+              lineTotal: num,
               confidence: num,
             },
             required: ['designation', 'quantity', 'unitPriceFCFA', 'confidence'],

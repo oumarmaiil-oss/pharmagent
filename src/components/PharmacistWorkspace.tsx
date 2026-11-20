@@ -362,7 +362,7 @@ function DraftPanel(props: DraftProps) {
       <div className="flex items-center justify-between gap-2 mb-3">
         <div className="min-w-0">
           <div className="text-sm font-semibold text-white break-words">{draft.extractedData.documentNumber || 'Nouveau document'} · {draft.extractedData.supplierOrOrg}</div>
-          <div className="text-xs text-slate-500">{draft.extractedData.documentDate} · {draft.extractedData.totalAmountFCFA?.toLocaleString('fr-FR')} FCFA</div>
+          <div className="text-xs text-slate-500">{draft.extractedData.documentDate} · {draft.extractedData.totalAmountFCFA?.toLocaleString('fr-FR')} {draft.extractedData.currency || 'FCFA'}</div>
           <div className="text-[11px] text-slate-500">Lancé par {draft.actorName}{draft.approvedBy ? ` · approuvé par ${draft.approvedBy}` : ''}</div>
         </div>
         <span className={`text-xs px-2.5 py-1 rounded-full border font-medium whitespace-nowrap ${status[1]}`}>{status[0]}</span>
@@ -390,7 +390,7 @@ function DraftChecks({ draft }: { draft: DraftRecord }) {
   );
 }
 
-interface FillReportView { sheet: string; linesWritten: number; headerFilled: string[]; missingLabels: string[] }
+interface FillReportView { sheet: string; linesWritten: number; headerFilled: string[]; missingLabels: string[]; converted?: 'ods' | 'csv' }
 
 function FillExcelButton({ draftId, token }: { draftId: string; token: string }) {
   const input = useRef<HTMLInputElement>(null);
@@ -413,10 +413,10 @@ function FillExcelButton({ draftId, token }: { draftId: string; token: string })
       const bytes = Uint8Array.from(atob(data.fileBase64), (c) => c.charCodeAt(0));
       const url = URL.createObjectURL(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
       const a = document.createElement('a');
-      a.href = url; a.download = file.name.replace(/\.xlsx$/i, '') + '_rempli.xlsx';
+      a.href = url; a.download = file.name.replace(/\.(xlsx|ods|csv)$/i, '') + '_rempli.xlsx';
       a.click(); URL.revokeObjectURL(url);
       const rep = data.report;
-      setMsg({ ok: true, text: `${rep.linesWritten} ligne(s) ajoutée(s) dans « ${rep.sheet} »` + (rep.headerFilled.length ? ` · en-tête : ${rep.headerFilled.join(', ')}` : '') + (rep.missingLabels.length ? ` · colonnes non trouvées : ${rep.missingLabels.join(', ')}` : '') + '. Le fichier rempli a été téléchargé : ouvrez-le pour vérifier.' });
+      setMsg({ ok: true, text: `${rep.linesWritten} ligne(s) ajoutée(s) dans « ${rep.sheet} »` + (rep.headerFilled.length ? ` · en-tête : ${rep.headerFilled.join(', ')}` : '') + (rep.missingLabels.length ? ` · colonnes non trouvées : ${rep.missingLabels.join(', ')}` : '') + (rep.converted ? ` · fichier .${rep.converted} converti en .xlsx (mise en forme simplifiée)` : '') + '. Le fichier rempli a été téléchargé : ouvrez-le pour vérifier.' });
     } catch {
       setMsg({ ok: false, text: 'Connexion impossible. Réessayez.' });
     } finally {
@@ -433,7 +433,7 @@ function FillExcelButton({ draftId, token }: { draftId: string; token: string })
       >
         {busy ? <Loader2 size={14} className="animate-spin" /> : <FileSpreadsheet size={14} />} Remplir mon fichier Excel
       </button>
-      <input ref={input} type="file" accept=".xlsx" className="hidden" onChange={onFile} />
+      <input ref={input} type="file" accept=".xlsx,.ods,.csv" className="hidden" onChange={onFile} />
       {msg && <p className={`text-[11px] ${msg.ok ? 'text-emerald-300' : 'text-red-300'}`}>{msg.text}</p>}
     </div>
   );

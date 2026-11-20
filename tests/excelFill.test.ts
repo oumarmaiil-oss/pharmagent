@@ -46,6 +46,30 @@ test('ajoute à la suite des lignes déjà présentes', async () => {
   assert.equal(ws.getCell('A9').value, 'Smecta 3g Sachet B/30');
 });
 
+test('modèle anglais (Item, Qty, Free, Batch…) avec UG, remise, TVA et montant', async () => {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Receiving');
+  ws.getCell('A1').value = 'Supplier'; ws.getCell('A2').value = 'Invoice No';
+  ws.getRow(4).values = ['Item', 'Qty', 'Free', 'Batch', 'Expiry', 'Unit cost', 'VAT', 'Discount', 'Amount'];
+  const tpl = Buffer.from(await wb.xlsx.writeBuffer() as ArrayBuffer);
+  const { buffer, report } = await fillWorkbook(tpl, { supplier: 'ACME', documentNumber: 'INV-1', documentDate: '' },
+    [{ ...LINES[0], freeUnits: 10, discountPercent: 5, vatRate: 0, lineTotal: 74100 }]);
+  assert.equal(report.linesWritten, 1);
+  const out = new ExcelJS.Workbook(); await out.xlsx.load(buffer as unknown as ExcelJS.Buffer);
+  const r = out.getWorksheet('Receiving')!;
+  assert.equal(r.getCell('B1').value, 'ACME');
+  assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 8, 9].map((c) => r.getRow(5).getCell(c).value), ['Doliprane 1000mg Comp. B/8', 100, 10, 'DL1', '09/2028', 780, 0, 5, 74100]);
+});
+
+test('fichier CSV (export Google Sheets) converti puis rempli', async () => {
+  const csv = Buffer.from('Produit,Qté,UG,Lot,Péremption,PU HT\n', 'utf-8');
+  const { buffer, report } = await fillWorkbook(csv, { supplier: '', documentNumber: '', documentDate: '' }, LINES);
+  assert.equal(report.converted, 'csv');
+  assert.equal(report.linesWritten, 2);
+  const out = new ExcelJS.Workbook(); await out.xlsx.load(buffer as unknown as ExcelJS.Buffer);
+  assert.equal(out.worksheets[0].getCell('A3').value, 'Smecta 3g Sachet B/30');
+});
+
 test('refuse un fichier sans intitulés reconnus', async () => {
   const wb = new ExcelJS.Workbook();
   wb.addWorksheet('Feuille').addRow(['a', 'b', 'c']);

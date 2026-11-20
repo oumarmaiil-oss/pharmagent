@@ -110,6 +110,10 @@ export interface ExtractedLineItem {
   expiryDate?: string;
   unitPriceFCFA: number;        // prix d'achat
   salePriceFCFA?: number;
+  freeUnits?: number;           // UG : unités gratuites, jamais ajoutées à la quantité
+  discountPercent?: number;     // remise % (vide si le prix est déjà net)
+  vatRate?: number;             // TVA % de la ligne
+  lineTotal?: number;           // montant de la ligne tel qu'imprimé
   confidence: number;           // confiance de lecture OCR
   match?: ProductMatch;
 }
@@ -154,7 +158,9 @@ export interface ExtractedDocumentData {
   recipientPharmacy: string;
   documentDate: string;
   currency: string;
-  totalAmountFCFA: number;
+  totalAmountFCFA: number;      // montant final à payer (net à payer / TTC), dans la devise du document
+  totalHT?: number;
+  totalTVA?: number;
   lineItems: ExtractedLineItem[];
   agentObservations?: string;
 }

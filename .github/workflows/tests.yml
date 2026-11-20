@@ -33,6 +33,7 @@ jobs:
       - run: python tests/panel_ui.py
       - run: python tests/api_smoke.py
       - run: python tests/web_ui.py
+      - run: python tests/ai_corpus.py  # ignoré sans clé ANTHROPIC_API_KEY
 
   windows:
     name: Windows (saisie clavier réelle dans le Bloc-notes)

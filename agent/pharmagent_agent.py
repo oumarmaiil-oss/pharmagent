@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-AGENT_VERSION = "2.2.2"
+AGENT_VERSION = "2.2.3"
 DEFAULT_SERVER = "https://pharmagent.onrender.com"
 PANEL_PORT = int(os.environ.get("PHARMAGENT_PORT", "8765"))
 POLL_SECONDS = float(os.environ.get("PHARMAGENT_POLL", "5"))
@@ -180,12 +180,13 @@ HEADER_FIELDS = {
 LINE_FIELDS = {
     "product": "Produit (libellé ERP)", "cip": "Code CIP", "designation": "Libellé grossiste", "quantity": "Quantité",
     "lotNumber": "N° de lot", "expiryDate": "Date de péremption", "purchasePrice": "Prix d'achat",
-    "salePrice": "Prix de vente", "lineTotal": "Total ligne",
+    "salePrice": "Prix de vente", "lineTotal": "Total ligne", "freeUnits": "UG (gratuits)",
 }
 DATE_FIELDS = {"documentDate", "expiryDate"}
-NUM_FIELDS = {"quantity", "purchasePrice", "salePrice", "lineTotal", "totalAmount"}
+NUM_FIELDS = {"quantity", "purchasePrice", "salePrice", "lineTotal", "totalAmount", "freeUnits"}
 DATE_FORMATS = ["%d/%m/%Y", "%d/%m/%y", "%m/%Y", "%m/%y", "%Y-%m-%d", "%d-%m-%Y", "%d.%m.%Y", "%m-%Y", "%d%m%Y", "%d%m%y", "%m%y", "%m%Y"]
 KEYWORD_FIELDS = [
+    (r"\bug\b|gratuit|\bfree\b", "freeUnits"),
     (r"cip|ean|code.?barre", "cip"), (r"lot", "lotNumber"), (r"p[ée]rem|expir|\bexp\b|dlu", "expiryDate"),
     (r"qt[ée]|quantit|qty|nombre", "quantity"), (r"prix.*achat|\bp\.?a\b|achat|co[uû]t", "purchasePrice"),
     (r"prix.*vente|\bp\.?v\b|ppv|public|vente", "salePrice"), (r"fournisseur|grossiste|supplier", "supplier"),
