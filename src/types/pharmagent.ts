@@ -75,6 +75,7 @@ export interface AgentProfile {
   filePath?: string;           // mode « file » : chemin du fichier à remplir sur l'ordinateur
   headerSteps: RecipeStep[];
   lineSteps: RecipeStep[];
+  auto?: boolean;              // remplissage automatique PharmSync : pas de démo, étapes vides
   recordedAt?: string;
   updatedAt: string;
 }

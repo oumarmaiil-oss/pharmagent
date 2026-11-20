@@ -1316,7 +1316,8 @@ app.put('/api/agent-client/profile', (req, res) => {
     res.status(400).json({ error });
     return;
   }
-  if (!lines.steps.length) { res.status(400).json({ error: 'La démo ne contient aucune saisie de ligne.' }); return; }
+  const auto = b.auto === true && b.mode === 'web';
+  if (!lines.steps.length && !auto) { res.status(400).json({ error: 'La démo ne contient aucune saisie de ligne.' }); return; }
   const profile = store.saveProfile({
     pharmacyId: ph.id,
     mode: b.mode,
@@ -1325,9 +1326,10 @@ app.put('/api/agent-client/profile', (req, res) => {
     windowTitle: typeof b.windowTitle === 'string' ? b.windowTitle.slice(0, 200) : undefined,
     headerSteps: header.steps,
     lineSteps: lines.steps,
+    auto,
     recordedAt: new Date().toISOString(),
   });
-  store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent Floki', action: `Démo enregistrée (${b.mode === 'web' ? 'ERP web' : 'logiciel installé'}) — ${lines.steps.length} étapes par ligne`, level: 'info' });
+  store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent Floki', action: auto ? 'Remplissage automatique activé (PharmSync, sans démo)' : `Démo enregistrée (${b.mode === 'web' ? 'ERP web' : 'logiciel installé'}) — ${lines.steps.length} étapes par ligne`, level: 'info' });
   res.json({ profile });
 });
 

@@ -1674,7 +1674,9 @@ class Engine:
             self.shutdown.set()
             return True
         if name == "open_erp":
-            cfg = self.profile or self.setup
+            # Un ERP choisi mais pas encore enregistré doit l'emporter sur l'ancien profil,
+            # sinon « Afficher l'ERP » rouvre la cible précédente (ex. le fichier Excel).
+            cfg = self.setup if self.setup.get("mode") and self.setup.get("mode") != (self.profile or {}).get("mode") else (self.profile or self.setup)
             if cfg.get("mode") == "file":
                 if not Path(cfg.get("filePath", "")).is_file():
                     raise ValueError("Fichier introuvable : il a été déplacé ou renommé. « Changer d'ERP » pour le choisir à nouveau.")
@@ -1705,7 +1707,7 @@ class Engine:
             return True
         if name == "skip_demo":
             url = self.setup.get("erpUrl", "")
-            res = self.api.call("PUT", "/api/agent-client/profile", {"mode": "web", "erpUrl": url, "headerSteps": [], "lineSteps": []})
+            res = self.api.call("PUT", "/api/agent-client/profile", {"mode": "web", "erpUrl": url, "headerSteps": [], "lineSteps": [], "auto": True})
             if isinstance(res, dict):
                 self.profile = res.get("profile") or res
             self.status_override = None
@@ -1947,6 +1949,12 @@ class Engine:
                     message += ". Vérifiez puis validez dans l'ERP."
                     results = [{"index": l.get("index", i), "ok": not any(s.get("index") == l.get("index", i) for s in skipped_lines)} for i, l in enumerate(lines)]
                     lines = []  # déjà traité
+                elif not prof.get("lineSteps"):
+                    # Remplissage automatique demandé, mais la page ouverte n'offre rien à mapper
+                    raise StepError(
+                        f"Aucun champ de saisie reconnu sur « {page.url[:80]} ». "
+                        "Ouvrez dans l'ERP l'écran de réception d'un bon de livraison, puis renvoyez le bon."
+                    )
                 else:
                     # Démo enregistrée (compatibilité)
                     self.web.run_steps(page, prof.get("headerSteps") or [], header, self.stop_flag.is_set, captured)
