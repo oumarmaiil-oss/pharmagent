@@ -94,11 +94,12 @@ export function sheetToDelivery(buf: Buffer, fileName = ''): ExtractedDocumentDa
     if (!designation) continue;
     // Sous-totaux, reports, totaux : jamais des produits (le total final est lu plus bas, dans n'importe quelle colonne)
     if (/^(total|totaux|sous total|net a payer|montant total|total general|a reporter|report)\b/.test(normLabel(designation))) continue;
-    if (quantity === undefined) continue;
     const lineTotal = parseAmount(at(row, 'lineTotal'));
+    // Quantité vide sur une vraie ligne de produit (prix présent) : la ligne est gardée à 0 et signalée, jamais ignorée en silence
+    if (quantity === undefined && parseAmount(at(row, 'purchase')) === undefined && lineTotal === undefined) continue;
     const pu = parseAmount(at(row, 'purchase')) ?? (lineTotal !== undefined && quantity ? lineTotal / quantity : 0);
     lines.push({
-      designation, quantity: Math.round(quantity), unitPriceFCFA: pu, confidence: 1,
+      designation, quantity: Math.round(quantity ?? 0), unitPriceFCFA: pu, confidence: 1,
       cip: cellText(at(row, 'cip')) || undefined,
       lotNumber: cellText(at(row, 'lot')) || undefined,
       expiryDate: dateText(at(row, 'expiry'), true) || undefined,

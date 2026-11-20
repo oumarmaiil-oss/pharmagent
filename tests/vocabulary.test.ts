@@ -20,3 +20,20 @@ test('intitulés de colonnes : Afrique, France, Maroc, États-Unis', () => {
   ];
   for (const [label, expected] of cases) assert.equal(matchColumn(label), expected, label);
 });
+
+test('en-tête : synonymes du N° BL (bordereau) sans confusion avec « bon de commande »', async () => {
+  const { matchHeaderLabel } = await import('../src/server/vocabulary.ts');
+  assert.equal(matchHeaderLabel('Numéro de bordereau :'), 'documentNumber');
+  assert.equal(matchHeaderLabel('N° bordereau de livraison'), 'documentNumber');
+  assert.equal(matchHeaderLabel('N° Bon de Commande :'), undefined);
+  assert.equal(matchHeaderLabel('Grossiste :'), 'supplier');
+  assert.equal(matchHeaderLabel('Date de livraison :'), 'documentDate');
+  assert.equal(matchHeaderLabel('Date de péremption'), undefined);
+});
+
+test('« Prix HT » = prix d’achat ; « Total HT » reste le montant de la ligne', () => {
+  assert.equal(matchColumn('Prix HT'), 'purchase');
+  assert.equal(matchColumn('Prix unitaire HT'), 'purchase');
+  assert.equal(matchColumn('Total HT'), 'lineTotal');
+  assert.equal(matchColumn('Montant HT'), 'lineTotal');
+});

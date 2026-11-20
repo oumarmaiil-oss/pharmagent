@@ -33,23 +33,23 @@ e.api.key = "k"
 e.profile = {"mode": "desktop", "windowTitle": "Autre", "headerSteps": [], "lineSteps": []}
 e._handle("change_setup", {})
 check("Changer d'ERP => écran de choix", e.state()["status"] == "setup")
-for bad in ("Finder", ""):
+for bad in ("Finder", "", "Numbers", "Microsoft Excel"):
     try:
         e._handle("setup", {"mode": "desktop", "windowTitle": bad})
         check(f"fenêtre « {bad} » refusée", False)
     except ValueError:
         check(f"fenêtre « {bad} » refusée", True)
-e._handle("setup", {"mode": "desktop", "windowTitle": "Numbers"})
+e._handle("setup", {"mode": "desktop", "windowTitle": "LogiPharm"})
 st = e.state()
-check("Continuer => écran de démonstration", st["status"] == "prepare" and st["setup"]["windowTitle"] == "Numbers", st["status"])
+check("Continuer => écran de démonstration", st["status"] == "prepare" and st["setup"]["windowTitle"] == "LogiPharm", st["status"])
 
 # Compteur de la démo clavier
 e.recording = {"phase": "header", "mode": "desktop", "events": [], "started": time.time()}
-e.key_recorder = A.KeyRecorder("Numbers")
+e.key_recorder = A.KeyRecorder("LogiPharm")
 e.key_recorder.steps = [{"kind": "type", "value": "UBIPHARM"}, {"kind": "key", "key": "enter"}]
 e.key_recorder.buf = "BL-1"
 v = e.state()["recording"]
-check("compteur et aperçu de la démo clavier", v["count"] == 3 and any("UBIPHARM" in p for p in v["preview"]) and v["wanted"] == "Numbers", v)
+check("compteur et aperçu de la démo clavier", v["count"] == 3 and any("UBIPHARM" in p for p in v["preview"]) and v["wanted"] == "LogiPharm", v)
 e.recording, e.key_recorder = None, None
 
 # Un agent d'une autre version est remplacé, pas un agent de la même version

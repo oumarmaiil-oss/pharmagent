@@ -29,7 +29,7 @@ export const COLUMN_PATTERNS: Array<[ColumnField, RegExp]> = [
   ['vat', /^(tva|vat|tax)( |$)|taux (de )?tva|tva %/],
   ['lineTotal', /^(montant|total|mt|ext|extended|amount)( (ht|ttc|ligne|price|net|brut))?$|montant ligne|total ligne|extended price/],
   ['sale', /prix (de )?(vente|public)|^pv( |$)|^ppv|^ppa|^pp ?ttc|^ppttc|^vente$|tarif public|^tarif$|retail|^msrp|^awp/],
-  ['purchase', /prix (d )?achat|prix (de )?cession|^pa( |$)|^achat|cout|^p ?u( |$)|^pu( |$)|prix unitaire|pu net|pght|ppht|pfht|^pph( |$)|unit (cost|price)|^cost$|^price$|^prix$/],
+  ['purchase', /prix (d )?achat|prix (de )?cession|^pa( |$)|^achat|cout|^p ?u( |$)|^pu( |$)|prix unitaire|pu net|pght|ppht|pfht|^pph( |$)|unit (cost|price)|^cost$|^price$|^prix$|^prix (unitaire )?(ht|hors taxes?)( |$)|^p ?u ?ht$/],
   ['product', /designation|libelle|produit|denomination|article|^nom$|description|^item( |$)|product|medicament|specialite/],
 ];
 
@@ -43,8 +43,8 @@ export function matchHeaderLabel(label: unknown): HeaderField | undefined {
   if (/^date\b/.test(t)) return /peremption|expir|naissance|commande|echeance/.test(t) ? undefined : 'documentDate';
   if (/^(invoice date|ship date|delivery date)$/.test(t)) return 'documentDate';
   if (/\b(fournisseur|grossiste|repartiteur|laboratoire|expediteur|vendor|supplier|sold by)\b/.test(t)) return 'supplier';
-  if (/commande|order|reception|code|client|tiers|ref\b|reference|pharmacie|pharmacien|operateur|emplacement|mutuelle|identifiant/.test(t)) return undefined;
-  const doc = '(bl|bon|bon de livraison|livraison|document|doc|facture|piece|invoice|packing slip)';
+  if (/\b(commande|order|reception|code|client|tiers|ref|reference|pharmacie|pharmacien|operateur|emplacement|mutuelle|identifiant)\b/.test(t)) return undefined;
+  const doc = '(bl|bon|bon de livraison|livraison|bordereau|bordereau de livraison|document|doc|facture|piece|invoice|packing slip)';
   if (new RegExp(`^(n|no|num|numero|number)( (de|du))? ${doc}( ${doc})*$`).test(t)) return 'documentNumber';
   if (new RegExp(`^${doc}( (n|no|number|numero))?$`).test(t)) return 'documentNumber';
   return undefined;
