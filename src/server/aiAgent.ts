@@ -237,6 +237,49 @@ export async function groundTargetInterface(params: {
 
 // ─── Correspondance produits ambigus (un seul appel par document) ─
 
+// ─── Remplissage universel d'un tableau ───────────────────
+
+export async function fillTableFromDocument(params: {
+  document: { base64: string; mimeType: string };
+  columns: string[];
+  fields: string[];
+}): Promise<{ rows: string[][]; fields: Record<string, string>; tokensConsumed: number }> {
+  const cols = params.columns.map((c, i) => `${i + 1}. ${c}`).join('\n');
+  const { data, tokens } = await ask<{ rows: Array<{ values: string[] }>; fields: Array<{ label: string; value: string }> }>(
+    [
+      documentBlock(params.document.mimeType, params.document.base64),
+      {
+        type: 'text',
+        text:
+          `Tu remplis un tableau Excel à partir de ce document. Colonnes du tableau, dans l'ordre :\n${cols}\n` +
+          (params.fields.length ? `Champs d'en-tête à remplir : ${params.fields.join(' ; ')}.\n` : '') +
+          `Renvoie une ligne par élément du document qui correspond au tableau (une personne, un patient, un produit…), ` +
+          `avec exactement ${params.columns.length} valeurs dans l'ordre des colonnes. Recopie les valeurs telles qu'écrites ; ` +
+          `dates au format JJ/MM/AAAA ; nombres sans séparateur de milliers. Laisse une valeur vide ("") si le document ne la donne pas : ` +
+          `n'invente jamais rien. Quand plusieurs informations du document conviennent pour une colonne, prends la plus complète ` +
+          `(ex. pour une désignation : le libellé du produit, pas une case vide ou un statut). ` +
+          `Pour les champs d'en-tête, renvoie le libellé exactement comme fourni. ` +
+          `Si le document n'a aucun rapport avec le tableau, renvoie rows vide. Remplis tous les champs d'en-tête que le document donne.\n` +
+          `Si c'est un bon de livraison ou une facture de pharmacie, applique aussi ces règles :\n` + DOCUMENT_READING_RULES + '\n' + EXTRACTION_GLOSSARY,
+      },
+    ],
+    {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        rows: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { values: { type: 'array', items: str } }, required: ['values'] } },
+        fields: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { label: str, value: str }, required: ['label', 'value'] } },
+      },
+      required: ['rows', 'fields'],
+    },
+  );
+  return {
+    rows: (data.rows ?? []).slice(0, 500).map((r) => (r.values ?? []).slice(0, params.columns.length)),
+    fields: Object.fromEntries((data.fields ?? []).map((f) => [f.label, f.value])),
+    tokensConsumed: tokens,
+  };
+}
+
 export async function resolveProductMatches(params: {
   supplier: string;
   items: Array<{

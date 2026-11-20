@@ -33,6 +33,23 @@ export const COLUMN_PATTERNS: Array<[ColumnField, RegExp]> = [
   ['product', /designation|libelle|produit|denomination|article|^nom$|description|^item( |$)|product|medicament|specialite/],
 ];
 
+export type HeaderField = 'supplier' | 'documentNumber' | 'documentDate';
+
+/** Intitulé d'en-tête du bon : « Numéro de BL : », « N° Document / BL », « Fournisseur / Tiers », « Date du BL »…
+ * Jamais : bon de commande, réception ERP, code tiers, date de péremption. */
+export function matchHeaderLabel(label: unknown): HeaderField | undefined {
+  const t = normLabel(label);
+  if (!t || t.length > 40) return undefined;
+  if (/^date\b/.test(t)) return /peremption|expir|naissance|commande|echeance/.test(t) ? undefined : 'documentDate';
+  if (/^(invoice date|ship date|delivery date)$/.test(t)) return 'documentDate';
+  if (/\b(fournisseur|grossiste|repartiteur|laboratoire|expediteur|vendor|supplier|sold by)\b/.test(t)) return 'supplier';
+  if (/commande|order|reception|code|client|tiers|ref\b|reference|pharmacie|pharmacien|operateur|emplacement|mutuelle|identifiant/.test(t)) return undefined;
+  const doc = '(bl|bon|bon de livraison|livraison|document|doc|facture|piece|invoice|packing slip)';
+  if (new RegExp(`^(n|no|num|numero|number)( (de|du))? ${doc}( ${doc})*$`).test(t)) return 'documentNumber';
+  if (new RegExp(`^${doc}( (n|no|number|numero))?$`).test(t)) return 'documentNumber';
+  return undefined;
+}
+
 export function matchColumn(label: unknown): ColumnField | undefined {
   const t = normLabel(label);
   if (!t) return undefined;

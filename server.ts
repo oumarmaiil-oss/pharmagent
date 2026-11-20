@@ -12,6 +12,7 @@ import zlib from 'zlib';
 import * as XLSX from 'xlsx';
 import {
   extractDocument,
+  fillTableFromDocument,
   SECOND_LOOK_EFFORT,
   groundTargetInterface,
   resolveProductMatches,
@@ -19,6 +20,7 @@ import {
 import { fillWorkbook, FIELD_LABELS } from './src/server/excelFill.ts';
 import { matchColumn, type ColumnField } from './src/server/vocabulary.ts';
 import { parseAmount, readWorkbook, SHEET_MIME, sheetImages, sheetToDelivery } from './src/server/sheetDocument.ts';
+import { loadTemplate, templateShape, writeRows } from './src/server/genericFill.ts';
 import { DEFAULT_ORDER_PARAMS, orderFile, parseSalesJournal, proposeOrder, type OrderParams, type SalesSummary } from './src/server/orders.ts';
 import { blockingReason, needsSecondLook } from './src/components/draftChecks.ts';
 import { checkTextSafety } from './src/server/guardrail.ts';
@@ -935,7 +937,7 @@ app.post('/api/agent/extract', async (req, res) => {
     res.status(400).json({ error: err instanceof Error ? err.message : 'Document invalide.' }); return;
   }
   // Tableur reconnu par son type ou son extension (certains navigateurs envoient application/octet-stream)
-  const isSheet = SHEET_MIME.test(resolved.mimeType) || /\.(csv|xlsx|xls|ods)$/i.test(fileName ?? '');
+  const isSheet = SHEET_MIME.test(resolved.mimeType) || /\.(csv|xlsx|xls|ods|numbers)$/i.test(fileName ?? '');
   if (!isSheet && !/^(image\/(jpeg|png|webp|gif)|application\/pdf)$/.test(resolved.mimeType)) {
     res.status(400).json({ error: /heic|heif/i.test(resolved.mimeType)
       ? "Photo iPhone au format HEIC : ouvrez-la puis exportez-la en JPEG, ou importez-la depuis Safari (conversion automatique)."
@@ -966,6 +968,7 @@ app.post('/api/agent/extract', async (req, res) => {
     try {
       const params = { imageBase64: resolved.base64, mimeType: resolved.mimeType, documentHint: category, taskPrompt, zooms };
       let extraction: { data: ExtractedDocumentData; tokensConsumed: number } | undefined;
+      let fromImage = false;
       if (isSheet) {
         // Fichier du grossiste : lu tel quel (exact). Colonnes non reconnues : l'IA lit le texte du tableau
         const buf = Buffer.from(resolved.base64, 'base64');
@@ -973,6 +976,7 @@ app.post('/api/agent/extract', async (req, res) => {
         const images = direct?.lineItems.length ? [] : await sheetImages(buf);
         if (direct?.lineItems.length) extraction = { data: direct, tokensConsumed: 0 };
         else if (images.length) {
+          fromImage = true;
           // Classeur qui contient la photo ou le scan du bon : lu comme une photo (les autres images servent d'agrandissements)
           extraction = await extractDocument({ ...params, imageBase64: images[0].base64, mimeType: images[0].mimeType, zooms: images.slice(1, 3) });
         } else {
@@ -991,7 +995,7 @@ app.post('/api/agent/extract', async (req, res) => {
         } catch { /* la première lecture reste valable */ }
       }
       const data = extraction.data;
-      data.source = isSheet && extraction.tokensConsumed === 0 ? 'fichier' : resolved.mimeType === 'application/pdf' ? 'pdf' : 'photo';
+      data.source = isSheet && !fromImage ? 'fichier' : resolved.mimeType === 'application/pdf' ? 'pdf' : 'photo';
       data.lineItems = (data.lineItems ?? []).filter((l) => l.designation?.trim());
       const matched = await matchDocumentLines(effPharmacyId, data);
       data.lineItems = matched.lines;
@@ -1011,6 +1015,44 @@ app.post('/api/agent/extract', async (req, res) => {
       store.failExtraction(draft.id, msg);
     }
   })();
+});
+
+// ─── Remplissage universel : n'importe quel tableau, n'importe quel document ─
+
+app.post('/api/tools/fill-any', async (req, res) => {
+  const { pharmacyId, documentBase64, documentName, templateBase64 } = req.body as {
+    pharmacyId?: string; documentBase64?: string; documentName?: string; templateBase64?: string;
+  };
+  const pid = pharmacyId ?? getPharmacySession(req)?.pharmacyId ?? '';
+  const actor = requirePharmacyOrOwner(req, res, pid);
+  if (!actor) return;
+  if (!documentBase64 || !templateBase64) { res.status(400).json({ error: 'Il faut le document à lire et le tableau à remplir.' }); return; }
+  try {
+    const { wb, converted } = await loadTemplate(Buffer.from(templateBase64.replace(/^data:[^,]+,/, ''), 'base64'));
+    const shape = templateShape(wb);
+    if (!shape) { res.status(400).json({ error: "Aucun tableau à remplir trouvé : il faut une ligne d'intitulés (au moins 3 colonnes) avec des lignes libres en dessous." }); return; }
+    // Document : image ou PDF tels quels ; tableur → texte du tableau ; image collée dans un Excel → l'image
+    const doc = resolveDocument(documentBase64);
+    let document = doc;
+    if (SHEET_MIME.test(doc.mimeType) || /\.(csv|xlsx|xls|ods|numbers)$/i.test(documentName ?? '')) {
+      const buf = Buffer.from(doc.base64, 'base64');
+      const rows = readWorkbook(buf);
+      const text = rows.SheetNames.map((n) => XLSX.utils.sheet_to_csv(rows.Sheets[n], { FS: ';' })).join('\n').trim();
+      const images = await sheetImages(buf);
+      document = text.replace(/[;\s]/g, '') ? { base64: text.slice(0, 150_000), mimeType: 'text/plain' } : images[0] ?? doc;
+    } else if (!/^(image\/(jpeg|png|webp|gif)|application\/pdf)$/.test(doc.mimeType)) {
+      res.status(400).json({ error: 'Document non pris en charge : PDF, image, Excel ou CSV.' }); return;
+    }
+    const ai = await fillTableFromDocument({ document, columns: shape.columns.map((c) => c.label), fields: shape.fields.map((f) => f.label) });
+    const report = writeRows(wb, shape, ai.rows, ai.fields);
+    store.addAuditLog({ pharmacyId: pid, actorId: actor.actor.id, actorName: actor.displayName,
+      action: `Tableau rempli par l'IA : ${report.linesWritten} ligne(s) dans « ${shape.sheet} »`, level: 'info' });
+    const out = await wb.xlsx.writeBuffer();
+    res.json({ fileBase64: Buffer.from(out as ArrayBuffer).toString('base64'),
+      report: { sheet: shape.sheet, columns: shape.columns.map((c) => c.label), converted, ...report } });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message || 'Remplissage impossible.' });
+  }
 });
 
 // ─── Agent IA : inspection d'interface ───────────────────

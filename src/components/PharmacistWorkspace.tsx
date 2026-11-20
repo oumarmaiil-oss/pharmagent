@@ -7,6 +7,7 @@ import type { DashboardSnapshot, DraftRecord, OwnerAccount } from '../types/phar
 import DraftLines, { countToReview } from './DraftLines.tsx';
 import { blockingReason, draftChecks } from './draftChecks.ts';
 import { downloadWithAuth } from './download.ts';
+import GenericFill from './GenericFill.tsx';
 import { ExecutionBadge, ExecutionDetail } from './ExecutionStatus.tsx';
 
 interface Props {
@@ -114,7 +115,7 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
     if (!file) return;
     if (file.size > MAX_BYTES) { setError('Fichier trop lourd (20 Mo maximum).'); return; }
     // PDF, Excel, CSV : envoyés tels quels (lecture exacte) ; seule une photo est réduite et agrandie
-    const isPdf = !file.type.startsWith('image/') || /\.(pdf|csv|xlsx|xls|ods)$/i.test(file.name);
+    const isPdf = !file.type.startsWith('image/') || /\.(pdf|csv|xlsx|xls|ods|numbers)$/i.test(file.name);
     // Photo réduite sur le téléphone : envoi plus rapide, et sous la limite de 5 Mo de l'IA
     const dataUrl = (!isPdf && await shrinkImage(file)) || await readAsDataUrl(file);
     const zooms = isPdf ? [] : await zoomTiles(file);
@@ -238,7 +239,7 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
               <button onClick={() => cameraRef.current?.click()} className="flex items-center justify-center gap-2 text-sm font-medium bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 py-3 rounded-xl">
                 <Camera size={17} /> Photo
               </button>
-              <input ref={fileRef} type="file" accept="application/pdf,.pdf,.xlsx,.xls,.ods,.csv,image/*" className="hidden" onChange={handleFile} />
+              <input ref={fileRef} type="file" accept="application/pdf,.pdf,.xlsx,.xls,.ods,.csv,.numbers,image/*" className="hidden" onChange={handleFile} />
               <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleFile} />
             </div>
             <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">
@@ -352,6 +353,8 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
             )}
           </section>
 
+          {selectedPharmacy && <GenericFill token={token} pharmacyId={selectedPharmacy.id} />}
+
           {/* Envoyés à l'agent */}
           {selectedPharmacy && sent.length > 0 && (
             <section>
@@ -427,7 +430,7 @@ function DraftChecks({ draft }: { draft: DraftRecord }) {
   );
 }
 
-interface FillReportView { sheet: string; linesWritten: number; headerFilled: string[]; missingLabels: string[]; converted?: 'ods' | 'csv' | 'xls' | 'simplifie' }
+interface FillReportView { sheet: string; linesWritten: number; headerFilled: string[]; missingLabels: string[]; converted?: 'ods' | 'csv' | 'xls' | 'numbers' | 'simplifie' }
 
 function FillExcelButton({ draftId, token }: { draftId: string; token: string }) {
   const input = useRef<HTMLInputElement>(null);
@@ -470,7 +473,7 @@ function FillExcelButton({ draftId, token }: { draftId: string; token: string })
       >
         {busy ? <Loader2 size={14} className="animate-spin" /> : <FileSpreadsheet size={14} />} Remplir mon fichier Excel
       </button>
-      <input ref={input} type="file" accept=".xlsx,.xls,.xlsm,.ods,.csv" className="hidden" onChange={onFile} />
+      <input ref={input} type="file" accept=".xlsx,.xls,.xlsm,.ods,.csv,.numbers" className="hidden" onChange={onFile} />
       {msg && <p className={`text-[11px] ${msg.ok ? 'text-emerald-300' : 'text-red-300'}`}>{msg.text}</p>}
     </div>
   );

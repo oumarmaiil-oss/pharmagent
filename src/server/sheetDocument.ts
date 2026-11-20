@@ -5,7 +5,7 @@
 import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
 import type { ExtractedDocumentData, ExtractedLineItem } from '../types/pharmagent.ts';
-import { HEADER_PATTERNS, matchColumn, normLabel, type ColumnField } from './vocabulary.ts';
+import { matchColumn, matchHeaderLabel, normLabel, type ColumnField, type HeaderField } from './vocabulary.ts';
 
 export const SHEET_MIME = /^(text\/csv|text\/plain|application\/vnd\.ms-excel|application\/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet|application\/vnd\.oasis\.opendocument\.spreadsheet)$/;
 
@@ -115,17 +115,27 @@ export function sheetToDelivery(buf: Buffer, fileName = ''): ExtractedDocumentDa
   }
 
   // En-tête au-dessus du tableau : « Fournisseur : X », « N° BL | 123 », « Date » …
-  const head: Record<'supplier' | 'documentNumber' | 'documentDate', string> = { supplier: '', documentNumber: '', documentDate: '' };
+  const head: Record<HeaderField, string> = { supplier: '', documentNumber: '', documentDate: '' };
+  // Une valeur n'est jamais elle-même un intitulé (« Date », « N° BL : », « Désignation »…)
+  const value = (v: unknown) => {
+    const s = cellText(v);
+    return s && !s.endsWith(':') && !matchHeaderLabel(s) && !matchColumn(s) ? s : '';
+  };
   for (let r = 0; r < header; r++) {
     rows[r].forEach((cell, c) => {
       const raw = cellText(cell);
       const [label, inline] = raw.split(/\s*:\s*(.+)/);
-      for (const [key, re] of HEADER_PATTERNS) {
-        if (head[key] || !re.test(normLabel(label))) continue;
-        head[key] = (inline ?? '').trim() || cellText(rows[r][c + 1]) || cellText(rows[r + 1]?.[c]);
-      }
+      const key = matchHeaderLabel(label);
+      if (!key || head[key]) return;
+      head[key] = (inline ?? '').trim() || value(rows[r][c + 1]) || value(rows[r][c + 2]) || value(rows[r + 1]?.[c]);
     });
   }
+  // N°, fournisseur et date répétés en colonnes du tableau (export ERP « une ligne = un produit ») : 1re ligne
+  const firstRow = rows.slice(header + 1).find((r) => cellText(at(r, 'product')));
+  rows[header].forEach((cell, c) => {
+    const key = matchHeaderLabel(cellText(cell));
+    if (key && !head[key] && firstRow) head[key] = value(firstRow[c]);
+  });
   if (!head.documentNumber) head.documentNumber = fileName.replace(/\.[^.]+$/, '');
 
   const computed = lines.reduce((s, l) => s + (l.lineTotal ?? l.quantity * l.unitPriceFCFA), 0);

@@ -55,6 +55,8 @@ try:
     for who, tok in (("autre pharmacie (Pharmacien)", tokB), ("autre pharmacie (Équipe)", teamB), ("sans compte", None), ("jeton falsifié", forged)):
         ok = [(m, p, st) for m, p in routes for st in [call(m, p, body, tok)[0]] if st not in (401, 403, 404)]
         check(f"{who} : aucune route de la pharmacie A accessible ({len(routes)} essayées)", not ok, ok)
+    st = call("POST", "/api/tools/fill-any", {"pharmacyId": A, "documentBase64": csv, "templateBase64": csv}, tokB)[0]
+    check("remplissage universel au nom d'une autre pharmacie refusé", st == 403, st)
     draft = json.loads(call("GET", f"/api/drafts/{did}", t=tokA)[1])["draft"]
     check("le brouillon n'a pas été modifié par l'attaquant", draft["status"] == "pending" and draft["extractedData"]["lineItems"][0]["quantity"] == 2, draft["status"])
 

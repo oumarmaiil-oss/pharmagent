@@ -165,6 +165,11 @@ try:
     check("panier CSV téléchargé", status == 200 and "attachment" in headers.get("Content-Disposition", "") and b"3400930000001;DOLIPRANE 1000MG CP B/8;10" in data, data[:120])
     check("proposition d'une autre officine refusée", call("GET", f"/api/pharmacies/{pa}/order-proposal", token=team_b)[1] == 403)
 
+    # Remplissage universel : erreurs lisibles sans IA ni tableau
+    body, status, _ = call("POST", "/api/tools/fill-any", {"pharmacyId": pb, "documentBase64": "data:text/csv;base64," + b64("a;b\n1;2"), "templateBase64": "data:text/csv;base64," + b64("x\n")}, owner)
+    check("tableau sans intitulés : message clair", status == 400 and "Aucun tableau" in body.get("error", ""), body)
+    check("remplissage universel refusé sans compte", call("POST", "/api/tools/fill-any", {"pharmacyId": pb})[1] == 401)
+
     # Sécurité : sessions, jeton dans l'adresse, ancienne route, en-têtes du navigateur
     tok1 = login(cred_c, "pharmacien", cred_c["password"])[0]["token"]
     check("jeton refusé dans l'adresse (?token=)", call("GET", f"/api/pharmacy/auth/me?token={tok1}")[1] == 401)
