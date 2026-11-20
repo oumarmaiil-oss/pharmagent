@@ -40,9 +40,11 @@ export type HeaderField = 'supplier' | 'documentNumber' | 'documentDate';
 export function matchHeaderLabel(label: unknown): HeaderField | undefined {
   const t = normLabel(label);
   if (!t || t.length > 40) return undefined;
-  if (/^date\b/.test(t)) return /peremption|expir|naissance|commande|echeance/.test(t) ? undefined : 'documentDate';
+  if (/^date\b/.test(t)) return /peremption|expir|\bper\b|\bexp\b|naissance|commande|echeance/.test(t) ? undefined : 'documentDate';
   if (/^(invoice date|ship date|delivery date)$/.test(t)) return 'documentDate';
   if (/\b(fournisseur|grossiste|repartiteur|laboratoire|expediteur|vendor|supplier|sold by)\b/.test(t)) return 'supplier';
+  // « Référence BL », « Réf. BL », « Ref. bon » etc. sont le numéro du bon — à tester avant l'exclusion générale de « reference »
+  if (/\b(ref|r[ée]f|reference)\s+(bl|bon|doc|livraison|facture|bordereau)\b/.test(t)) return 'documentNumber';
   if (/\b(commande|order|reception|code|client|tiers|ref|reference|pharmacie|pharmacien|operateur|emplacement|mutuelle|identifiant)\b/.test(t)) return undefined;
   const doc = '(bl|bon|bon de livraison|livraison|bordereau|bordereau de livraison|document|doc|facture|piece|invoice|packing slip)';
   if (new RegExp(`^(n|no|num|numero|number)( (de|du))? ${doc}( ${doc})*$`).test(t)) return 'documentNumber';
@@ -60,8 +62,8 @@ export function matchColumn(label: unknown): ColumnField | undefined {
 // Libellés de l'en-tête du document (fournisseur, numéro, date) dans un formulaire Excel
 export const HEADER_PATTERNS: Array<['supplier' | 'documentNumber' | 'documentDate', RegExp]> = [
   ['supplier', /^(fournisseur|grossiste|repartiteur|laboratoire|expediteur|origine|vendor|supplier|sold by)$/],
-  ['documentNumber', /^(n bl|n bon|bl|numero bl|num bl|n de bl|n livraison|numero|numero de livraison|bon de livraison|n piece|n facture|facture n|invoice|invoice no|invoice number|packing slip)$/],
-  ['documentDate', /^(date|date de livraison|date bl|date de reception|date reception|date facture|invoice date|ship date)$/],
+  ['documentNumber', /^(n bl|n bon|bl|numero bl|num bl|n de bl|n livraison|numero|numero de livraison|bon de livraison|n piece|n facture|facture n|invoice|invoice no|invoice number|packing slip|reference bl|ref bl|ref bon|ref document|ref doc)$/],
+  ['documentDate', /^(date|date de livraison|date bl|date de reception|date reception|date facture|invoice date|ship date|date receptionne|date enregistrement)$/],
 ];
 
 /** Glossaire donné à l'IA : mêmes notions, noms différents selon le pays et le grossiste. */
