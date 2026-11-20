@@ -1700,6 +1700,14 @@ class Engine:
             self.status_override = "prepare"
             self.setup = {k: v for k, v in (self.profile or self.setup).items() if k in ("mode", "erpUrl", "windowTitle")} or self.setup
             return True
+        if name == "skip_demo":
+            url = self.setup.get("erpUrl", "")
+            res = self.api.call("PUT", "/api/agent-client/profile", {"mode": "web", "erpUrl": url, "headerSteps": [], "lineSteps": []})
+            if isinstance(res, dict):
+                self.profile = res.get("profile") or res
+            self.status_override = None
+            self._persist()
+            return True
         if name == "change_setup":
             self.status_override = "setup"
             return True
@@ -2258,7 +2266,8 @@ function render(){if(!S)return;const st=S.status;
   <p>${S.setup.mode==='desktop'?'Logiciel installé : utilisez <b>uniquement le clavier</b> (Tab, Entrée, flèches) pour passer d\'un champ à l\'autre.':'Utilisez la souris ou le clavier comme d\'habitude.'}</p>
   <div class="alert w">Ne cliquez pas sur Valider à la fin : Agent Floki s'arrête toujours avant.</div>
   ${S.setup.mode==='desktop'?`<p class="muted">Fenêtre surveillée : <b>${esc(S.setup.windowTitle||'')}</b> (« Changer d'ERP » pour en choisir une autre)</p>`:''}${macAlert()}
-  <div class="row"><button class="sec" onclick="call('open_erp')">Afficher l'ERP</button><button class="sec" onclick="call('change_setup')">Changer d'ERP</button><button ${busy?'disabled':''} onclick="call('record_start',{phase:'header'})">▶ Commencer la démo</button></div></div>`}
+  <div class="row">${S.setup.mode==='web'?`<button class="big" ${busy?'disabled':''} onclick="call('skip_demo')">⚡ Remplissage automatique (sans démo)</button>`:''}
+  <button class="sec" onclick="call('open_erp')">Afficher l'ERP</button><button class="sec" onclick="call('change_setup')">Changer d'ERP</button><button ${busy?'disabled':''} onclick="call('record_start',{phase:'header'})">▶ Commencer la démo</button></div></div>`}
  else if(st==='rec_header'||st==='rec_line'){const ph=st==='rec_header'?'header':'line';h+=`<div class="card">${stepsBar(ph==='header'?2:3)}<span class="rec">Enregistrement</span>
   <h2 style="margin-top:8px">${ph==='header'?"Saisissez l'en-tête du bon dans l'ERP":'Saisissez maintenant UNE ligne produit'}</h2><p>Utilisez ces valeurs d'exemple (c'est un brouillon : vous pourrez l'effacer) :</p>${sampleCard(ph)}
   ${ph==='line'?'<p class="muted">Pour le produit, tapez le début du nom puis <b>choisissez-le dans la liste</b> de l\'ERP, comme d\'habitude. Si l\'ERP a un bouton « Ajouter la ligne », cliquez dessus.</p>':''}
@@ -2338,7 +2347,7 @@ class Panel(BaseHTTPRequestHandler):
             return self._json(403, {"error": "Accès refusé."})
         name = self.path.removeprefix("/api/") if hasattr(str, "removeprefix") else self.path[5:]
         allowed = {"setup", "open_erp", "windows", "record_start", "record_stop", "record_cancel", "review_save",
-                   "redo_demo", "change_setup", "test_run", "pause", "unpair", "mac_permissions", "quit", "pick_file", "support",
+                   "redo_demo", "skip_demo", "change_setup", "test_run", "pause", "unpair", "mac_permissions", "quit", "pick_file", "support",
                    "pharmsync", "memorize"}
         if name not in allowed:
             return self._json(404, {"error": "Commande inconnue."})
