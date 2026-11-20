@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-AGENT_VERSION = "2.2.0"
+AGENT_VERSION = "2.2.1"
 DEFAULT_SERVER = "https://pharmagent.onrender.com"
 PANEL_PORT = int(os.environ.get("PHARMAGENT_PORT", "8765"))
 POLL_SECONDS = float(os.environ.get("PHARMAGENT_POLL", "5"))
@@ -586,6 +586,9 @@ class KeyPlayer:
         self.injecting_esc = False
         self._listener = Listener(on_press=self._watch_esc)
         self._listener.start()
+        # Windows : tant que l'écoute du clavier démarre, la première frappe envoyée peut être perdue
+        self._listener.wait()
+        time.sleep(0.3)
 
     def close(self) -> None:
         self._listener.stop()
