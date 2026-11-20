@@ -85,7 +85,7 @@ test('ordonnance, document hors sujet, plusieurs bons, photo illisible : approba
   const base = draft([line({})], 1000);
   const as = (o: Partial<DraftRecord['extractedData']>) => ({ ...base, extractedData: { ...base.extractedData, ...o } });
   for (const [o, word] of [[{ documentType: 'ordonnance', lineItems: [] }, 'ordonnance'], [{ documentType: 'autre', lineItems: [] }, 'ni un bon'],
-    [{ documentType: 'avoir' }, 'avoir'], [{ documentCount: 2 }, '2 documents'], [{ photoQuality: 'illisible' }, 'illisible'], [{ lineItems: [] }, 'aucune ligne'], [{ lineItems: [line({ designation: 'illisible (ligne 1)' })] }, 'illisible']] as const) {
+    [{ documentType: 'avoir' }, 'avoir'], [{ documentCount: 2 }, '2 documents'], [{ photoQuality: 'illisible' }, 'illisible'], [{ lineItems: [] }, 'aucune ligne'], [{ lineItems: [line({ confidence: 0.45, quantity: 3 })], totalAmountFCFA: 99999 }, 'illisible'], [{ lineItems: [line({ designation: 'illisible (ligne 1)' })] }, 'illisible']] as const) {
     const d = as(o as never);
     assert.match(blockingReason(d) ?? '', new RegExp(word, 'i'));
     const c = draftChecks(d, TODAY);
@@ -115,4 +115,9 @@ test('photo moyenne avec lots : contrôle des lots sur les boîtes demandé ; fi
   assert.match(draftChecks(as({ source: 'photo', photoQuality: 'moyenne' }), TODAY).map((c) => c.text).join(), /contrôlez les n° de lot/);
   assert.deepEqual(draftChecks(as({ source: 'pdf', photoQuality: 'moyenne' }), TODAY), []);
   assert.deepEqual(draftChecks(as({ source: 'photo', photoQuality: 'bonne' }), TODAY), []);
+});
+
+test('lecture douteuse mais total qui recoupe : pas bloqué, simple alerte', () => {
+  const c = draftChecks(draft([line({ confidence: 0.5 })], 1000), TODAY);
+  assert.deepEqual(c.map((x) => x.level), ['warn']);
 });

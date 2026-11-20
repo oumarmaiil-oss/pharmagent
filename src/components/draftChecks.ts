@@ -53,7 +53,9 @@ export function blockingReason(draft: DraftRecord): string | undefined {
     return `${data.documentCount} documents sur la même photo : seul le premier a été lu. Prenez une photo par bon, puis rejetez ce brouillon.`;
   }
   const unreadable = lines.filter((l) => /illisible/i.test(l.designation ?? '')).length;
-  if (data.photoQuality === 'illisible' || (lines.length && unreadable * 2 >= lines.length)) {
+  // Lecture douteuse partout ET total qui ne recoupe pas : la photo est inexploitable, pas seulement imprécise
+  const allDoubtful = lines.length > 0 && lines.every((l) => typeof l.confidence === 'number' && l.confidence < 0.6) && !totalsCheck(data).matches;
+  if (data.photoQuality === 'illisible' || (lines.length && unreadable * 2 >= lines.length) || allDoubtful) {
     return 'Photo illisible : reprenez-la à plat, bien éclairée, le bon entier dans le cadre, sans compression (pas de capture WhatsApp).';
   }
   if (!lines.length) {
