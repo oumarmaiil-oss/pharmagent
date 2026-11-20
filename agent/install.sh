@@ -44,7 +44,7 @@ if [ "$OS" = "Darwin" ] && [ "${MACOS_MAJOR}" -lt 13 ]; then
 else
   PW_SPEC="playwright>=1.47"
 fi
-"$UV" pip install --quiet --python "$PY" --upgrade "$PW_SPEC" pynput
+"$UV" pip install --quiet --python "$PY" --upgrade "$PW_SPEC"
 
 step "3/5 Navigateur pour les ERP web"
 if [ -n "${PHARMAGENT_SKIP_BROWSER:-}" ]; then
