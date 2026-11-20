@@ -29,6 +29,7 @@ export interface Pharmacy {
   quotaMonth?: string;         // mois (AAAA-MM) du compteur usedThisMonth
   agentKey: string;            // clé secrète pour l'agent Python local
   code?: string;               // code de connexion de la pharmacie (ex. K7M2QX)
+  validationLevel?: 1 | 2 | 3; // 1=manuel (défaut), 2=brouillon si dispo, 3=auto si totaux OK
   agent?: AgentPresence;
 }
 

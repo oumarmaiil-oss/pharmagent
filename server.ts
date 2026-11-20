@@ -597,6 +597,17 @@ app.patch('/api/pharmacies/:id/subscription', (req, res) => {
   res.json({ ok: true });
 });
 
+app.patch('/api/pharmacies/:id/validation-level', (req, res) => {
+  if (!requireOwner(req, res)) return;
+  const ph = store.getPharmacy(req.params.id);
+  if (!ph) { res.status(404).json({ error: 'Officine introuvable.' }); return; }
+  const level = Number(req.body?.level);
+  if (![1, 2, 3].includes(level)) { res.status(400).json({ error: 'Niveau invalide (1, 2 ou 3).' }); return; }
+  ph.validationLevel = level as 1 | 2 | 3;
+  store.addAuditLog({ pharmacyId: ph.id, actorId: 'OWNER-01', actorName: store.getOwner().fullName, action: `Niveau de validation réglé à ${level}`, level: 'info' });
+  res.json({ ok: true });
+});
+
 app.get('/api/pharmacies/:id/users', (req, res) => {
   if (!requirePharmacyOrOwner(req, res, req.params.id)) return;
   res.json({ users: store.getPharmacyUsers(req.params.id).map(({ passwordHash: _h, ...u }) => u) });
@@ -1343,7 +1354,8 @@ app.post('/api/agent-client/claim', (req, res) => {
   const draft = store.claimNextExecution(ph.id);
   if (!draft) { res.json({ task: null }); return; }
   store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent local', action: `Saisie démarrée : ${draft.extractedData.documentNumber || draft.id} (${draft.extractedData.lineItems.length} lignes)`, level: 'info' });
-  res.json({ task: buildTaskPayload(draft) });
+  const payload = buildTaskPayload(draft);
+  res.json({ task: { ...payload, validationLevel: ph.validationLevel ?? 1 } });
 });
 
 app.post('/api/agent-client/tasks/:draftId/result', (req, res) => {
@@ -1379,6 +1391,61 @@ app.post('/api/agent-client/catalog', (req, res) => {
   if (!Array.isArray(products)) { res.status(400).json({ error: 'products doit être un tableau.' }); return; }
   const result = store.upsertCatalog(ph.id, products.slice(0, 20000), 'erp_capture');
   res.json({ ...result, total: store.getCatalog(ph.id).length });
+});
+
+// PharmSync : mapping automatique des champs ERP par IA
+app.post('/api/agent-client/map-fields', async (req, res) => {
+  const ph = requireAgent(req, res);
+  if (!ph) return;
+  const { survey, canonical } = req.body as { survey?: { fields?: unknown[]; title?: string }; canonical?: unknown };
+  if (!survey?.fields?.length) { res.status(400).json({ error: 'survey.fields manquant ou vide.' }); return; }
+  const fields = (survey.fields as Array<{ label: string; type: string; inLine: boolean; selectors: string[]; required?: boolean }>)
+    .slice(0, 80)
+    .map(f => `- "${f.label}" | type:${f.type} | ${f.inLine ? 'ligne' : 'entête'}${f.required ? ' *obligatoire*' : ''} | sélecteurs:${JSON.stringify(f.selectors)}`);
+  const prompt = `Tu analyses les champs de saisie d'un ERP pharmacie web (page : "${survey.title || 'inconnue'}").
+Champs trouvés :
+${fields.join('\n')}
+
+Champs canoniques d'un bon de livraison à mapper :
+${JSON.stringify(canonical, null, 2)}
+
+Pour chaque champ canonique, identifie le champ ERP le plus pertinent (ou null si absent).
+Un champ "product" est en général un champ texte avec autocomplete vers une liste de médicaments (isSearch:true).
+Réponds UNIQUEMENT en JSON valide, sans texte autour :
+{
+  "header": {
+    "supplier": {"label":"...","selectors":[...],"confidence":0.9} | null,
+    "documentNumber": ... | null,
+    "documentDate": ... | null
+  },
+  "line": {
+    "product": {"label":"...","selectors":[...],"isSearch":true,"confidence":0.95} | null,
+    "cip": ... | null,
+    "quantity": ... | null,
+    "lotNumber": ... | null,
+    "expiryDate": ... | null,
+    "purchasePrice": ... | null,
+    "salePrice": ... | null,
+    "freeUnits": ... | null
+  },
+  "addLineSelector": "..." | null,
+  "unmapped": ["champ1","champ2"]
+}`;
+  try {
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    const ai = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const msg = await ai.messages.create({
+      model: process.env.CLAUDE_MODEL || 'claude-haiku-5-5',
+      max_tokens: 1200,
+      messages: [{ role: 'user', content: prompt }],
+    });
+    const text = (msg.content[0] as { type: string; text: string }).text || '';
+    const m = text.match(/\{[\s\S]*\}/);
+    if (!m) { res.status(502).json({ error: 'Réponse IA non analysable.', raw: text.slice(0, 200) }); return; }
+    res.json(JSON.parse(m[0]));
+  } catch (e) {
+    res.status(502).json({ error: String(e) });
+  }
 });
 
 // ─── Installation de l'agent (public : aucun secret dedans) ─

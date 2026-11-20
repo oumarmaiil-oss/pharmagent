@@ -898,6 +898,48 @@ ACTIVE_EDITABLE_JS = """() => { const e = document.activeElement; if (!e) return
   if (e.isContentEditable) return true; if (e.tagName === 'TEXTAREA') return true;
   return e.tagName === 'INPUT' && !/^(button|submit|reset|checkbox|radio|hidden|file|image)$/i.test(e.type || ''); }"""
 
+# JS qui scanne TOUTES les zones de saisie de la page pour le mapping automatique (PharmSync)
+DOM_SURVEY_JS = r"""() => {
+  const EDIT = new Set(['', 'text', 'search', 'number', 'tel', 'email', 'date', 'datetime-local', 'month', 'url', 'password']);
+  const FORBIDDEN = /valider|confirmer|cl[oô]turer|soumettre|commander|payer|checkout|enregistrer.{0,20}(d[ée]finitiv|final)/i;
+  const q = s => String(s).replace(/"/g, '\\"');
+  function getLabel(el) {
+    const a = el.getAttribute('aria-label'); if (a && a.trim()) return a.trim().slice(0, 80);
+    if (el.id) { const l = document.querySelector('label[for="' + q(el.id) + '"]'); if (l) return l.innerText.trim().slice(0, 80); }
+    const lb = el.getAttribute('aria-labelledby');
+    if (lb) { const l = document.getElementById(lb.split(' ')[0]); if (l) return l.innerText.trim().slice(0, 80); }
+    const pl = el.closest('label'); if (pl) return pl.innerText.replace(el.value||'','').trim().slice(0, 80);
+    const td = el.closest('td,th');
+    if (td) { const t = td.closest('table'); const th = t && t.querySelectorAll('thead th, tr:first-child th')[td.cellIndex]; if (th) return th.innerText.trim().slice(0, 80); }
+    return (el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('name') || '').trim().slice(0, 80);
+  }
+  function getSels(el) {
+    const s = []; const tag = el.tagName.toLowerCase();
+    if (el.id && !/^\d|^ext-|^ember|^react-|^ng-/i.test(el.id)) s.push('#' + CSS.escape(el.id));
+    for (const a of ['name','data-testid','data-field','aria-label','placeholder']) {
+      const v = el.getAttribute(a); if (v && v.length < 60 && !/^\d{4,}/.test(v)) s.push(tag+'['+a+'="'+q(v)+'"]');
+    }
+    const lbl = getLabel(el); if (lbl) s.push('label='+lbl);
+    return s.slice(0, 4);
+  }
+  function inLine(el) {
+    if (el.closest('tr') && el.closest('tbody')) return true;
+    const cls = ['line','row','item','product','article','ligne','produit'];
+    return cls.some(c => el.closest('[class*="'+c+'"]') && document.querySelectorAll('[class*="'+c+'"]').length > 1);
+  }
+  const fields = Array.from(document.querySelectorAll('input,select,textarea'))
+    .filter(el => { const t=(el.getAttribute('type')||'').toLowerCase(); return el.tagName!=='INPUT'||EDIT.has(t); })
+    .filter(el => !el.closest('[style*="display:none"],[hidden],[style*="visibility:hidden"]'))
+    .filter(el => el.offsetWidth>0||el.offsetHeight>0)
+    .map(el => ({ label: getLabel(el), type: el.tagName==='SELECT'?'select':(el.getAttribute('type')||'text').toLowerCase(), selectors: getSels(el), inLine: inLine(el), required: el.required||el.getAttribute('aria-required')==='true' }))
+    .filter(f => f.selectors.length>0 && f.label);
+  const addBtns = Array.from(document.querySelectorAll('button,[type="button"],a[role="button"]'))
+    .filter(el => /ajouter|add.*(ligne|line|produit|article)|nouvelle.*(ligne|line)/i.test(el.innerText||el.title||el.getAttribute('aria-label')||''))
+    .filter(el => !FORBIDDEN.test(el.innerText||''))
+    .map(el => ({ text: (el.innerText||el.title||'').trim().slice(0,60), selectors: getSels(el) }));
+  return { url: location.href, title: document.title.slice(0,120), fields, addLineButtons: addBtns };
+}"""
+
 PRODUCT_HINT = re.compile(r"\d|\b(CP|CPR|GEL|SIROP|SIR|SUSP|INJ|AMP|SACH|CREME|POMM|COLL|SUPPO|SOL|GTT|PDRE|MG|ML|B/)\b")
 
 
@@ -1326,6 +1368,135 @@ class WebDriver:
         raise StepError(f"Produit « {target} » introuvable dans la liste de l'ERP.")
 
 
+# ─── PharmSync : mapping automatique des champs ERP ────────────────────────
+
+# Champs canoniques d'un BL avec leurs synonymes (utilisés dans le prompt AI)
+BL_CANONICAL = {
+    "header": {
+        "supplier":       "fournisseur / grossiste / distributeur / laboratoire",
+        "documentNumber": "numéro BL / référence / N° bon de livraison / N° facture",
+        "documentDate":   "date de livraison / date du bon / date BL",
+    },
+    "line": {
+        "product":       "désignation / libellé produit / médicament — champ texte avec autocomplete/liste déroulante",
+        "cip":           "code CIP / code article / code-barres / EAN",
+        "quantity":      "quantité reçue / quantité livrée / qté",
+        "lotNumber":     "numéro de lot / lot / lot fabricant",
+        "expiryDate":    "date de péremption / expiration / DLUO / date exp.",
+        "purchasePrice": "prix d'achat HT / prix unitaire / PA",
+        "salePrice":     "prix de vente / PPV / prix public",
+        "freeUnits":     "unités gratuites / UG / gratuits",
+    },
+}
+
+
+class SmartMapper:
+    """Mappe automatiquement les champs d'un ERP web aux champs d'un BL, sans démo.
+    Le mapping est mis en cache par URL dans HOME/mappings/."""
+
+    def __init__(self):
+        self._dir = HOME / "mappings"
+        self._dir.mkdir(parents=True, exist_ok=True)
+
+    def _cache_path(self, url: str) -> Path:
+        from urllib.parse import urlparse
+        p = urlparse(url)
+        key = hashlib.md5(f"{p.netloc}{p.path}".encode()).hexdigest()[:14]
+        return self._dir / f"{key}.json"
+
+    def load(self, url: str) -> Optional[Dict[str, Any]]:
+        try:
+            path = self._cache_path(url)
+            if path.exists():
+                return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return None
+
+    def save(self, url: str, mapping: Dict[str, Any]) -> None:
+        try:
+            self._cache_path(url).write_text(json.dumps(mapping, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def survey(self, page) -> Dict[str, Any]:
+        try:
+            return page.evaluate(DOM_SURVEY_JS)
+        except Exception as e:
+            return {"url": page.url, "title": "", "fields": [], "addLineButtons": [], "error": str(e)}
+
+    def map_with_ai(self, survey: Dict[str, Any], api) -> Dict[str, Any]:
+        """Appelle le serveur pour obtenir le mapping IA des champs."""
+        try:
+            return api.call("POST", "/api/agent-client/map-fields", {"survey": survey, "canonical": BL_CANONICAL})
+        except Exception as e:
+            log.warning("Mapping IA échoué : %s", e)
+            return {}
+
+    def header_steps(self, mapping: Dict[str, Any]) -> List[Dict[str, Any]]:
+        steps = []
+        for field, info in (mapping.get("header") or {}).items():
+            if not info or not info.get("selectors"):
+                continue
+            steps.append({"kind": "fill", "field": field, "label": info.get("label", ""), "selectors": info["selectors"]})
+        return steps
+
+    def line_steps(self, mapping: Dict[str, Any]) -> List[Dict[str, Any]]:
+        steps = []
+        for field, info in (mapping.get("line") or {}).items():
+            if not info or not info.get("selectors"):
+                continue
+            steps.append({"kind": "fill", "field": field, "label": info.get("label", ""), "selectors": info["selectors"]})
+            if info.get("isSearch") or field == "product":
+                steps.append({"kind": "pick", "field": field, "selectors": info.get("dropdownSelectors") or [], "label": info.get("label", "")})
+        return steps
+
+    def smart_fill(self, engine: "Engine", page, mapping: Dict[str, Any], header: Dict[str, Any],
+                   lines: List[Dict[str, Any]], captured: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Remplit l'ERP via le mapping. Saute les champs inconnus sans bloquer."""
+        h_steps = self.header_steps(mapping)
+        l_steps = self.line_steps(mapping)
+        add_sel = mapping.get("addLineSelector") or ""
+        filled, skipped = 0, []
+
+        # En-tête
+        for step in h_steps:
+            try:
+                engine.web.run_steps(page, [step], header, engine.stop_flag.is_set, captured)
+                filled += 1
+            except StepError as e:
+                skipped.append({"phase": "header", "field": step.get("field"), "label": step.get("label", "?"), "reason": str(e)})
+
+        # Lignes
+        for i, line in enumerate(lines):
+            if engine.stop_flag.is_set():
+                break
+            idx = line.get("index", i)
+            lbl = line.get("product") or line.get("designation") or "?"
+            engine.task["current"] = lbl
+            if line.get("skip"):
+                skipped.append({"phase": "line", "index": idx, "field": "product", "label": lbl, "reason": line["skip"]})
+                engine.task["done"] += 1
+                continue
+            # Ajouter une ligne si nécessaire
+            if i > 0 and add_sel:
+                try:
+                    page.locator(add_sel).first.click(timeout=3000)
+                    page.wait_for_timeout(400)
+                except Exception:
+                    pass
+            values = {**header, **line}
+            for step in l_steps:
+                try:
+                    engine.web.run_steps(page, [step], values, engine.stop_flag.is_set, captured)
+                    filled += 1
+                except StepError as e:
+                    skipped.append({"phase": "line", "index": idx, "field": step.get("field"), "label": step.get("label", "?"), "reason": str(e)})
+            engine.task["done"] += 1
+
+        return {"filled": filled, "skipped": skipped}
+
+
 # ─── Moteur ─────────────────────────────────────────────────────────────────
 
 
@@ -1553,6 +1724,38 @@ class Engine:
             self.profile = None
             self._persist()
             return True
+        if name == "pharmsync":
+            # Scan la page ERP ouverte et mappe les champs via l'IA
+            if not self.web.is_open:
+                raise ValueError("Ouvrez d'abord l'ERP dans le navigateur PharmAgent.")
+            page = self.web.page()
+            mapper = SmartMapper()
+            survey = mapper.survey(page)
+            if not survey.get("fields"):
+                raise ValueError("Aucun champ de saisie trouvé sur cette page. Naviguez vers le formulaire de réception de BL.")
+            smart_map = mapper.map_with_ai(survey, self.api)
+            if not smart_map.get("header") and not smart_map.get("line"):
+                raise ValueError("Le mapping automatique n'a rien trouvé. Essayez sur la page de saisie du BL.")
+            mapper.save(page.url, smart_map)
+            h = len([v for v in (smart_map.get("header") or {}).values() if v])
+            l = len([v for v in (smart_map.get("line") or {}).values() if v])
+            unmapped = smart_map.get("unmapped") or []
+            log.info("PharmSync terminé : %d champ(s) en-tête, %d par ligne. Non trouvés : %s", h, l, unmapped or "aucun")
+            return {"mappedHeader": h, "mappedLine": l, "unmapped": unmapped, "url": page.url}
+        if name == "memorize":
+            # Relit la page après correction du pharmacien, met à jour le mapping
+            if not self.web.is_open:
+                raise ValueError("Navigateur non ouvert.")
+            page = self.web.page()
+            mapper = SmartMapper()
+            survey = mapper.survey(page)
+            if not survey.get("fields"):
+                raise ValueError("Aucun champ trouvé sur la page.")
+            smart_map = mapper.map_with_ai(survey, self.api)
+            if smart_map.get("header") or smart_map.get("line"):
+                mapper.save(page.url, smart_map)
+                log.info("Mémorisation : mapping mis à jour pour %s", page.url[:60])
+            return True
         raise ValueError(f"Commande inconnue : {name}")
 
     # ── Démo ──
@@ -1670,6 +1873,7 @@ class Engine:
         status, message = "done", ""
         captured: List[Dict[str, Any]] = []
         player: Optional[KeyPlayer] = None
+        all_skipped_labels: List[str] = []  # pour l'affichage dans le panneau
         log.info("%s : %s (%d ligne(s)).", "Test" if is_test else "Saisie", self.task["documentNumber"], len(lines))
         try:
             if prof.get("mode") == "file":
@@ -1692,8 +1896,9 @@ class Engine:
                 open_file(str(out))
                 lines = []  # rien à taper
             elif prof.get("mode") == "web":
-                self.web.open(prof.get("formUrl") or prof.get("erpUrl"))
-                page = self.web.erp_page(prof.get("erpUrl"), prof.get("formUrl"))
+                erp_url = prof.get("erpUrl") or self.setup.get("erpUrl") or ""
+                self.web.open(prof.get("formUrl") or erp_url)
+                page = self.web.erp_page(erp_url, prof.get("formUrl"))
                 page.bring_to_front()
                 form = prof.get("formUrl")
                 if form and page.url.split("#")[0] != form.split("#")[0]:
@@ -1702,7 +1907,38 @@ class Engine:
                         page.wait_for_load_state("networkidle", timeout=5000)
                     except Exception:
                         pass
-                self.web.run_steps(page, prof.get("headerSteps") or [], header, self.stop_flag.is_set, captured)
+                # ── Mapping automatique (PharmSync) ──
+                mapper = SmartMapper()
+                smart_map = mapper.load(page.url)
+                use_smart = bool(smart_map)
+                if not smart_map and not prof.get("lineSteps"):
+                    # Première fois sur cet ERP : scan + mapping IA
+                    log.info("PharmSync : scan de la page %s…", page.url[:60])
+                    survey = mapper.survey(page)
+                    if survey.get("fields"):
+                        smart_map = mapper.map_with_ai(survey, self.api)
+                        if smart_map.get("header") or smart_map.get("line"):
+                            mapper.save(page.url, smart_map)
+                            use_smart = True
+                            log.info("PharmSync : %d champs en-tête, %d par ligne mappés.",
+                                     len(smart_map.get("header") or {}), len(smart_map.get("line") or {}))
+                if use_smart and smart_map:
+                    res_smart = mapper.smart_fill(self, page, smart_map, header, lines, captured)
+                    sk = res_smart["skipped"]
+                    skipped_fields = [f"{s['label'] or s['field']} ({s['phase']})" for s in sk if s["phase"] == "header"]
+                    skipped_lines = [s for s in sk if s["phase"] == "line"]
+                    all_skipped_labels = [f"{s['label'] or s['field']}" for s in sk]
+                    message = f"{res_smart['filled']} champ(s) saisi(s) en {time.time() - started:.1f} s"
+                    if skipped_fields:
+                        message += f" · En-tête non rempli : {', '.join(skipped_fields)}"
+                    if skipped_lines:
+                        message += f" · {len(skipped_lines)} champ(s) de ligne ignoré(s)"
+                    message += ". Vérifiez puis validez dans l'ERP."
+                    results = [{"index": l.get("index", i), "ok": not any(s.get("index") == l.get("index", i) for s in skipped_lines)} for i, l in enumerate(lines)]
+                    lines = []  # déjà traité
+                else:
+                    # Démo enregistrée (compatibilité)
+                    self.web.run_steps(page, prof.get("headerSteps") or [], header, self.stop_flag.is_set, captured)
             else:
                 player = KeyPlayer(prof.get("windowTitle", ""), self.stop_flag)
                 player.run(prof.get("headerSteps") or [], header, check_each_step=True)
@@ -1724,10 +1960,11 @@ class Engine:
             skipped = [r for r in results if not r["ok"]]
             if prof.get("mode") == "file":
                 raise _FileDone(message)
-            message = f"{len(results) - len(skipped)} ligne(s) saisie(s) en {time.time() - started:.1f} s"
-            if skipped:
-                message += f", {len(skipped)} ignorée(s) (nouveaux produits)"
-            message += ". Vérifiez puis validez dans l'ERP."
+            if not message:
+                message = f"{len(results) - len(skipped)} ligne(s) saisie(s) en {time.time() - started:.1f} s"
+                if skipped:
+                    message += f", {len(skipped)} ignorée(s) (nouveaux produits)"
+                message += ". Vérifiez puis validez dans l'ERP."
         except _FileDone as e:
             message = str(e)
         except (StepError, GuardrailError, Aborted) as e:
@@ -1742,6 +1979,61 @@ class Engine:
         finally:
             if player:
                 player.close()
+        # ── Niveau 3 : validation automatique ──────────────────────
+        v_level = int(task.get("validationLevel") or 1)
+        if status == "done" and v_level == 3 and not is_test and prof.get("mode") in ("web", "desktop"):
+            skipped_auto = [r for r in results if not r["ok"]]
+            total_declared = float(header.get("totalAmount") or 0)
+            if skipped_auto:
+                log.warning("Auto-validation annulée : %d ligne(s) non saisie(s).", len(skipped_auto))
+                message += f" [auto-validation annulée : {len(skipped_auto)} ligne(s) non saisie(s)]"
+            else:
+                # Trouver et cliquer le bouton de validation (UNIQUEMENT en niveau 3 activé par le superviseur)
+                try:
+                    if prof.get("mode") == "web":
+                        VALIDATE_JS = r"""() => {
+  const VALIDATE = /^(valider|confirmer|enregistrer|soumettre|valider la réception|valider le bon|confirmer la réception|enregistrer definitivement|valider définitivement)/i;
+  for (const btn of document.querySelectorAll('button,input[type=submit],input[type=button],[role=button],a[class*=btn]')) {
+    const t = (btn.innerText || btn.value || btn.getAttribute('aria-label') || '').trim();
+    if (VALIDATE.test(t)) return {found: true, text: t, selector: btn.id ? '#'+btn.id : null};
+  }
+  return {found: false};
+}"""
+                        vbtn = page.evaluate(VALIDATE_JS)
+                        if vbtn.get("found"):
+                            if total_declared > 0:
+                                # Lire le total affiché dans l'ERP pour vérification
+                                READ_TOTAL_JS = r"""() => {
+  const cells = [...document.querySelectorAll('td,th,span,div,label,input')];
+  for (const c of cells) {
+    const t = c.innerText?.trim() || '';
+    if (/total\s*(ht|hors|ttc|net|général|general)?\s*:/i.test(t) || /total\s*(ht|ttc|net)\b/i.test(t)) {
+      const sib = c.nextElementSibling || c.parentElement?.querySelector('input,span:last-child');
+      const val = parseFloat((sib?.innerText || sib?.value || '').replace(/[^\d,.]/g, '').replace(',', '.'));
+      if (val > 0) return val;
+    }
+  }
+  return null;
+}"""
+                                erp_total = page.evaluate(READ_TOTAL_JS)
+                                if erp_total and abs(erp_total - total_declared) / max(total_declared, 1) > 0.02:
+                                    log.warning("Auto-validation annulée : total ERP %.0f ≠ BL %.0f (>2%% d'écart).", erp_total, total_declared)
+                                    message += f" [auto-validation annulée : total ERP {erp_total:.0f} ≠ BL {total_declared:.0f}]"
+                                    total_declared = -1  # marque l'échec
+                            if total_declared >= 0:
+                                log.info("Auto-validation niveau 3 : clic sur « %s ».", vbtn.get("text", "?"))
+                                if vbtn.get("selector"):
+                                    page.click(vbtn["selector"])
+                                else:
+                                    # Chercher et cliquer par texte exact
+                                    page.locator(f"button:has-text('{vbtn['text']}')").first.click(timeout=5000)
+                                message += " [validé automatiquement — niveau 3]"
+                        else:
+                            log.warning("Auto-validation niveau 3 : bouton de validation non trouvé sur la page.")
+                            message += " [auto-validation : bouton non trouvé, validez manuellement]"
+                except Exception as e_v:
+                    log.warning("Auto-validation échouée : %s", e_v)
+                    message += " [auto-validation échouée : vérifiez manuellement]"
         if status == "failed":
             done = self.task["done"]
             cur = lines[done] if done < len(lines) else {}
@@ -1749,7 +2041,8 @@ class Engine:
             message = f"Ligne {done + 1} ({self.task['current'] or 'en-tête'}) : {message}" if self.task["current"] else message
         duration = int((time.time() - started) * 1000)
         self.last_result = {"documentNumber": self.task["documentNumber"], "status": status, "message": message,
-                            "at": datetime.now().strftime("%d/%m %H:%M"), "test": is_test}
+                            "at": datetime.now().strftime("%d/%m %H:%M"), "test": is_test,
+                            "skipped": all_skipped_labels or None}
         (log.info if status == "done" else log.warning)("%s", message)
         self.task = None
         self._persist()
@@ -1987,7 +2280,9 @@ function render(){if(!S)return;const st=S.status;
   <p>Dès qu'un bon est approuvé dans PharmAgent (téléphone ou ordinateur), il est ${p.mode==='file'?'écrit automatiquement dans une copie du fichier « '+esc((p.filePath||'').split(/[\\/]/).pop())+' », qui s\'ouvre':'saisi ici automatiquement dans l\'ERP'+(p.mode==='web'?' (navigateur PharmAgent)':' « '+esc(p.windowTitle||'')+' »')}.</p>
   ${p.mode==='desktop'&&/numbers|excel|libreoffice|calc/i.test(p.windowTitle||'')?`<div class="alert w"><b>« ${esc(p.windowTitle)} » est un tableur.</b> Le mode clavier y est peu fiable. Passez en <b>mode Fichier</b> : PharmAgent écrit directement dans le fichier, sans démo.<div class="row"><button onclick="setupMode='file';call('change_setup')">Passer en mode Fichier</button></div></div>`:''}
   ${lr?`<div class="alert ${lr.status==='done'?'g':'e'}"><b>${lr.test?'Test':'Dernier bon'} ${esc(lr.documentNumber)}</b> · ${esc(lr.at)}<br>${esc(lr.message)}</div>`:''}
-  <div class="row">${p.mode==='file'?'':`<button ${busy?'disabled':''} onclick="call('test_run')">▶ Tester avec l'exemple</button>`}<button class="sec" onclick="call('open_erp')">${p.mode==='file'?'Ouvrir le modèle':"Afficher l'ERP"}</button><button class="sec" onclick="call('pause',{paused:${st!=='paused'}})">${st==='paused'?'Reprendre':'Mettre en pause'}</button>${p.mode==='file'?`<button class="sec" onclick="setupMode='file';call('change_setup')">Changer de fichier</button>`:`<button class="sec" onclick="edit=null;call('redo_demo')">Refaire la démo</button>`}<button class="sec" onclick="setupMode=null;call('change_setup')">Changer de mode</button></div>
+  ${lr&&lr.skipped&&lr.skipped.length?`<div class="alert w"><b>Champs non remplis (${lr.skipped.length})</b><ul style="margin:6px 0 0 16px">${lr.skipped.map(s=>`<li>${esc(s)}</li>`).join('')}</ul><div class="row" style="margin-top:8px"><button class="sec" onclick="call('pharmsync').then(()=>alert('Mémorisation lancée — naviguez vers le formulaire BL dans l\\'ERP puis cliquez Mémoriser.'))">Corriger maintenant</button><button class="sec" onclick="alert('Les champs manquants ont été enregistrés dans le dossier de formation.')">Corriger plus tard</button></div></div>`:''}
+  <div class="row">${p.mode==='file'?'':`<button ${busy?'disabled':''} onclick="call('test_run')">▶ Tester avec l'exemple</button>`}${p.mode==='web'?`<button class="sec" ${busy?'disabled':''} onclick="call('pharmsync').then(r=>alert('PharmSync : '+JSON.stringify(r)))">🔍 PharmSync</button>`:''}${p.mode==='web'?`<button class="sec" ${busy?'disabled':''} onclick="call('memorize').then(()=>alert('Mapping mémorisé.'))">💾 Mémoriser</button>`:''}
+  <button class="sec" onclick="call('open_erp')">${p.mode==='file'?'Ouvrir le modèle':"Afficher l'ERP"}</button><button class="sec" onclick="call('pause',{paused:${st!=='paused'}})">${st==='paused'?'Reprendre':'Mettre en pause'}</button>${p.mode==='file'?`<button class="sec" onclick="setupMode='file';call('change_setup')">Changer de fichier</button>`:`<button class="sec" onclick="edit=null;call('redo_demo')">Refaire la démo</button>`}<button class="sec" onclick="setupMode=null;call('change_setup')">Changer de mode</button></div>
   <p class="muted" style="margin-top:14px">${p.mode==='file'?`Modèle : ${esc(p.filePath||'')} · choisissez de préférence un modèle <b>vide</b> (sinon les lignes s'ajoutent après celles déjà présentes).`:`Démo du ${p.recordedAt?new Date(p.recordedAt).toLocaleString('fr-FR'):'—'} · ${p.headerSteps||0} étape(s) d'en-tête · ${p.lineSteps||0} par ligne`}</p></div>`;
   h+=`<div class="card"><h2>Cet ordinateur</h2><p>Relié à <b>${esc(S.pharmacyName)}</b> · serveur ${esc(S.server)}</p><div class="row"><button class="sec red" onclick="if(confirm('Délier cet ordinateur de l\\'officine ?'))call('unpair')">Délier l'ordinateur</button></div></div>`}
  if(a.dataset.h!==h){a.innerHTML=h;a.dataset.h=h}}
@@ -2043,7 +2338,8 @@ class Panel(BaseHTTPRequestHandler):
             return self._json(403, {"error": "Accès refusé."})
         name = self.path.removeprefix("/api/") if hasattr(str, "removeprefix") else self.path[5:]
         allowed = {"setup", "open_erp", "windows", "record_start", "record_stop", "record_cancel", "review_save",
-                   "redo_demo", "change_setup", "test_run", "pause", "unpair", "mac_permissions", "quit", "pick_file", "support"}
+                   "redo_demo", "change_setup", "test_run", "pause", "unpair", "mac_permissions", "quit", "pick_file", "support",
+                   "pharmsync", "memorize"}
         if name not in allowed:
             return self._json(404, {"error": "Commande inconnue."})
         length = min(int(self.headers.get("Content-Length") or 0), 2_000_000)
