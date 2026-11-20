@@ -4,7 +4,14 @@
 set -euo pipefail
 
 SERVER="${PHARMAGENT_SERVER:-__SERVER_URL__}"
-PY_VERSION="${PHARMAGENT_PYTHON_VERSION:-3.12}"
+# macOS 12 : Python 3.12 + playwright 1.37 → greenlet n'a pas de wheel précompilé
+# On utilise Python 3.11 sur macOS <13 pour éviter la compilation C++
+MACOS_MAJOR_EARLY=$(sw_vers -productVersion 2>/dev/null | cut -d. -f1 || echo "14")
+if [ "$(uname)" = "Darwin" ] && [ "${MACOS_MAJOR_EARLY}" -lt 13 ]; then
+  PY_VERSION="${PHARMAGENT_PYTHON_VERSION:-3.11}"
+else
+  PY_VERSION="${PHARMAGENT_PYTHON_VERSION:-3.12}"
+fi
 OS="$(uname)"
 if [ "$OS" = "Darwin" ]; then
   APP_DIR="$HOME/Library/Application Support/PharmAgent"
