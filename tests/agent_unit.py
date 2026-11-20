@@ -114,4 +114,10 @@ A.ensure_mac_launcher("https://pharmagent.onrender.com")
 check("rien à refaire au lancement suivant", calls == [])
 pathlib.Path.home, A.subprocess.run, A.SYSTEM = real_home, real_run, real_system
 
+# Garde-fou : boutons finaux interdits (logiciel ET site du grossiste), boutons de brouillon autorisés
+for label in ("Valider", "Confirmer la réception", "Clôturer", "Commander", "Passer la commande", "Payer", "Checkout"):
+    check(f"garde-fou bloque « {label} »", A.forbidden_text(label))
+for label in ("Ajouter au panier", "Enregistrer le brouillon", "Commandes", "Quantité", "Rechercher"):
+    check(f"garde-fou laisse passer « {label} »", not A.forbidden_text(label))
+
 check.exit()

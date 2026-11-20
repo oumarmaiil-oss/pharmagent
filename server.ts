@@ -18,9 +18,11 @@ import {
 } from './src/server/aiAgent.ts';
 import { fillWorkbook, FIELD_LABELS } from './src/server/excelFill.ts';
 import { matchColumn, type ColumnField } from './src/server/vocabulary.ts';
+import { parseAmount, readWorkbook, SHEET_MIME, sheetToDelivery } from './src/server/sheetDocument.ts';
+import { DEFAULT_ORDER_PARAMS, orderFile, parseSalesJournal, proposeOrder, type OrderParams, type SalesSummary } from './src/server/orders.ts';
 import { blockingReason, needsSecondLook } from './src/components/draftChecks.ts';
 import { checkTextSafety } from './src/server/guardrail.ts';
-import { AUTO_THRESHOLD, matchLines, normalizeSupplier } from './src/server/productMatcher.ts';
+import { attachReference, AUTO_THRESHOLD, matchLines, normalizeSupplier } from './src/server/productMatcher.ts';
 import { store, type CatalogRowInput } from './src/server/store.ts';
 import type {
   AgentProfile,
@@ -104,6 +106,7 @@ function requireOwner(req: express.Request, res: express.Response) {
 
 function requirePharmacyOrOwner(req: express.Request, res: express.Response, pharmacyId: string) {
   const owner = getOwnerSession(req);
+  if (owner && !store.getPharmacy(pharmacyId)) { res.status(404).json({ error: 'Officine inconnue.' }); return null; }
   if (owner) return { actor: owner, displayName: owner.fullName };
   const user = getPharmacySession(req);
   if (!user) { res.status(401).json({ error: 'Connexion requise.' }); return null; }
@@ -113,6 +116,7 @@ function requirePharmacyOrOwner(req: express.Request, res: express.Response, pha
 
 function requireApprover(req: express.Request, res: express.Response, pharmacyId: string) {
   const owner = getOwnerSession(req);
+  if (owner && !store.getPharmacy(pharmacyId)) { res.status(404).json({ error: 'Officine inconnue.' }); return null; }
   if (owner) return { actor: owner, displayName: owner.fullName };
   const user = getPharmacySession(req);
   if (!user) { res.status(401).json({ error: 'Connexion requise.' }); return null; }
@@ -122,7 +126,7 @@ function requireApprover(req: express.Request, res: express.Response, pharmacyId
 // Réglages de la pharmacie (agent, compte Équipe) : propriétaire ou compte Pharmacien
 function requirePharmacist(req: express.Request, res: express.Response, pharmacyId: string) {
   const r = requireApprover(req, res, pharmacyId);
-  if (r && 'role' in r.actor && r.actor.role !== 'titulaire') { res.status(403).json({ error: 'Réservé au compte Pharmacien.' }); return null; }
+  if (r && !getOwnerSession(req) && 'role' in r.actor && r.actor.role !== 'titulaire') { res.status(403).json({ error: 'Réservé au compte Pharmacien.' }); return null; }
   return r;
 }
 
@@ -229,7 +233,7 @@ async function matchDocumentLines(pharmacyId: string, data: ExtractedDocumentDat
       console.warn('[PharmAgent] Correspondance IA indisponible :', (err as Error).message);
     }
   }
-  return { lines, tokensConsumed };
+  return { lines: attachReference(lines, store.getCatalog(pharmacyId)), tokensConsumed };
 }
 
 function buildDraftWorkbook(draft: DraftRecord): Buffer {
@@ -264,13 +268,7 @@ const CATALOG_FIELDS: Partial<Record<ColumnField, keyof CatalogRowInput>> = {
 };
 
 function parseCatalogFile(base64: string): { rows: CatalogRowInput[]; columns: Partial<Record<keyof CatalogRowInput, string>> } {
-  // CSV UTF-8 : sans codepage il serait lu en Latin-1 (« DÃ©signation »), et le BOM casse la 1re colonne
-  let buf = Buffer.from(base64.replace(/^data:[^,]+,/, ''), 'base64');
-  if (buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) buf = buf.subarray(3);
-  let isUtf8 = true;
-  try { new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch { isUtf8 = false; }
-  // Exports ERP Windows : CSV en Windows-1252 ; les .xlsx (zip) ne sont pas concernés
-  const wb = XLSX.read(buf, { type: 'buffer', codepage: isUtf8 ? 65001 : 1252 });
+  const wb = readWorkbook(Buffer.from(base64.replace(/^data:[^,]+,/, ''), 'base64'));
   const sheet = wb.Sheets[wb.SheetNames[0]];
   const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' });
   if (!raw.length) return { rows: [], columns: {} };
@@ -280,16 +278,12 @@ function parseCatalogFile(base64: string): { rows: CatalogRowInput[]; columns: P
     const target = CATALOG_FIELDS[matchColumn(h) ?? 'discount'];
     if (target && !columns[target]) columns[target] = h;
   }
-  const num = (v: unknown) => {
-    const n = parseFloat(String(v).replace(/\s| /g, '').replace(',', '.'));
-    return Number.isFinite(n) ? n : undefined;
-  };
   const rows = raw.map((r) => ({
     erpLabel: columns.erpLabel ? String(r[columns.erpLabel]).trim() : '',
     cip: columns.cip ? String(r[columns.cip]).trim() || undefined : undefined,
-    purchasePriceFCFA: columns.purchasePriceFCFA ? num(r[columns.purchasePriceFCFA]) : undefined,
-    salePriceFCFA: columns.salePriceFCFA ? num(r[columns.salePriceFCFA]) : undefined,
-    stockQty: columns.stockQty ? num(r[columns.stockQty]) : undefined,
+    purchasePriceFCFA: columns.purchasePriceFCFA ? parseAmount(r[columns.purchasePriceFCFA]) : undefined,
+    salePriceFCFA: columns.salePriceFCFA ? parseAmount(r[columns.salePriceFCFA]) : undefined,
+    stockQty: columns.stockQty ? parseAmount(r[columns.stockQty]) : undefined,
   })).filter((r) => r.erpLabel);
   return { rows, columns };
 }
@@ -670,6 +664,61 @@ app.post('/api/pharmacies/:id/catalog/import', (req, res) => {
   }
 });
 
+// ─── Commande : journal des ventes → proposition → panier ─
+
+app.post('/api/pharmacies/:id/sales/import', (req, res) => {
+  const actor = requirePharmacist(req, res, req.params.id);
+  if (!actor) return;
+  const { fileBase64, fileName, periodDays } = req.body as { fileBase64?: string; fileName?: string; periodDays?: number };
+  if (!fileBase64) { res.status(400).json({ error: 'Fichier requis (export des ventes en Excel ou CSV).' }); return; }
+  const catalog = store.getCatalog(req.params.id);
+  if (!catalog.length) { res.status(400).json({ error: "Importez d'abord le catalogue avec le stock (Mon compte › Catalogue)." }); return; }
+  try {
+    const parsed = parseSalesJournal(Buffer.from(fileBase64.replace(/^data:[^,]+,/, ''), 'base64'), catalog, store.getAliasesForPharmacy(req.params.id));
+    const typed = Number(periodDays);
+    const fromDates = parsed.days && parsed.days > 0 ? parsed.days : undefined;
+    const days = fromDates ?? (typed > 0 && typed <= 366 ? Math.round(typed) : undefined);
+    if (!days) { res.status(400).json({ error: 'Pas de colonne Date dans le fichier : indiquez sur combien de jours portent ces ventes.' }); return; }
+    const summary: SalesSummary = {
+      pharmacyId: req.params.id, importedAt: new Date().toISOString(), fileName: String(fileName ?? '').slice(0, 120),
+      periodDays: days, periodSource: fromDates ? 'dates' : 'saisie', items: parsed.items, unmatched: parsed.unmatched.slice(0, 200),
+    };
+    store.setSales(summary);
+    store.addAuditLog({ pharmacyId: req.params.id, actorId: actor.actor.id, actorName: actor.displayName,
+      action: `Journal des ventes importé : ${parsed.items.length} produits sur ${days} jours (${parsed.unmatched.length} non reconnus)`, level: 'info' });
+    res.json({ periodDays: days, periodSource: summary.periodSource, products: parsed.items.length, unmatched: summary.unmatched });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+app.get('/api/pharmacies/:id/order-proposal', (req, res) => {
+  if (!requirePharmacyOrOwner(req, res, req.params.id)) return;
+  const sales = store.getSales(req.params.id);
+  if (!sales) { res.json({ sales: null, lines: [] }); return; }
+  const num = (v: unknown, d: number) => { const n = Number(v); return Number.isFinite(n) && n >= 0 && n <= 120 ? n : d; };
+  const params: OrderParams = {
+    coverDays: num(req.query.cover, DEFAULT_ORDER_PARAMS.coverDays), leadDays: num(req.query.lead, DEFAULT_ORDER_PARAMS.leadDays),
+    safetyDays: num(req.query.safety, DEFAULT_ORDER_PARAMS.safetyDays),
+  };
+  const { items: _items, ...info } = sales;
+  res.json({ sales: info, params, lines: proposeOrder(store.getCatalog(req.params.id), sales, params) });
+});
+
+app.post('/api/pharmacies/:id/order-proposal/export', (req, res) => {
+  if (!requirePharmacyOrOwner(req, res, req.params.id)) return;
+  const { lines, format } = req.body as { lines?: Array<{ label?: unknown; cip?: unknown; quantity?: unknown }>; format?: string };
+  const clean = (Array.isArray(lines) ? lines : []).slice(0, 2000).map((l) => ({
+    label: String(l.label ?? '').slice(0, 200), cip: l.cip ? String(l.cip).slice(0, 20) : undefined, quantity: Math.max(0, Math.round(Number(l.quantity) || 0)),
+  })).filter((l) => l.label && l.quantity > 0);
+  if (!clean.length) { res.status(400).json({ error: 'Panier vide.' }); return; }
+  const fmt = format === 'csv' ? 'csv' : 'xlsx';
+  const day = new Date().toISOString().slice(0, 10);
+  res.setHeader('Content-Type', fmt === 'csv' ? 'text/csv; charset=utf-8' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="commande-${day}.${fmt}"`);
+  res.send(orderFile(clean, fmt));
+});
+
 app.delete('/api/pharmacies/:id/catalog', (req, res) => {
   if (!requireOwner(req, res)) return;
   store.clearCatalog(req.params.id);
@@ -765,11 +814,13 @@ app.post('/api/drafts/:draftId/lines/:index/match', (req, res) => {
     const fromCatalog = productId ? store.getCatalog(draft.pharmacyId).find((p) => p.id === productId) : undefined;
     const label = fromCatalog?.erpLabel ?? erpLabel?.trim();
     if (!label) { res.status(400).json({ error: 'productId ou erpLabel requis.' }); return; }
+    // Prix de la fiche AVANT mémorisation : l'écart éventuel reste visible jusqu'à l'approbation
+    const reference = fromCatalog ? { purchase: fromCatalog.purchasePriceFCFA, sale: fromCatalog.salePriceFCFA, stock: fromCatalog.stockQty } : undefined;
     const product = store.learnMatch({
       pharmacyId: draft.pharmacyId, supplier: draft.extractedData.supplierOrOrg, rawLabel: line.designation,
       productId: fromCatalog?.id, erpLabel: label, purchasePriceFCFA: line.unitPriceFCFA, salePriceFCFA: line.salePriceFCFA, cip: line.cip,
     });
-    line.match = { status: 'confirmed', method: 'manual', score: 1, productId: product.id, erpLabel: product.erpLabel, candidates: prev.candidates };
+    line.match = { status: 'confirmed', method: 'manual', score: 1, productId: product.id, erpLabel: product.erpLabel, candidates: prev.candidates, reference };
   }
   store.updateDraftItems(draft.id, draft.extractedData.lineItems);
   res.json({ draft: store.getDraft(draft.id) });
@@ -845,8 +896,8 @@ app.get('/api/drafts/:draftId/download', (req, res) => {
 // ─── Agent IA : extraction document (image ou PDF) ───────
 
 app.post('/api/agent/extract', async (req, res) => {
-  const { pharmacyId, imageBase64, sampleAssetPath, documentHint, taskPrompt, zoomBase64 } = req.body as {
-    pharmacyId?: string; imageBase64?: string; sampleAssetPath?: string; documentHint?: DocumentCategory; taskPrompt?: string; zoomBase64?: unknown;
+  const { pharmacyId, imageBase64, sampleAssetPath, documentHint, taskPrompt, zoomBase64, fileName } = req.body as {
+    pharmacyId?: string; imageBase64?: string; sampleAssetPath?: string; documentHint?: DocumentCategory; taskPrompt?: string; zoomBase64?: unknown; fileName?: string;
   };
 
   const owner = getOwnerSession(req);
@@ -865,8 +916,10 @@ app.post('/api/agent/extract', async (req, res) => {
   } catch (err: unknown) {
     res.status(400).json({ error: err instanceof Error ? err.message : 'Document invalide.' }); return;
   }
-  if (!/^(image\/(jpeg|png|webp)|application\/pdf)$/.test(resolved.mimeType)) {
-    res.status(400).json({ error: 'Format non pris en charge : utilisez une photo (JPG, PNG) ou un PDF.' }); return;
+  // Tableur reconnu par son type ou son extension (certains navigateurs envoient application/octet-stream)
+  const isSheet = SHEET_MIME.test(resolved.mimeType) || /\.(csv|xlsx|xls|ods)$/i.test(fileName ?? '');
+  if (!isSheet && !/^(image\/(jpeg|png|webp)|application\/pdf)$/.test(resolved.mimeType)) {
+    res.status(400).json({ error: 'Format non pris en charge : PDF, Excel, CSV, ou photo (JPG, PNG).' }); return;
   }
 
   // Agrandissements facultatifs d'une photo (faits par le téléphone) : au plus 2, images uniquement
@@ -892,9 +945,21 @@ app.post('/api/agent/extract', async (req, res) => {
   (async () => {
     try {
       const params = { imageBase64: resolved.base64, mimeType: resolved.mimeType, documentHint: category, taskPrompt, zooms };
-      const extraction = await extractDocument(params);
+      let extraction: { data: ExtractedDocumentData; tokensConsumed: number } | undefined;
+      if (isSheet) {
+        // Fichier du grossiste : lu tel quel (exact). Colonnes non reconnues : l'IA lit le texte du tableau
+        const buf = Buffer.from(resolved.base64, 'base64');
+        const direct = sheetToDelivery(buf, fileName);
+        if (direct?.lineItems.length) extraction = { data: direct, tokensConsumed: 0 };
+        else {
+          const wb = readWorkbook(buf);
+          const text = wb.SheetNames.map((n) => XLSX.utils.sheet_to_csv(wb.Sheets[n], { FS: ';' })).join('\n').slice(0, 150_000);
+          extraction = await extractDocument({ ...params, imageBase64: text, mimeType: 'text/plain', zooms: [] });
+        }
+      }
+      extraction ??= await extractDocument(params);
       // Total absent ou qui ne recoupe pas les lignes : une seconde lecture plus attentive, gardée si elle est cohérente
-      if (needsSecondLook(extraction.data)) {
+      if (!isSheet && needsSecondLook(extraction.data)) {
         try {
           const second = await extractDocument({ ...params, effort: SECOND_LOOK_EFFORT });
           extraction.tokensConsumed += second.tokensConsumed;
@@ -902,6 +967,7 @@ app.post('/api/agent/extract', async (req, res) => {
         } catch { /* la première lecture reste valable */ }
       }
       const data = extraction.data;
+      data.source = isSheet ? 'fichier' : resolved.mimeType === 'application/pdf' ? 'pdf' : 'photo';
       data.lineItems = (data.lineItems ?? []).filter((l) => l.designation?.trim());
       const matched = await matchDocumentLines(effPharmacyId, data);
       data.lineItems = matched.lines;

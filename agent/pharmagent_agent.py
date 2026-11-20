@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-AGENT_VERSION = "2.2.4"
+AGENT_VERSION = "2.2.5"
 DEFAULT_SERVER = "https://pharmagent.onrender.com"
 PANEL_PORT = int(os.environ.get("PHARMAGENT_PORT", "8765"))
 POLL_SECONDS = float(os.environ.get("PHARMAGENT_POLL", "5"))
@@ -152,6 +152,8 @@ FORBIDDEN = [
     r"\bvalid(er|ation|ez)\b", r"\bd[ée]finitiv", r"\bcl[oô]tur", r"\bcomptabilis", r"\bencaiss",
     r"\bconfirm(er|ation|ez)?\b", r"\bsoumettre\b", r"\bfinali[sz]", r"\bsubmit\b", r"\bcommit\b",
     r"\bpost(er)?\b", r"\benvoyer\b", r"\bvalidate\b", r"\bconfirm\b",
+    # Site du grossiste : le panier est préparé, la commande n'est jamais passée par l'agent
+    r"\bcommander\b", r"passer (la |ma )?commande", r"\bpayer\b", r"\bpaiement\b", r"\bcheckout\b", r"\bplace order\b", r"\bacheter\b",
 ]
 _FORBIDDEN_RE = re.compile("|".join(FORBIDDEN), re.I)
 

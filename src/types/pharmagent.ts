@@ -136,7 +136,7 @@ export interface CatalogProduct {
   updatedAt: string;
 }
 
-export type MatchMethod = 'cip' | 'memory' | 'score' | 'ai' | 'manual' | 'none';
+export type MatchMethod = 'cip' | 'memory' | 'score' | 'price' | 'ai' | 'manual' | 'none';
 export type MatchStatus = 'auto' | 'to_review' | 'confirmed' | 'new_product';
 
 export interface MatchCandidate {
@@ -152,12 +152,16 @@ export interface ProductMatch {
   productId?: string;
   erpLabel?: string;            // ce que l'agent tape/sélectionne dans l'ERP
   candidates: MatchCandidate[];
+  /** Fiche du produit dans la pharmacie au moment du rapprochement : sert au contrôle d'écart de prix. */
+  reference?: { purchase?: number; sale?: number; stock?: number };
 }
 
 export interface ExtractedDocumentData {
   documentType: ReadDocumentType;
   documentCount?: number;        // documents distincts sur la même photo
   photoQuality?: PhotoQuality;
+  /** Origine : fichier du grossiste (exact), PDF, ou photo (dernier recours). */
+  source?: 'fichier' | 'pdf' | 'photo';
   documentNumber: string;
   supplierOrOrg: string;
   recipientPharmacy: string;

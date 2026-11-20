@@ -2,6 +2,7 @@
 // PharmAgent — Persistance (mémoire + fichier JSON + Postgres optionnel)
 // ============================================================
 
+import type { SalesSummary } from './orders.ts';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -90,6 +91,7 @@ interface Database {
   learnedMemory: AgentLearnedMemory;
   catalog: CatalogProduct[];
   agentProfiles: AgentProfile[];
+  sales: SalesSummary[];
   authSecret: string;
 }
 
@@ -162,6 +164,7 @@ function initialDatabase(): Database {
     },
     catalog: [],
     agentProfiles: [],
+    sales: [],
     authSecret: process.env.PHARMAGENT_AUTH_SECRET ?? generateSecret(32),
   };
 }
@@ -271,6 +274,7 @@ class PharmAgentStore {
       },
       catalog: parsed.catalog ?? [],
       agentProfiles: parsed.agentProfiles ?? [],
+      sales: parsed.sales ?? [],
       authSecret: parsed.authSecret ?? def.authSecret,
     };
   }
@@ -749,6 +753,17 @@ class PharmAgentStore {
   }
 
   // ── Catalogue produits ───────────────────────────────
+
+  // ── Journal des ventes (dernier import par pharmacie) ──
+
+  getSales(pharmacyId: string): SalesSummary | undefined {
+    return this.db.sales.find((x) => x.pharmacyId === pharmacyId);
+  }
+
+  setSales(summary: SalesSummary): void {
+    this.db.sales = [...this.db.sales.filter((x) => x.pharmacyId !== summary.pharmacyId), summary];
+    this.persist();
+  }
 
   getCatalog(pharmacyId: string): CatalogProduct[] {
     return this.db.catalog.filter((p) => p.pharmacyId === pharmacyId);

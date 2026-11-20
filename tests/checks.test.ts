@@ -108,3 +108,11 @@ test('seconde lecture : seulement si le total manque ou ne recoupe pas', async (
   assert.equal(needsSecondLook({ ...draft([], 0).extractedData, documentType: 'ordonnance' }), false);
   assert.equal(needsSecondLook({ ...draft([line({})], 0).extractedData, documentCount: 2 }), false);
 });
+
+test('photo moyenne avec lots : contrôle des lots sur les boîtes demandé ; fichier ou PDF : rien', () => {
+  const base = draft([line({ lotNumber: 'G123' })], 1000);
+  const as = (o: Partial<DraftRecord['extractedData']>) => ({ ...base, extractedData: { ...base.extractedData, ...o } });
+  assert.match(draftChecks(as({ source: 'photo', photoQuality: 'moyenne' }), TODAY).map((c) => c.text).join(), /contrôlez les n° de lot/);
+  assert.deepEqual(draftChecks(as({ source: 'pdf', photoQuality: 'moyenne' }), TODAY), []);
+  assert.deepEqual(draftChecks(as({ source: 'photo', photoQuality: 'bonne' }), TODAY), []);
+});

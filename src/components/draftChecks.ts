@@ -7,6 +7,8 @@ import type { DraftRecord } from '../types/pharmagent.ts';
 export interface DraftCheck { level: 'error' | 'warn'; text: string }
 
 const SHORT_EXPIRY_MONTHS = 6;
+/** Écart de prix accepté entre grossistes (au-delà : alerte). Même valeur que le rapprochement des produits. */
+export const PRICE_TOLERANCE = 0.10;
 const LOW_CONFIDENCE = 0.8;
 
 const fullYear = (y: string) => (y.length === 2 ? 2000 + Number(y) : Number(y));
@@ -91,6 +93,10 @@ export function draftChecks(draft: DraftRecord, today = new Date()): DraftCheck[
   const blocked = blockingReason(draft);
   if (blocked) return [{ level: 'error', text: blocked }];
 
+  // Photo moyenne : un caractère de lot ou de date peut être mal lu sans que rien ne permette de le recouper
+  if (data.source === 'photo' && data.photoQuality === 'moyenne' && lines.some((l) => l.lotNumber || l.expiryDate)) {
+    out.push({ level: 'warn', text: 'Photo de qualité moyenne : contrôlez les n° de lot et les péremptions sur les boîtes (ou importez le PDF ou un scan du bon).' });
+  }
   if (draft.duplicateOf) {
     out.push({ level: 'error', text: `Ce bon semble déjà importé le ${new Date(draft.duplicateOf.createdAt).toLocaleDateString('fr-FR')} (même fournisseur et même numéro) : risque de saisie en double.` });
   }
@@ -125,6 +131,15 @@ export function draftChecks(draft: DraftRecord, today = new Date()): DraftCheck[
     const exp = expiryEnd(l.expiryDate);
     if (exp && exp < today) out.push({ level: 'error', text: `${name} : produit périmé (${l.expiryDate}) ou date mal lue : vérifiez sur la boîte.` });
     else if (exp && exp < limit) out.push({ level: 'warn', text: `${name} : péremption courte (${l.expiryDate}), moins de ${SHORT_EXPIRY_MONTHS} mois.` });
+    // Écart avec la fiche de la pharmacie : au-delà de 10 %, hausse de prix réelle ou mauvais produit
+    const ref = l.match?.reference;
+    if (ref && l.match?.productId) {
+      const [mine, theirs, what] = ref.purchase && l.unitPriceFCFA > 0 ? [l.unitPriceFCFA, ref.purchase, "prix d'achat"] : [l.salePriceFCFA ?? 0, ref.sale ?? 0, 'prix public'];
+      if (mine > 0 && theirs > 0 && Math.abs(mine - theirs) / theirs > PRICE_TOLERANCE) {
+        const pct = Math.round(((mine - theirs) / theirs) * 100);
+        out.push({ level: 'warn', text: `${name} : ${what} ${money(mine, cur)}, fiche de la pharmacie ${money(theirs, cur)} (${pct > 0 ? '+' : ''}${pct} %) : hausse de prix ou mauvais produit ?` });
+      }
+    }
     if (l.match?.status === 'new_product') {
       out.push({ level: 'warn', text: `${name} : nouveau produit, l'agent ne le saisira pas. Créez-le d'abord dans votre logiciel, puis saisissez cette ligne à la main.` });
     }

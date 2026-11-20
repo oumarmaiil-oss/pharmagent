@@ -41,6 +41,9 @@ function friendlyError(err: unknown): Error {
 type ImageType = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
 
 function documentBlock(mimeType: string, data: string): Anthropic.ContentBlockParam {
+  if (mimeType === 'text/plain') {
+    return { type: 'document', source: { type: 'text', media_type: 'text/plain', data }, title: 'Fichier du grossiste (tableau)' };
+  }
   if (mimeType === 'application/pdf') {
     return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data } };
   }

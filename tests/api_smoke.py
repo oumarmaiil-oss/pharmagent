@@ -1,6 +1,6 @@
 """Serveur réel sans clé d'IA : connexions, quotas, accès entre officines, sauvegarde, téléchargements.
 Prérequis : npm run build (le serveur sert dist/)."""
-import json
+import base64, json
 import os
 import pathlib
 import subprocess
@@ -111,6 +111,40 @@ try:
     call("POST", "/api/owner/restore", {"data": backup}, owner)
     body, status, _ = call("POST", "/api/drafts/dr-avoir-test/approve", {}, owner)
     check("un avoir (quantités négatives) n'est jamais envoyé à l'agent", status == 400 and "Avoir" in body.get("error", ""), body)
+
+    # Bon reçu en fichier (CSV du grossiste) : lu sans IA, rapproché du catalogue, prix vérifiés
+    check("officine supprimée : catalogue refusé", call("POST", f"/api/pharmacies/{pb}/catalog/import", {"fileBase64": "AA=="}, owner)[1] == 404)
+    pb, cred_c = mk("ZZ C")
+    user_c = login(cred_c, "pharmacien", cred_c["password"])[0]["token"]
+    team_b = login(cred_c, "equipe", call("POST", "/api/pharmacy/team-account", {}, user_c)[0]["password"])[0]["token"]
+    b64 = lambda txt: base64.b64encode(txt.encode("utf-8")).decode()
+    catalog_csv = "Désignation;Code CIP;Prix achat;Stock\nDOLIPRANE 1000MG CP B/8;3400930000001;1.000;10\nAMOXICILLINE 500MG GELULE B/12;;2.100;0\n"
+    body, status, _ = call("POST", f"/api/pharmacies/{pb}/catalog/import", {"fileBase64": "data:text/csv;base64," + b64(catalog_csv)}, owner)
+    check("catalogue importé par le superviseur (prix « 1.000 » = 1000)", status == 200 and body.get("total") == 2, body)
+    bl_csv = "Fournisseur : LABOREX;;;\nN° BL;BL-77;;\nDésignation;Qté livrée;P.U.;Montant\nDOLIPRANE 1000MG CP B/8;20;1.250;25.000\nAMOXICILLINE 500MG GELULE B/12;10;2.100;21.000\n"
+    body, status, _ = call("POST", "/api/agent/extract", {"pharmacyId": pb, "imageBase64": "data:text/csv;base64," + b64(bl_csv), "fileName": "BL-77.csv"}, owner)
+    check("bon CSV accepté", status == 200, body)
+    for _ in range(40):
+        d = call("GET", f"/api/drafts/{body['draft']['id']}", token=owner)[0]["draft"]
+        if d["extractionStatus"] != "processing":
+            break
+        time.sleep(0.3)
+    L = d["extractedData"]["lineItems"]
+    check("bon CSV lu sans IA : lignes, quantités, prix exacts", d["extractionStatus"] == "ready" and [(l["quantity"], l["unitPriceFCFA"]) for l in L] == [(20, 1250), (10, 2100)]
+          and d["extractedData"]["documentNumber"] == "BL-77" and d["tokensConsumed"] == 0, d.get("extractionError") or L)
+    check("lignes rapprochées du catalogue avec son prix de référence", all(l["match"]["status"] == "auto" and l["match"].get("reference", {}).get("purchase") for l in L), [l.get("match") for l in L])
+
+    # Journal des ventes → proposition de commande → panier
+    sales_csv = "Date;Désignation;Qté vendue\n01/11/2026;DOLIPRANE 1000MG CP B/8;12\n10/11/2026;DOLIPRANE 1000MG CP B/8;8\n10/11/2026;AMOXICILLINE 500MG GELULE B/12;5\n"
+    check("journal des ventes : réservé au Pharmacien", call("POST", f"/api/pharmacies/{pb}/sales/import", {"fileBase64": b64(sales_csv)}, team_b)[1] == 403)
+    body, status, _ = call("POST", f"/api/pharmacies/{pb}/sales/import", {"fileBase64": b64(sales_csv), "fileName": "ventes.csv"}, owner)
+    check("journal des ventes importé, durée lue sur les dates", status == 200 and body["periodDays"] == 10 and body["products"] == 2, body)
+    prop = call("GET", f"/api/pharmacies/{pb}/order-proposal?cover=7&lead=1&safety=2", token=team_b)[0]
+    got = [(l["label"], l["proposed"], l["outOfStock"]) for l in prop["lines"]]
+    check("proposition : rupture en tête, besoin = ventes/j × 10 j − stock", got == [("AMOXICILLINE 500MG GELULE B/12", 5, True), ("DOLIPRANE 1000MG CP B/8", 10, False)], got)
+    data, status, headers = call("POST", f"/api/pharmacies/{pb}/order-proposal/export", {"format": "csv", "lines": [{"label": "DOLIPRANE 1000MG CP B/8", "cip": "3400930000001", "quantity": 10}]}, team_b, raw=True)
+    check("panier CSV téléchargé", status == 200 and "attachment" in headers.get("Content-Disposition", "") and b"3400930000001;DOLIPRANE 1000MG CP B/8;10" in data, data[:120])
+    check("proposition d'une autre officine refusée", call("GET", f"/api/pharmacies/{pa}/order-proposal", token=team_b)[1] == 403)
 
     data, status, headers = call("GET", "/install/mac.zip", raw=True)
     check("installeur Mac (zip)", status == 200 and data[:2] == b"PK" and b"PharmAgent-Mac.command" in data)

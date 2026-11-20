@@ -6,6 +6,7 @@ import GuideCenter from './components/GuideCenter.tsx';
 import Layout from './components/Layout.tsx';
 import LoginScreen from './components/LoginScreen.tsx';
 import PharmacistWorkspace from './components/PharmacistWorkspace.tsx';
+import OrderPlanner from './components/OrderPlanner.tsx';
 import PharmacyAccount from './components/PharmacyAccount.tsx';
 import PharmacyManagement from './components/PharmacyManagement.tsx';
 import SupervisionDashboard from './components/SupervisionDashboard.tsx';
@@ -21,6 +22,7 @@ export type AppTab =
   | 'audit'
   | 'deployment'
   | 'account'
+  | 'orders'
   | 'guide';
 
 export interface PharmacySession {
@@ -33,11 +35,11 @@ export type SessionState =
   | { kind: 'owner'; token: string; owner: OwnerAccount }
   | ({ kind: 'pharmacy'; token: string } & PharmacySession);
 
-const OWNER_TABS: AppTab[] = ['dashboard', 'workspace', 'pharmacies', 'training', 'grounding', 'audit', 'deployment', 'guide'];
+const OWNER_TABS: AppTab[] = ['dashboard', 'workspace', 'orders', 'pharmacies', 'training', 'grounding', 'audit', 'deployment', 'guide'];
 
 function tabsFor(s: SessionState): AppTab[] {
   if (s.kind === 'owner') return OWNER_TABS;
-  return s.user.profile === 'pharmacien' ? ['workspace', 'deployment', 'account', 'guide'] : ['workspace', 'account', 'guide'];
+  return s.user.profile === 'pharmacien' ? ['workspace', 'orders', 'deployment', 'account', 'guide'] : ['workspace', 'orders', 'account', 'guide'];
 }
 
 const firstTab = (s: SessionState): AppTab => (s.kind === 'owner' ? 'dashboard' : 'workspace');
@@ -153,6 +155,10 @@ export default function App() {
       {session.kind === 'owner' && current === 'grounding' && <UIGrounding token={session.token} />}
       {session.kind === 'owner' && current === 'audit' && <AuditLog token={session.token} />}
       {current === 'workspace' && <PharmacistWorkspace {...commonProps} />}
+      {current === 'orders' && (
+        <OrderPlanner token={session.token} pharmacyId={session.kind === 'pharmacy' ? session.pharmacy.id : selectedPharmacyId}
+          canImport={session.kind === 'owner' || session.user.profile === 'pharmacien'} />
+      )}
       {current === 'deployment' && <AgentDeployment token={session.token} snapshot={snapshot} selectedPharmacyId={selectedPharmacyId} onSelectPharmacy={setSelectedPharmacyId} />}
       {session.kind === 'pharmacy' && current === 'account' && (
         <PharmacyAccount token={session.token} session={session} onTeamAccountCreated={() => saveSession({ ...session, teamAccount: true })} />

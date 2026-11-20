@@ -112,7 +112,8 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
     e.target.value = '';
     if (!file) return;
     if (file.size > MAX_BYTES) { setError('Fichier trop lourd (20 Mo maximum).'); return; }
-    const isPdf = file.type === 'application/pdf';
+    // PDF, Excel, CSV : envoyés tels quels (lecture exacte) ; seule une photo est réduite et agrandie
+    const isPdf = !file.type.startsWith('image/') || /\.(pdf|csv|xlsx|xls|ods)$/i.test(file.name);
     // Photo réduite sur le téléphone : envoi plus rapide, et sous la limite de 5 Mo de l'IA
     const dataUrl = (!isPdf && await shrinkImage(file)) || await readAsDataUrl(file);
     const zooms = isPdf ? [] : await zoomTiles(file);
@@ -128,7 +129,7 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
     let polling = false;
     try {
       const body: Record<string, unknown> = { pharmacyId: selectedPharmacyId, documentHint: docType, taskPrompt: taskPrompt || undefined };
-      if (doc) { body.imageBase64 = doc.dataUrl; if (doc.zooms?.length) body.zoomBase64 = doc.zooms; } else body.sampleAssetPath = samplePath;
+      if (doc) { body.imageBase64 = doc.dataUrl; body.fileName = doc.name; if (doc.zooms?.length) body.zoomBase64 = doc.zooms; } else body.sampleAssetPath = samplePath;
       const r = await fetch('/api/agent/extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -229,16 +230,20 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
               ))}
             </div>
 
-            <div className="grid grid-cols-2 gap-2 mb-3">
-              <button onClick={() => cameraRef.current?.click()} className="flex items-center justify-center gap-2 text-sm font-medium bg-emerald-600/90 hover:bg-emerald-500 text-white py-3 rounded-xl">
+            <div className="grid grid-cols-2 gap-2 mb-2">
+              <button onClick={() => fileRef.current?.click()} className="flex items-center justify-center gap-2 text-sm font-medium bg-emerald-600/90 hover:bg-emerald-500 text-white py-3 rounded-xl">
+                <Upload size={17} /> Fichier ou scan
+              </button>
+              <button onClick={() => cameraRef.current?.click()} className="flex items-center justify-center gap-2 text-sm font-medium bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 py-3 rounded-xl">
                 <Camera size={17} /> Photo
               </button>
-              <button onClick={() => fileRef.current?.click()} className="flex items-center justify-center gap-2 text-sm font-medium bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 py-3 rounded-xl">
-                <Upload size={17} /> Image ou PDF
-              </button>
-              <input ref={fileRef} type="file" accept="image/*,application/pdf" className="hidden" onChange={handleFile} />
+              <input ref={fileRef} type="file" accept="application/pdf,.pdf,.xlsx,.xls,.ods,.csv,image/*" className="hidden" onChange={handleFile} />
               <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleFile} />
             </div>
+            <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">
+              Le plus fiable : le <b>fichier du grossiste</b> (PDF, Excel, CSV reçu par mail). Bon en papier : <b>numérisez-le</b>
+              {' '}(iPhone : Notes › Numériser des documents ; Android : Google Drive › Numériser) et importez le PDF. La photo est le dernier recours.
+            </p>
 
             {preview ? (
               <div className="relative rounded-xl overflow-hidden border border-slate-700 mb-3">
@@ -253,7 +258,7 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
               </div>
             ) : (
               <div className="border-2 border-dashed border-slate-700 rounded-xl p-6 text-center text-slate-500 text-xs mb-3">
-                Photographiez le bon à plat, bien éclairé, en entier.
+                Aucun document choisi.
               </div>
             )}
 
