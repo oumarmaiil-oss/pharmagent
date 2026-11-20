@@ -114,7 +114,9 @@ export function proposeOrder(catalog: CatalogProduct[], sales: SalesSummary, p: 
 
 /** Panier à déposer sur le site du grossiste (import de commande) ou à envoyer par mail. */
 export function orderFile(lines: Array<{ label: string; cip?: string; quantity: number }>, format: 'xlsx' | 'csv'): Buffer {
-  const rows = lines.filter((l) => l.quantity > 0).map((l) => ({ 'Code CIP': l.cip ?? '', 'Désignation': l.label, 'Quantité': l.quantity }));
+  // Un libellé commençant par = + - @ serait exécuté comme formule à l'ouverture dans Excel : on le neutralise
+  const cell = (v: string) => (/^[=+\-@\t\r]/.test(v) ? `'${v}` : v);
+  const rows = lines.filter((l) => l.quantity > 0).map((l) => ({ 'Code CIP': cell(l.cip ?? ''), 'Désignation': cell(l.label), 'Quantité': l.quantity }));
   const ws = XLSX.utils.json_to_sheet(rows, { header: ['Code CIP', 'Désignation', 'Quantité'] });
   if (format === 'csv') return Buffer.from('﻿' + XLSX.utils.sheet_to_csv(ws, { FS: ';' }), 'utf-8');
   ws['!cols'] = [{ wch: 14 }, { wch: 45 }, { wch: 10 }];

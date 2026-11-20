@@ -76,3 +76,13 @@ test('refuse un fichier sans intitulés reconnus', async () => {
   const buf = Buffer.from(await wb.xlsx.writeBuffer() as ArrayBuffer);
   await assert.rejects(fillWorkbook(buf, { supplier: '', documentNumber: '', documentDate: '' }, LINES), /intitulés/);
 });
+
+test('ancien format Excel 97-2003 (.xls) converti puis rempli', async () => {
+  const XLSX = await import('xlsx');
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Désignation', 'Quantité', 'Lot', 'Péremption', 'Prix achat']]), 'BL');
+  const xls = XLSX.write(wb, { type: 'buffer', bookType: 'biff8' }) as Buffer;
+  const { report } = await fillWorkbook(xls, { supplier: '', documentNumber: '', documentDate: '' }, LINES);
+  assert.equal(report.converted, 'xls');
+  assert.equal(report.linesWritten, 2);
+});

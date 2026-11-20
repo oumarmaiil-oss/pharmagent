@@ -34,6 +34,11 @@ test('proposition : ventes/jour × (couverture + délai + sécurité) − stock,
   assert.equal(lines[1].daysLeft, 5);
 });
 
+test('panier CSV : un libellé piégé ne devient pas une formule Excel', () => {
+  const csv = orderFile([{ label: '=HYPERLINK("http://x")', cip: '+33', quantity: 1 }], 'csv').toString('utf-8');
+  assert.match(csv, /'\+33;"?'=HYPERLINK/);
+});
+
 test('panier exporté en CSV (Excel français) et Excel', () => {
   const csv = orderFile([{ label: 'DOLIPRANE 1000MG', cip: '123', quantity: 10 }, { label: 'X', quantity: 0 }], 'csv').toString('utf-8');
   assert.equal(csv, '﻿Code CIP;Désignation;Quantité\n123;DOLIPRANE 1000MG;10');

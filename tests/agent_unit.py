@@ -120,4 +120,8 @@ for label in ("Valider", "Confirmer la réception", "Clôturer", "Commander", "P
 for label in ("Ajouter au panier", "Enregistrer le brouillon", "Commandes", "Quantité", "Rechercher"):
     check(f"garde-fou laisse passer « {label} »", not A.forbidden_text(label))
 
+# Injection de touches : un texte lu sur un bon ne doit jamais taper Entrée ou Tab dans l'ERP
+check("saut de ligne et tabulation neutralisés", A.format_value("product", "DOLI\nPRANE\t1000\r\n", None) == "DOLI PRANE 1000", A.format_value("product", "DOLI\nPRANE\t1000\r\n", None))
+check("mise à jour refusée sans HTTPS", A.self_update("http://pirate.example") is None)
+
 check.exit()

@@ -88,8 +88,8 @@ export default function GuideCenter({ standalone = false }: { standalone?: boole
               <Step n={1} title="Installer l'agent">
                 <p><b>Windows :</b> sur ce PC, ouvrez <K>{site}/install/windows</K> : le fichier <b>PharmAgent-Installer.bat</b> se télécharge. Double-cliquez dessus.</p>
                 <p className="text-slate-400">Si Windows affiche « Windows a protégé votre ordinateur » : <b>Informations complémentaires</b> › <b>Exécuter quand même</b>. Si le navigateur bloque le téléchargement : <b>Conserver</b>.</p>
-                <p><b>Mac :</b> sur ce Mac, ouvrez <K>{site}/install/mac.zip</K> : ouvrez le fichier téléchargé, puis double-cliquez sur <b>PharmAgent-Mac.command</b> (la première fois : clic droit › Ouvrir). Le Terminal s'ouvre et installe tout seul : laissez-le ouvert, réduisez-le.</p>
-                <p className="text-slate-400">Ensuite, l'application <b>PharmAgent</b> (dossier Applications) relance tout par un double-clic. Autre méthode, dans le Terminal : <K>curl -fsSL {site}/install/install.sh | bash</K></p>
+                <p><b>Mac :</b> sur ce Mac, ouvrez <K>{site}/install/mac.zip</K>, ouvrez le fichier téléchargé, puis double-cliquez sur l'application <b>Installer PharmAgent</b> (la première fois : clic droit › Ouvrir). Des fenêtres vous guident, rien à taper.</p>
+                <p className="text-slate-400">Pas à pas détaillé (Mac, Windows, Linux) et dépannage : section <b>Installation détaillée</b> plus bas.</p>
                 <p className="text-slate-400">Aucun droit administrateur, rien d'autre à installer : Python est géré automatiquement (1 à 3 minutes selon la connexion).</p>
               </Step>
               <Step n={2} title="Relier l'ordinateur à l'officine">
@@ -112,6 +112,37 @@ export default function GuideCenter({ standalone = false }: { standalone?: boole
               </Step>
               <Step n={6} title="C'est prêt">
                 <p>Une icône <b>PharmAgent</b> est sur le Bureau (ou dans Applications sur Mac) et l'agent démarre avec l'ordinateur. Dans votre onglet <b>Agent local</b>, l'officine apparaît <b>En ligne</b>.</p>
+              </Step>
+            </Block>
+
+            <Block icon={<Laptop size={20} />} title="Installation détaillée de l'agent" who="Pour l'ordinateur où le logiciel de la pharmacie est utilisé · aucun droit administrateur">
+              <Step n="Win" title="Windows 10 et 11">
+                <p>1. Dans le navigateur de ce PC, ouvrez <K>{site}/install/windows</K>. Le fichier <b>PharmAgent-Installer.bat</b> se télécharge. Si le navigateur hésite : <b>Conserver</b>.</p>
+                <p>2. Ouvrez le dossier <b>Téléchargements</b> et double-cliquez sur <b>PharmAgent-Installer.bat</b>.</p>
+                <p>3. Si Windows affiche « Windows a protégé votre ordinateur » : cliquez <b>Informations complémentaires</b>, puis <b>Exécuter quand même</b> (l'installeur n'est pas encore signé par un éditeur).</p>
+                <p>4. Une fenêtre noire affiche la progression : <b>ne tapez rien</b>, attendez « Terminé » (1 à 3 minutes). Python et le reste s'installent tout seuls.</p>
+                <p>5. Le panneau PharmAgent s'ouvre dans le navigateur avec un <b>code à 6 chiffres</b>. Une icône <b>PharmAgent</b> est créée sur le Bureau et l'agent démarre avec Windows.</p>
+              </Step>
+              <Step n="Mac" title="macOS (10.15 et plus récent)">
+                <p>1. Dans Safari ou Chrome, ouvrez <K>{site}/install/mac.zip</K>. Safari ouvre le zip tout seul ; sinon, double-cliquez sur <b>PharmAgent-Mac.zip</b> dans Téléchargements.</p>
+                <p>2. Faites un <b>clic droit</b> (ou Ctrl + clic) sur <b>Installer PharmAgent</b> › <b>Ouvrir</b> › <b>Ouvrir</b>. Ce n'est nécessaire que la première fois.</p>
+                <p className="text-slate-400">Si le Mac refuse (« impossible de vérifier le développeur ») : menu Pomme › <b>Réglages Système</b> › <b>Confidentialité et sécurité</b> › en bas, <b>Ouvrir quand même</b>.</p>
+                <p>3. Cliquez <b>Installer</b>. Des notifications indiquent les étapes (1 à 3 minutes). Rien à taper.</p>
+                <p>4. Cliquez <b>Lancer PharmAgent</b>. Une fenêtre Terminal s'ouvre : c'est l'agent. <b>Réduisez-la, ne la fermez pas.</b></p>
+                <p>5. Le Mac demande deux autorisations pour le clavier : <b>Accessibilité</b> et <b>Surveillance de l'entrée</b>. Dans Réglages Système › Confidentialité et sécurité, activez <b>Terminal</b> dans les deux listes, puis relancez l'application <b>PharmAgent</b> (dossier Applications).</p>
+                <p>6. Les fois suivantes : double-clic sur l'application <b>PharmAgent</b> (Launchpad ou Applications). Elle démarre aussi toute seule à l'ouverture de session.</p>
+              </Step>
+              <Step n="Linux" title="Linux (Ubuntu, Debian, Mint…)">
+                <p>1. Ouvrez le Terminal (Ctrl + Alt + T), collez cette ligne puis Entrée : <K>curl -fsSL {site}/install/install.sh | bash</K></p>
+                <p>2. Attendez la fin (1 à 3 minutes). Le panneau s'ouvre dans le navigateur. L'agent est ajouté au menu des applications et au démarrage automatique.</p>
+                <p className="text-slate-400">Linux est réservé aux ERP web : la saisie au clavier dans un logiciel installé est prise en charge sur Windows et Mac.</p>
+              </Step>
+              <Step n="?" title="Si quelque chose bloque">
+                <p><b>« Serveur injoignable »</b> : vérifiez Internet, puis ouvrez <K>{site}</K> dans le navigateur. La version gratuite met jusqu'à une minute à se réveiller : réessayez ensuite.</p>
+                <p><b>Le code à 6 chiffres n'apparaît pas</b> : ouvrez <K>http://127.0.0.1:8765</K> dans le navigateur de cet ordinateur.</p>
+                <p><b>Réinstaller ou mettre à jour</b> : relancez simplement l'installeur. L'ancienne version est arrêtée et remplacée, les réglages sont gardés. L'agent se met aussi à jour tout seul.</p>
+                <p><b>Journal d'installation</b> (à envoyer au support) — Mac : Bibliothèque › Logs › <b>PharmAgent-installation.log</b> (l'installeur propose « Voir le journal ») ; Windows : photo de la fenêtre noire.</p>
+                <p><b>Désinstaller</b> — Windows : supprimez le dossier <K>%LOCALAPPDATA%\PharmAgent</K> et les raccourcis PharmAgent (Bureau, Démarrage). Mac : supprimez <b>PharmAgent</b> dans Applications et le dossier Bibliothèque › Application Support › PharmAgent.</p>
               </Step>
             </Block>
           </div>

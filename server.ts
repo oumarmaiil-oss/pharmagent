@@ -18,7 +18,7 @@ import {
 } from './src/server/aiAgent.ts';
 import { fillWorkbook, FIELD_LABELS } from './src/server/excelFill.ts';
 import { matchColumn, type ColumnField } from './src/server/vocabulary.ts';
-import { parseAmount, readWorkbook, SHEET_MIME, sheetToDelivery } from './src/server/sheetDocument.ts';
+import { parseAmount, readWorkbook, SHEET_MIME, sheetImages, sheetToDelivery } from './src/server/sheetDocument.ts';
 import { DEFAULT_ORDER_PARAMS, orderFile, parseSalesJournal, proposeOrder, type OrderParams, type SalesSummary } from './src/server/orders.ts';
 import { blockingReason, needsSecondLook } from './src/components/draftChecks.ts';
 import { checkTextSafety } from './src/server/guardrail.ts';
@@ -50,6 +50,16 @@ app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=()');
+  if (process.env.NODE_ENV === 'production') {
+    // Le navigateur n'exécute que le code servi par PharmAgent : une injection de script éventuelle reste inerte
+    res.setHeader('Content-Security-Policy', [
+      "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "font-src 'self' https://fonts.gstatic.com", "img-src 'self' data: blob:", "connect-src 'self'", "worker-src 'self'",
+      "manifest-src 'self'", "frame-ancestors 'none'", "base-uri 'self'", "form-action 'self'", "object-src 'none'",
+    ].join('; '));
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+  }
   next();
 });
 app.use(express.json({ limit: '30mb' }));
@@ -83,9 +93,7 @@ function clearFailures(req: express.Request, scope: string): void {
 
 function extractToken(req: express.Request): string | undefined {
   const auth = req.headers.authorization;
-  if (auth?.startsWith('Bearer ')) return auth.slice(7);
-  if (typeof req.query.token === 'string') return req.query.token;
-  return undefined;
+  return auth?.startsWith('Bearer ') ? auth.slice(7) : undefined;
 }
 
 function getOwnerSession(req: express.Request) {
@@ -290,29 +298,34 @@ function parseCatalogFile(base64: string): { rows: CatalogRowInput[]; columns: P
 
 // ─── Tâche transmise à l'agent local ─────────────────────
 
+/** Texte tapé par l'agent : jamais de saut de ligne ni de tabulation (= touches Entrée/Tab, qui pourraient valider). */
+const typed = (v: unknown, max = 200): string =>
+  String(v ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/\s{2,}/g, ' ').trim().slice(0, max);
+const typedNum = (v: unknown): number | '' => (typeof v === 'number' && Number.isFinite(v) ? v : '');
+
 function buildTaskPayload(draft: DraftRecord) {
   const d = draft.extractedData;
   return {
     id: draft.id,
     attempt: draft.execution?.attempts ?? 1,
     header: {
-      supplier: d.supplierOrOrg,
-      documentNumber: d.documentNumber,
-      documentDate: toIsoDate(d.documentDate) ?? d.documentDate,
-      totalAmount: d.totalAmountFCFA,
+      supplier: typed(d.supplierOrOrg),
+      documentNumber: typed(d.documentNumber, 60),
+      documentDate: typed(toIsoDate(d.documentDate) ?? d.documentDate, 20),
+      totalAmount: typedNum(d.totalAmountFCFA),
     },
     lines: d.lineItems.map((l, index) => ({
       index,
-      product: l.match?.erpLabel ?? l.designation,
-      cip: l.cip ?? '',
-      designation: l.designation,
+      product: typed(l.match?.erpLabel ?? l.designation),
+      cip: typed(l.cip, 20),
+      designation: typed(l.designation),
       quantity: l.quantity,
-      lotNumber: l.lotNumber ?? '',
-      expiryDate: toIsoDate(l.expiryDate) ?? l.expiryDate ?? '',
+      lotNumber: typed(l.lotNumber, 40),
+      expiryDate: typed(toIsoDate(l.expiryDate) ?? l.expiryDate, 20),
       purchasePrice: l.unitPriceFCFA,
-      salePrice: l.salePriceFCFA ?? '',
-      freeUnits: l.freeUnits || '',
-      lineTotal: l.lineTotal ?? l.quantity * l.unitPriceFCFA,
+      salePrice: typedNum(l.salePriceFCFA),
+      freeUnits: l.freeUnits ? typedNum(l.freeUnits) : '',
+      lineTotal: typedNum(l.lineTotal ?? l.quantity * l.unitPriceFCFA),
       skip: l.match?.status === 'new_product' ? "Nouveau produit : à créer d'abord dans l'ERP." : undefined,
     })),
   };
@@ -511,20 +524,6 @@ app.patch('/api/pharmacies/:id/subscription', (req, res) => {
   if (!['trial', 'standard', 'premium', 'suspended'].includes(plan)) { res.status(400).json({ error: 'Formule inconnue.' }); return; }
   store.updatePharmacySubscription(req.params.id, plan as 'trial', quota);
   res.json({ ok: true });
-});
-
-app.post('/api/pharmacies/:id/auth/login', (req, res) => {
-  if (rateLimited(req, res, 'login')) return;
-  const { loginId, password } = req.body as { loginId?: string; password?: string };
-  if (!loginId || !password) { res.status(400).json({ error: 'Identifiant et mot de passe requis.' }); return; }
-  const token = store.loginPharmacyUser(req.params.id, loginId, password);
-  if (!token) {
-    recordFailure(req, 'login');
-    res.status(401).json({ error: 'Identifiant ou mot de passe incorrect.' });
-    return;
-  }
-  clearFailures(req, 'login');
-  res.json({ token, user: store.verifyPharmacyUserToken(token) });
 });
 
 app.get('/api/pharmacies/:id/users', (req, res) => {
@@ -826,6 +825,25 @@ app.post('/api/drafts/:draftId/lines/:index/match', (req, res) => {
   res.json({ draft: store.getDraft(draft.id) });
 });
 
+// Sans catalogue (ou produits absents du catalogue) : toutes les lignes « à vérifier » gardent le libellé du bon.
+// L'agent tapera ce libellé dans l'ERP et choisira le produit correspondant dans la liste, comme un humain.
+app.post('/api/drafts/:draftId/accept-labels', (req, res) => {
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
+  const actor = requirePharmacyOrOwner(req, res, draft.pharmacyId);
+  if (!actor) return;
+  if (draft.status !== 'pending') { res.status(400).json({ error: "Ce brouillon n'est plus en attente." }); return; }
+  let n = 0;
+  for (const line of draft.extractedData.lineItems) {
+    if (line.match?.status !== 'to_review') continue;
+    line.match = { status: 'confirmed', method: 'manual', score: 1, erpLabel: line.designation, candidates: line.match.candidates };
+    n++;
+  }
+  store.updateDraftItems(draft.id, draft.extractedData.lineItems);
+  store.addAuditLog({ pharmacyId: draft.pharmacyId, actorId: actor.actor.id, actorName: actor.displayName, action: `Brouillon ${draft.extractedData.documentNumber || draft.id} : ${n} libellé(s) du bon gardé(s) tels quels`, level: 'info' });
+  res.json({ draft: store.getDraft(draft.id) });
+});
+
 // Le pharmacien corrige une valeur lue sur le document (quantité, lot, prix…)
 app.patch('/api/drafts/:draftId/lines/:index', (req, res) => {
   const draft = store.getDraft(req.params.draftId);
@@ -918,8 +936,10 @@ app.post('/api/agent/extract', async (req, res) => {
   }
   // Tableur reconnu par son type ou son extension (certains navigateurs envoient application/octet-stream)
   const isSheet = SHEET_MIME.test(resolved.mimeType) || /\.(csv|xlsx|xls|ods)$/i.test(fileName ?? '');
-  if (!isSheet && !/^(image\/(jpeg|png|webp)|application\/pdf)$/.test(resolved.mimeType)) {
-    res.status(400).json({ error: 'Format non pris en charge : PDF, Excel, CSV, ou photo (JPG, PNG).' }); return;
+  if (!isSheet && !/^(image\/(jpeg|png|webp|gif)|application\/pdf)$/.test(resolved.mimeType)) {
+    res.status(400).json({ error: /heic|heif/i.test(resolved.mimeType)
+      ? "Photo iPhone au format HEIC : ouvrez-la puis exportez-la en JPEG, ou importez-la depuis Safari (conversion automatique)."
+      : 'Format non pris en charge : PDF, Excel, CSV, ou image (JPG, PNG, WEBP).' }); return;
   }
 
   // Agrandissements facultatifs d'une photo (faits par le téléphone) : au plus 2, images uniquement
@@ -950,8 +970,12 @@ app.post('/api/agent/extract', async (req, res) => {
         // Fichier du grossiste : lu tel quel (exact). Colonnes non reconnues : l'IA lit le texte du tableau
         const buf = Buffer.from(resolved.base64, 'base64');
         const direct = sheetToDelivery(buf, fileName);
+        const images = direct?.lineItems.length ? [] : await sheetImages(buf);
         if (direct?.lineItems.length) extraction = { data: direct, tokensConsumed: 0 };
-        else {
+        else if (images.length) {
+          // Classeur qui contient la photo ou le scan du bon : lu comme une photo (les autres images servent d'agrandissements)
+          extraction = await extractDocument({ ...params, imageBase64: images[0].base64, mimeType: images[0].mimeType, zooms: images.slice(1, 3) });
+        } else {
           const wb = readWorkbook(buf);
           const text = wb.SheetNames.map((n) => XLSX.utils.sheet_to_csv(wb.Sheets[n], { FS: ';' })).join('\n').slice(0, 150_000);
           extraction = await extractDocument({ ...params, imageBase64: text, mimeType: 'text/plain', zooms: [] });
@@ -967,7 +991,7 @@ app.post('/api/agent/extract', async (req, res) => {
         } catch { /* la première lecture reste valable */ }
       }
       const data = extraction.data;
-      data.source = isSheet ? 'fichier' : resolved.mimeType === 'application/pdf' ? 'pdf' : 'photo';
+      data.source = isSheet && extraction.tokensConsumed === 0 ? 'fichier' : resolved.mimeType === 'application/pdf' ? 'pdf' : 'photo';
       data.lineItems = (data.lineItems ?? []).filter((l) => l.designation?.trim());
       const matched = await matchDocumentLines(effPharmacyId, data);
       data.lineItems = matched.lines;
@@ -1147,23 +1171,35 @@ app.post('/api/agent-client/catalog', (req, res) => {
 // ─── Installation de l'agent (public : aucun secret dedans) ─
 
 // ZIP d'un seul fichier, avec le droit d'exécution : un .command téléchargé tel quel n'est pas exécutable sur Mac.
-function zipSingleFile(name: string, content: Buffer, mode = 0o755): Buffer {
-  const nameBuf = Buffer.from(name, 'utf-8');
-  const crc = zlib.crc32(content);
+// Zip sans compression avec droits Unix (exécutable conservé à l'ouverture sur Mac). Les dossiers finissent par « / ».
+function zipFiles(entries: Array<{ name: string; content?: Buffer; mode?: number }>): Buffer {
   const dosDate = ((2026 - 1980) << 9) | (1 << 5) | 1;
-  const local = Buffer.alloc(30);
-  local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(10, 4); local.writeUInt16LE(0x0800, 6);
-  local.writeUInt16LE(dosDate, 12); local.writeUInt32LE(crc, 14);
-  local.writeUInt32LE(content.length, 18); local.writeUInt32LE(content.length, 22); local.writeUInt16LE(nameBuf.length, 26);
-  const central = Buffer.alloc(46);
-  central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE((3 << 8) | 20, 4); central.writeUInt16LE(10, 6); central.writeUInt16LE(0x0800, 8);
-  central.writeUInt16LE(dosDate, 14); central.writeUInt32LE(crc, 16);
-  central.writeUInt32LE(content.length, 20); central.writeUInt32LE(content.length, 24); central.writeUInt16LE(nameBuf.length, 28);
-  central.writeUInt32LE(((0o100000 | mode) << 16) >>> 0, 38);
+  const locals: Buffer[] = []; const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const e of entries) {
+    const isDir = e.name.endsWith('/');
+    const content = isDir ? Buffer.alloc(0) : (e.content ?? Buffer.alloc(0));
+    const nameBuf = Buffer.from(e.name, 'utf-8');
+    const crc = zlib.crc32(content);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(10, 4); local.writeUInt16LE(0x0800, 6);
+    local.writeUInt16LE(dosDate, 12); local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(content.length, 18); local.writeUInt32LE(content.length, 22); local.writeUInt16LE(nameBuf.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE((3 << 8) | 20, 4); central.writeUInt16LE(10, 6); central.writeUInt16LE(0x0800, 8);
+    central.writeUInt16LE(dosDate, 14); central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(content.length, 20); central.writeUInt32LE(content.length, 24); central.writeUInt16LE(nameBuf.length, 28);
+    central.writeUInt32LE((((isDir ? 0o040000 : 0o100000) | (e.mode ?? (isDir ? 0o755 : 0o644))) << 16 | (isDir ? 0x10 : 0)) >>> 0, 38);
+    central.writeUInt32LE(offset, 42);
+    locals.push(local, nameBuf, content);
+    centrals.push(central, nameBuf);
+    offset += local.length + nameBuf.length + content.length;
+  }
+  const centralBuf = Buffer.concat(centrals);
   const end = Buffer.alloc(22);
-  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(1, 8); end.writeUInt16LE(1, 10);
-  end.writeUInt32LE(central.length + nameBuf.length, 12); end.writeUInt32LE(local.length + nameBuf.length + content.length, 16);
-  return Buffer.concat([local, nameBuf, content, central, nameBuf, end]);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralBuf.length, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, centralBuf, end]);
 }
 function agentFile(name: string): string {
   return fs.readFileSync(path.join(AGENT_DIR, name), 'utf-8');
@@ -1185,12 +1221,28 @@ app.get('/install/windows.ps1', (req, res) => {
   sendScript(res, agentFile('install.ps1').replaceAll('__SERVER_URL__', publicBaseUrl(req)), 'install.ps1', 'text/plain', true);
 });
 
+// Mac : une application « Installer PharmAgent » (double-clic, fenêtres de dialogue, aucun Terminal pendant l'installation)
 app.get('/install/mac.zip', (req, res) => {
-  const script = `#!/bin/bash\n# PharmAgent — installation et lancement (macOS)\ncurl -fsSL "${publicBaseUrl(req)}/install/install.sh" | bash\n`;
+  const app = 'Installer PharmAgent.app/Contents/';
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleExecutable</key><string>PharmAgent</string>
+  <key>CFBundleIdentifier</key><string>com.pharmagent.installer</string>
+  <key>CFBundleName</key><string>Installer PharmAgent</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>${agentFile('pharmagent_agent.py').match(/^AGENT_VERSION\s*=\s*"([^"]+)"/m)?.[1] ?? '1.0'}</string>
+  <key>LSMinimumSystemVersion</key><string>10.15</string>
+</dict></plist>
+`;
   res.setHeader('Content-Type', 'application/zip');
   res.setHeader('Content-Disposition', 'attachment; filename="PharmAgent-Mac.zip"');
   res.setHeader('Cache-Control', 'no-store');
-  res.send(zipSingleFile('PharmAgent-Mac.command', Buffer.from(script, 'utf-8')));
+  res.send(zipFiles([
+    { name: 'Installer PharmAgent.app/' }, { name: app }, { name: `${app}MacOS/` },
+    { name: `${app}Info.plist`, content: Buffer.from(plist, 'utf-8') },
+    { name: `${app}MacOS/PharmAgent`, content: Buffer.from(agentFile('mac-installer.sh').replaceAll('__SERVER_URL__', publicBaseUrl(req)), 'utf-8'), mode: 0o755 },
+  ]));
 });
 
 app.get('/install/mac', (req, res) => {

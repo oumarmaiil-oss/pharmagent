@@ -2,6 +2,7 @@
 // PharmAgent — Bon de livraison reçu en fichier (Excel, CSV, LibreOffice) : lu tel quel, sans IA
 // ============================================================
 
+import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
 import type { ExtractedDocumentData, ExtractedLineItem } from '../types/pharmagent.ts';
 import { HEADER_PATTERNS, matchColumn, normLabel, type ColumnField } from './vocabulary.ts';
@@ -17,6 +18,22 @@ export function readWorkbook(input: Buffer): XLSX.WorkBook {
   // CSV : cellules gardées en texte, sinon « 6.382 » (6 382 FCFA) deviendrait 6,382
   const isText = !(buf[0] === 0x50 && buf[1] === 0x4b) && !(buf[0] === 0xd0 && buf[1] === 0xcf);
   return XLSX.read(buf, { type: 'buffer', codepage: isUtf8 ? 65001 : 1252, cellDates: true, raw: isText });
+}
+
+/** Images collées dans un classeur Excel (bon photographié puis inséré dans Excel), la plus grande d'abord. */
+export async function sheetImages(buf: Buffer): Promise<Array<{ base64: string; mimeType: string }>> {
+  if (!(buf[0] === 0x50 && buf[1] === 0x4b)) return [];
+  try {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buf as unknown as ExcelJS.Buffer);
+    const mime: Record<string, string> = { png: 'image/png', jpeg: 'image/jpeg', jpg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
+    return (wb.model.media ?? [])
+      .filter((m) => m.type === 'image' && mime[String(m.extension).toLowerCase()] && m.buffer)
+      .sort((a, b) => Buffer.from(b.buffer as unknown as ArrayBuffer).length - Buffer.from(a.buffer as unknown as ArrayBuffer).length)
+      .map((m) => ({ base64: Buffer.from(m.buffer as unknown as ArrayBuffer).toString('base64'), mimeType: mime[String(m.extension).toLowerCase()] }));
+  } catch {
+    return [];  // .ods ou classeur illisible par ExcelJS : pas d'image exploitable
+  }
 }
 
 /** « 638.200 » (milliers FCFA), « 6 382 », « 1 234,50 », 6382 → nombre. */

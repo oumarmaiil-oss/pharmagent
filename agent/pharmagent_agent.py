@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-AGENT_VERSION = "2.2.5"
+AGENT_VERSION = "2.2.6"
 DEFAULT_SERVER = "https://pharmagent.onrender.com"
 PANEL_PORT = int(os.environ.get("PHARMAGENT_PORT", "8765"))
 POLL_SECONDS = float(os.environ.get("PHARMAGENT_POLL", "5"))
@@ -220,7 +220,15 @@ def parse_iso(v: Any) -> Optional[date]:
         return None
 
 
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]+")
+
+
 def format_value(field: str, value: Any, fmt: Optional[str]) -> str:
+    # Jamais de saut de ligne ni de tabulation dans un texte tapé : ce seraient les touches Entrée/Tab (risque de validation)
+    return _CONTROL.sub(" ", _format_value(field, value, fmt)).strip()
+
+
+def _format_value(field: str, value: Any, fmt: Optional[str]) -> str:
     if value is None:
         return ""
     if field in DATE_FIELDS:
@@ -1889,6 +1897,10 @@ class Panel(BaseHTTPRequestHandler):
 
 def self_update(server: str) -> None:
     if os.environ.get("PHARMAGENT_NO_UPDATE") == "1":
+        return
+    host = urlparse(server).hostname or ""
+    if not server.lower().startswith("https://") and host not in ("127.0.0.1", "localhost"):
+        log.info("Mise à jour automatique ignorée : serveur sans HTTPS (%s).", server)
         return
     try:
         me = Path(__file__).resolve()

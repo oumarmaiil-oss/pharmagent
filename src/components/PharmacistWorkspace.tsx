@@ -6,6 +6,7 @@ import { useRef, useState } from 'react';
 import type { DashboardSnapshot, DraftRecord, OwnerAccount } from '../types/pharmagent.ts';
 import DraftLines, { countToReview } from './DraftLines.tsx';
 import { blockingReason, draftChecks } from './draftChecks.ts';
+import { downloadWithAuth } from './download.ts';
 import { ExecutionBadge, ExecutionDetail } from './ExecutionStatus.tsx';
 
 interface Props {
@@ -355,12 +356,19 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
           {selectedPharmacy && sent.length > 0 && (
             <section>
               <h2 className="text-sm font-semibold text-white mb-2">Envoyés à l'agent</h2>
+              {!(selectedPharmacy.agent && Date.now() - Date.parse(selectedPharmacy.agent.lastSeen) < 70_000) && (
+                <div className="mb-2 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-2 text-xs text-amber-200 leading-relaxed">
+                  {selectedPharmacy.agent ? "L'ordinateur de la pharmacie est hors ligne" : "Aucun ordinateur n'est encore relié"} : les bons approuvés attendent ici.
+                  {' '}La saisie dans le logiciel se fait <b>automatiquement</b> dès que l'agent tourne sur cet ordinateur (installation : onglet <b>Agent local</b>, compte Pharmacien).
+                  {' '}En attendant, vous pouvez <b>remplir un fichier Excel</b> avec le bouton prévu sur chaque bon.
+                </div>
+              )}
               <div className="bg-slate-900 border border-slate-800 rounded-2xl divide-y divide-slate-800">
                 {sent.slice(0, 10).map((d) => (
                   <div key={d.id} className="p-4">
                     <div className="flex items-center gap-2 mb-1.5">
                       <div className="flex-1 min-w-0 text-sm text-white truncate">{d.extractedData.documentNumber || d.id} · <span className="text-slate-400">{d.extractedData.supplierOrOrg}</span></div>
-                      <a href={`/api/drafts/${d.id}/download?token=${token}`} className="text-slate-400 hover:text-white" title="Excel"><Download size={14} /></a>
+                      <button onClick={() => void downloadWithAuth(`/api/drafts/${d.id}/download`, token, 'brouillon.xlsx')} className="text-slate-400 hover:text-white" title="Excel"><Download size={14} /></button>
                     </div>
                     <ExecutionDetail draftId={d.id} execution={d.execution} token={token} onChanged={onRefresh} />
                   </div>
@@ -419,7 +427,7 @@ function DraftChecks({ draft }: { draft: DraftRecord }) {
   );
 }
 
-interface FillReportView { sheet: string; linesWritten: number; headerFilled: string[]; missingLabels: string[]; converted?: 'ods' | 'csv' }
+interface FillReportView { sheet: string; linesWritten: number; headerFilled: string[]; missingLabels: string[]; converted?: 'ods' | 'csv' | 'xls' | 'simplifie' }
 
 function FillExcelButton({ draftId, token }: { draftId: string; token: string }) {
   const input = useRef<HTMLInputElement>(null);
@@ -442,10 +450,10 @@ function FillExcelButton({ draftId, token }: { draftId: string; token: string })
       const bytes = Uint8Array.from(atob(data.fileBase64), (c) => c.charCodeAt(0));
       const url = URL.createObjectURL(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
       const a = document.createElement('a');
-      a.href = url; a.download = file.name.replace(/\.(xlsx|ods|csv)$/i, '') + '_rempli.xlsx';
+      a.href = url; a.download = file.name.replace(/\.(xlsx|xls|ods|csv)$/i, '') + '_rempli.xlsx';
       a.click(); URL.revokeObjectURL(url);
       const rep = data.report;
-      setMsg({ ok: true, text: `${rep.linesWritten} ligne(s) ajoutée(s) dans « ${rep.sheet} »` + (rep.headerFilled.length ? ` · en-tête : ${rep.headerFilled.join(', ')}` : '') + (rep.missingLabels.length ? ` · colonnes non trouvées : ${rep.missingLabels.join(', ')}` : '') + (rep.converted ? ` · fichier .${rep.converted} converti en .xlsx (mise en forme simplifiée)` : '') + '. Le fichier rempli a été téléchargé : ouvrez-le pour vérifier.' });
+      setMsg({ ok: true, text: `${rep.linesWritten} ligne(s) ajoutée(s) dans « ${rep.sheet} »` + (rep.headerFilled.length ? ` · en-tête : ${rep.headerFilled.join(', ')}` : '') + (rep.missingLabels.length ? ` · colonnes non trouvées : ${rep.missingLabels.join(', ')}` : '') + (rep.converted ? ` · fichier ${rep.converted === 'simplifie' ? 'recopié' : '.' + rep.converted + ' converti'} en .xlsx (mise en forme simplifiée)` : '') + '. Le fichier rempli a été téléchargé : ouvrez-le pour vérifier.' });
     } catch {
       setMsg({ ok: false, text: 'Connexion impossible. Réessayez.' });
     } finally {
@@ -462,7 +470,7 @@ function FillExcelButton({ draftId, token }: { draftId: string; token: string })
       >
         {busy ? <Loader2 size={14} className="animate-spin" /> : <FileSpreadsheet size={14} />} Remplir mon fichier Excel
       </button>
-      <input ref={input} type="file" accept=".xlsx,.ods,.csv" className="hidden" onChange={onFile} />
+      <input ref={input} type="file" accept=".xlsx,.xls,.xlsm,.ods,.csv" className="hidden" onChange={onFile} />
       {msg && <p className={`text-[11px] ${msg.ok ? 'text-emerald-300' : 'text-red-300'}`}>{msg.text}</p>}
     </div>
   );
@@ -485,7 +493,9 @@ function DraftBody({ draft, token, busy, onDecide, onUpdated, onRefresh }: Draft
         <>
           <div className="flex items-start gap-2 text-[11px] text-slate-400">
             <ShieldCheck size={14} className="text-emerald-400 flex-shrink-0" />
-            Approuver envoie le bon à l'agent, qui remplit l'ERP sans jamais valider : la validation finale reste dans l'ERP.
+            {toReview > 0
+              ? <>Pour approuver, chaque ligne doit être rattachée à un produit : choisissez-le ligne par ligne, ou cliquez <b className="text-slate-300">Garder les libellés du bon</b> (en haut des lignes).</>
+              : "Approuver envoie le bon à l'agent installé sur l'ordinateur de la pharmacie : il remplit le logiciel tout seul, sans jamais valider. La validation finale reste dans le logiciel."}
           </div>
           <div className="flex gap-2">
             <button
@@ -502,9 +512,9 @@ function DraftBody({ draft, token, busy, onDecide, onUpdated, onRefresh }: Draft
             >
               <ThumbsDown size={15} /> Rejeter
             </button>
-            <a href={`/api/drafts/${draft.id}/download?token=${token}`} className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-sm px-3 py-2.5 rounded-xl" title="Télécharger Excel">
+            <button onClick={() => void downloadWithAuth(`/api/drafts/${draft.id}/download`, token, 'brouillon.xlsx')} className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-sm px-3 py-2.5 rounded-xl" title="Télécharger Excel">
               <Download size={15} />
-            </a>
+            </button>
           </div>
         </>
       )}

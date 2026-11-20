@@ -91,7 +91,7 @@ export default function LoginScreen({ onLogin }: { onLogin: (s: SessionState) =>
             {mode === 'pharmacy' ? (
               <>
                 <div>
-                  <label className="block text-xs font-medium text-slate-400 mb-1.5">Code pharmacie</label>
+                  <label className="block text-xs font-medium text-slate-400 mb-1.5">Code pharmacie (6 caractères)</label>
                   <div className="relative">
                     <Building2 size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
                     <input
@@ -158,6 +158,12 @@ export default function LoginScreen({ onLogin }: { onLogin: (s: SessionState) =>
 
             {error && (
               <div className="bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 text-sm text-red-400">{error}</div>
+            )}
+            {mode === 'pharmacy' && (
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                Le code reste visible chez le superviseur (Mes officines). Le mot de passe n'est montré qu'à la création : perdu, le superviseur en crée un nouveau
+                {' '}(<b className="text-slate-400">Mes officines › la pharmacie › Réinitialiser le mot de passe Pharmacien</b>).
+              </p>
             )}
 
             <button

@@ -33,15 +33,29 @@ function nanoid(len = 12): string {
   return crypto.randomBytes(len).toString('base64url').slice(0, len);
 }
 
+// Mots de passe : scrypt avec sel aléatoire (format « s1$sel$empreinte »). L'ancien format (SHA-256, sel fixe)
+// reste accepté et est remplacé automatiquement à la connexion suivante.
+const legacyHash = (pw: string) => crypto.createHash('sha256').update(pw + 'pharmagent-salt').digest('hex');
+
 function hashPassword(pw: string): string {
-  return crypto.createHash('sha256').update(pw + 'pharmagent-salt').digest('hex');
+  const salt = crypto.randomBytes(16);
+  return `s1$${salt.toString('base64')}$${crypto.scryptSync(pw, salt, 32).toString('base64')}`;
 }
 
 function checkPassword(pw: string, hash: string): boolean {
-  const a = Buffer.from(hashPassword(pw));
+  if (hash.startsWith('s1$')) {
+    const [, salt, digest] = hash.split('$');
+    const a = crypto.scryptSync(pw, Buffer.from(salt, 'base64'), 32);
+    const b = Buffer.from(digest, 'base64');
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  }
+  const a = Buffer.from(legacyHash(pw));
   const b = Buffer.from(hash);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
+
+/** Empreinte courte du mot de passe glissée dans le jeton : changer le mot de passe déconnecte les anciennes sessions. */
+const passwordStamp = (hash: string) => crypto.createHash('sha256').update(hash).digest('base64url').slice(0, 12);
 
 const READABLE = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 function readable(len: number): string {
@@ -310,32 +324,34 @@ class PharmAgentStore {
   loginOwner(loginId: string, password: string): string | null {
     const o = this.db.owner;
     if (o.loginId !== loginId) return null;
-    if (!checkPassword(password, o.passwordHash)) return null;
-    return makeToken({ kind: 'owner', sub: o.id }, this.db.authSecret);
+    if (!this.passOk(o, password)) return null;
+    return makeToken({ kind: 'owner', sub: o.id, pv: passwordStamp(o.passwordHash) }, this.db.authSecret);
+  }
+
+  /** Vérifie le mot de passe et passe un ancien format d'empreinte en scrypt. */
+  private passOk(entity: { passwordHash: string }, password: string): boolean {
+    if (!checkPassword(password, entity.passwordHash)) return false;
+    if (!entity.passwordHash.startsWith('s1$')) { entity.passwordHash = hashPassword(password); this.persist(); }
+    return true;
   }
 
   verifyOwnerToken(token: string): OwnerAccount | null {
-    const payload = verifyToken<{ kind: string; sub: string }>(token, this.db.authSecret);
+    const payload = verifyToken<{ kind: string; sub: string; pv?: string }>(token, this.db.authSecret);
     if (!payload || payload.kind !== 'owner') return null;
-    return this.db.owner.id === payload.sub ? this.db.owner : null;
-  }
-
-  loginPharmacyUser(pharmacyId: string, loginId: string, password: string): string | null {
-    const user = this.db.users.find((u) => u.pharmacyId === pharmacyId && u.loginId === loginId);
-    if (!user) return null;
-    if (!checkPassword(password, user.passwordHash)) return null;
-    return makeToken({ kind: 'pharmacy_user', sub: user.id, pharmacyId }, this.db.authSecret);
+    const o = this.db.owner;
+    return o.id === payload.sub && payload.pv === passwordStamp(o.passwordHash) ? o : null;
   }
 
   verifyPharmacyUserToken(token: string): PharmacyUser | null {
-    const payload = verifyToken<{ kind: string; sub: string; pharmacyId: string }>(token, this.db.authSecret);
+    const payload = verifyToken<{ kind: string; sub: string; pharmacyId: string; pv?: string }>(token, this.db.authSecret);
     if (!payload || payload.kind !== 'pharmacy_user') return null;
-    return this.db.users.find((u) => u.id === payload.sub) ?? null;
+    const u = this.db.users.find((x) => x.id === payload.sub);
+    return u && payload.pv === passwordStamp(u.passwordHash) ? u : null;
   }
 
   changeOwnerCredentials(newLoginId: string, newFullName: string, currentPassword: string, newPassword?: string): boolean {
     const o = this.db.owner;
-    if (!checkPassword(currentPassword, o.passwordHash)) return false;
+    if (!this.passOk(o, currentPassword)) return false;
     o.loginId = newLoginId || o.loginId;
     o.fullName = newFullName || o.fullName;
     if (newPassword) o.passwordHash = hashPassword(newPassword);
@@ -392,8 +408,11 @@ class PharmAgentStore {
   }
 
   getPharmacyByCode(code: string): Pharmacy | undefined {
-    const c = code.trim().toUpperCase();
-    return c ? this.db.pharmacies.find((p) => p.code === c) : undefined;
+    // Tolérant : minuscules, espaces, tirets ; l'identifiant interne (« ph-… ») est aussi accepté
+    const key = (s?: string) => (s ?? '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+    const c = key(code);
+    if (!c) return undefined;
+    return this.db.pharmacies.find((p) => p.code === c) ?? this.db.pharmacies.find((p) => key(p.id) === c);
   }
 
   loginPharmacyProfile(code: string, profile: 'pharmacien' | 'equipe', password: string): { token: string; user: PharmacyUser; pharmacy: Pharmacy } | null {
@@ -401,14 +420,15 @@ class PharmAgentStore {
     if (!pharmacy) return null;
     const user = this.db.users.find((u) => u.pharmacyId === pharmacy.id
       && (profile === 'pharmacien' ? u.role === 'titulaire' : u.role !== 'titulaire')
-      && checkPassword(password, u.passwordHash));
+      // Mots de passe générés en MAJUSCULES : acceptés aussi tapés en minuscules (clavier de téléphone)
+      && [password, password.trim(), password.trim().toUpperCase()].some((pw, i, all) => all.indexOf(pw) === i && this.passOk(u, pw)));
     if (!user) return null;
-    return { token: makeToken({ kind: 'pharmacy_user', sub: user.id, pharmacyId: pharmacy.id }, this.db.authSecret), user, pharmacy };
+    return { token: makeToken({ kind: 'pharmacy_user', sub: user.id, pharmacyId: pharmacy.id, pv: passwordStamp(user.passwordHash) }, this.db.authSecret), user, pharmacy };
   }
 
   verifyUserPassword(userId: string, password: string): boolean {
     const u = this.db.users.find((x) => x.id === userId);
-    return !!u && checkPassword(password, u.passwordHash);
+    return !!u && this.passOk(u, password);
   }
 
   setUserPassword(userId: string, password: string): void {

@@ -204,7 +204,7 @@ export default function AgentDeployment({ token, snapshot, selectedPharmacyId, o
             <a href="/install/mac.zip" className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-sm font-semibold">
               <Download size={15} /> Télécharger l'installeur Mac
             </a>
-            <p className="text-[11px] text-slate-400">Ouvrez <b>PharmAgent-Mac.zip</b>, puis double-cliquez sur <b>PharmAgent-Mac.command</b>. La première fois, le Mac demande confirmation : <b>clic droit › Ouvrir</b>. Le Terminal installe tout seul (1 à 3 minutes) : laissez-le ouvert, réduisez-le.</p>
+            <p className="text-[11px] text-slate-400">Ouvrez <b>PharmAgent-Mac.zip</b>, puis double-cliquez sur l'application <b>Installer PharmAgent</b> : des fenêtres vous guident, rien à taper (1 à 3 minutes). La première fois, le Mac demande confirmation : <b>clic droit › Ouvrir</b>.</p>
             <p className="text-[11px] text-slate-400">Ensuite, l'application <b>PharmAgent</b> (Launchpad ou dossier Applications) relance tout par un double-clic.</p>
             <p className="text-[11px] text-slate-500">Autre méthode, dans le Terminal :</p>
             <CopyLine text={`curl -fsSL ${origin}/install/install.sh | bash`} />

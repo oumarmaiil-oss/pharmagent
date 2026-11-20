@@ -9,7 +9,7 @@ interface Props {
 }
 
 const METHOD_LABEL: Record<string, string> = {
-  cip: 'CIP', memory: 'Mémoire', score: 'Score', ai: 'IA', manual: 'Manuel', none: '—',
+  cip: 'CIP', memory: 'Mémoire', score: 'Score', price: 'Prix', ai: 'IA', manual: 'Manuel', none: '—',
 };
 
 export function countToReview(draft: DraftRecord): number {
@@ -17,13 +17,13 @@ export function countToReview(draft: DraftRecord): number {
 }
 
 export default function DraftLines({ draft, token, onUpdated }: Props) {
-  const [busy, setBusy] = useState<number | 'rematch' | null>(null);
+  const [busy, setBusy] = useState<number | 'rematch' | 'accept' | null>(null);
   const [error, setError] = useState('');
   const editable = draft.status === 'pending';
   const lines = draft.extractedData.lineItems;
   const toReview = countToReview(draft);
 
-  const call = async (url: string, body: unknown, key: number | 'rematch', method = 'POST') => {
+  const call = async (url: string, body: unknown, key: number | 'rematch' | 'accept', method = 'POST') => {
     setBusy(key); setError('');
     try {
       const r = await fetch(url, {
@@ -52,6 +52,19 @@ export default function DraftLines({ draft, token, onUpdated }: Props) {
         {toReview > 0
           ? <span className="bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded">{toReview} à vérifier</span>
           : <span className="bg-emerald-500/15 text-emerald-300 px-1.5 py-0.5 rounded">toutes reconnues</span>}
+        {editable && toReview > 0 && (
+          <button
+            onClick={() => {
+              if (window.confirm(`Garder le libellé du bon pour ${toReview} ligne(s) ?\n\nL'agent tapera ce libellé dans votre logiciel et choisira le produit dans la liste, comme vous le feriez. Astuce : importez le catalogue (Mon compte) pour que les produits soient reconnus automatiquement.`)) {
+                void call(`/api/drafts/${draft.id}/accept-labels`, {}, 'accept');
+              }
+            }}
+            disabled={busy !== null}
+            className="bg-emerald-600/80 hover:bg-emerald-500 text-white px-2 py-0.5 rounded disabled:opacity-40"
+          >
+            Garder les libellés du bon
+          </button>
+        )}
         {editable && (
           <button
             onClick={() => call(`/api/drafts/${draft.id}/rematch`, {}, 'rematch')}

@@ -1,4 +1,5 @@
 import { BookOpen, Database, Download, Loader2, Plus, Trash2, Upload } from 'lucide-react';
+import { downloadWithAuth } from './download.ts';
 import { useEffect, useRef, useState } from 'react';
 import type { DashboardSnapshot, OwnerAccount } from '../types/pharmagent.ts';
 
@@ -150,13 +151,13 @@ export default function TrainingCenter({ token, snapshot, onRefresh }: Props) {
 
       {/* Downloads + Import */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <a href={`/api/training/download/memory?token=${token}`} className="flex items-center gap-3 bg-slate-900 border border-slate-800 hover:border-emerald-500/40 rounded-xl p-4 transition-all">
+        <button onClick={() => void downloadWithAuth('/api/training/download/memory', token, 'memoire.json')} className="flex items-center gap-3 bg-slate-900 border border-slate-800 hover:border-emerald-500/40 rounded-xl p-4 transition-all">
           <Download size={20} className="text-emerald-400 flex-shrink-0" />
           <div>
             <div className="text-sm font-medium text-white">Mémoire Agent</div>
             <div className="text-xs text-slate-500">Alias + règles colonnes (.xlsx)</div>
           </div>
-        </a>
+        </button>
         <a href="/api/training/download/target" className="flex items-center gap-3 bg-slate-900 border border-slate-800 hover:border-blue-500/40 rounded-xl p-4 transition-all">
           <Download size={20} className="text-blue-400 flex-shrink-0" />
           <div>

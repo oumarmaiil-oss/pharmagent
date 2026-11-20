@@ -21,15 +21,16 @@ export interface FillReport {
   missing: FillField[];
   linesWritten: number;
   headerFilled: string[];
-  converted?: 'ods' | 'csv';
+  converted?: 'ods' | 'csv' | 'xls' | 'simplifie';
 }
 
 // .ods (LibreOffice) et .csv (Google Sheets, export simple) : convertis en .xlsx, la mise en forme est simplifiée
-function toXlsx(buf: Buffer): { xlsx: Buffer; converted?: 'ods' | 'csv' } {
+function toXlsx(buf: Buffer): { xlsx: Buffer; converted?: FillReport['converted'] } {
   const isZip = buf[0] === 0x50 && buf[1] === 0x4b;
+  const isOle = buf[0] === 0xd0 && buf[1] === 0xcf && buf[2] === 0x11 && buf[3] === 0xe0;   // Excel 97-2003 (.xls)
   if (isZip && !buf.subarray(0, 200).toString('latin1').includes('opendocument.spreadsheet')) return { xlsx: buf };
-  const converted = isZip ? 'ods' : 'csv';
-  const wb = isZip ? XLSX.read(buf, { type: 'buffer' }) : XLSX.read(buf.toString('utf-8').replace(/^\uFEFF/, ''), { type: 'string', raw: true });
+  const converted = isOle ? 'xls' : isZip ? 'ods' : 'csv';
+  const wb = isZip || isOle ? XLSX.read(buf, { type: 'buffer' }) : XLSX.read(buf.toString('utf-8').replace(/^\uFEFF/, ''), { type: 'string', raw: true });
   return { xlsx: XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer, converted };
 }
 
@@ -59,9 +60,17 @@ export function toExpiryDisplay(iso: string): string {
 }
 
 export async function fillWorkbook(template: Buffer, header: FillHeader, lines: FillLine[]): Promise<{ buffer: Buffer; report: FillReport }> {
-  const { xlsx, converted } = toXlsx(template);
-  const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(xlsx as unknown as ExcelJS.Buffer);
+  let { xlsx, converted } = toXlsx(template);
+  let wb = new ExcelJS.Workbook();
+  try {
+    await wb.xlsx.load(xlsx as unknown as ExcelJS.Buffer);
+  } catch {
+    // Classeur que ExcelJS ne sait pas ouvrir (Google Sheets, Numbers, fonctions avancées) : copie simplifiée des valeurs
+    xlsx = XLSX.write(XLSX.read(template, { type: 'buffer' }), { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+    converted = 'simplifie';
+    wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(xlsx as unknown as ExcelJS.Buffer);
+  }
 
   let best: { ws: ExcelJS.Worksheet; row: number; cols: Partial<Record<FillField, number>>; score: number } | undefined;
   for (const ws of wb.worksheets) {

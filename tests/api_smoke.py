@@ -55,6 +55,10 @@ try:
     check("création : code et mot de passe Pharmacien fournis", len(cred_b["code"]) == 6 and len(cred_b["password"]) >= 8)
     login = lambda cred, profile, pw: call("POST", "/api/pharmacy/auth/login", {"code": cred["code"], "profile": profile, "password": pw})
     check("mauvais mot de passe pharmacie refusé", login(cred_b, "pharmacien", "faux")[1] == 401)
+    tolerant = lambda code, pw: call("POST", "/api/pharmacy/auth/login", {"code": code, "profile": "pharmacien", "password": pw})[1]
+    check("connexion tolérante : code en minuscules avec espaces, mot de passe généré tapé en minuscules",
+          tolerant(" " + cred_b["code"].lower()[:3] + " " + cred_b["code"].lower()[3:], cred_b["password"].lower() + " ") == 200)
+    check("connexion avec l'identifiant interne de la pharmacie (ph-…)", tolerant(pb, cred_b["password"]) == 200)
     check("le mot de passe d'une autre pharmacie ne marche pas", login(cred_b, "pharmacien", cred_a["password"])[1] == 401)
     body, status, _ = login(cred_b, "pharmacien", cred_b["password"])
     check("connexion Pharmacien", status == 200 and body["user"]["profile"] == "pharmacien" and body["teamAccount"] is False, body)
@@ -74,6 +78,8 @@ try:
     check("changement de mot de passe", call("POST", "/api/pharmacy/auth/change-password", {"current": team_pw, "next": "nouveau1"}, team_b)[1] == 200 and login(cred_b, "equipe", "nouveau1")[1] == 200)
     body, status, _ = call("POST", f"/api/pharmacies/{pb}/reset-password", {}, owner)
     check("réinitialisation par le superviseur", status == 200 and login(cred_b, "pharmacien", body["password"])[1] == 200 and login(cred_b, "pharmacien", cred_b["password"])[1] == 401)
+    check("réinitialisation : l'ancienne session du Pharmacien est coupée", call("GET", "/api/pharmacy/auth/me", token=user_b)[1] == 401)
+    user_b = login(cred_b, "pharmacien", body["password"])[0]["token"]
 
     body, status, _ = call("POST", "/api/agent/extract", {"pharmacyId": pa, "sampleAssetPath": "/src/assets/images/sample_bon_livraison_1795017387838.jpg"}, owner)
     check("analyse lancée en arrière-plan", status == 200 and body["draft"]["extractionStatus"] == "processing")
@@ -134,6 +140,19 @@ try:
           and d["extractedData"]["documentNumber"] == "BL-77" and d["tokensConsumed"] == 0, d.get("extractionError") or L)
     check("lignes rapprochées du catalogue avec son prix de référence", all(l["match"]["status"] == "auto" and l["match"].get("reference", {}).get("purchase") for l in L), [l.get("match") for l in L])
 
+    # Produit absent du catalogue : « Garder les libellés du bon » débloque l'approbation en un clic
+    unk = "Désignation;Qté;P.U.\nPRODUIT INCONNU 5MG CP B/30;3;500\n"
+    did2 = call("POST", "/api/agent/extract", {"pharmacyId": pb, "imageBase64": "data:text/csv;base64," + b64(unk), "fileName": "BL-78.csv"}, owner)[0]["draft"]["id"]
+    for _ in range(40):
+        d2 = call("GET", f"/api/drafts/{did2}", token=owner)[0]["draft"]
+        if d2["extractionStatus"] != "processing":
+            break
+        time.sleep(0.3)
+    check("ligne inconnue : approbation bloquée tant qu'elle n'est pas rattachée", call("POST", f"/api/drafts/{did2}/approve", {}, owner)[1] == 400)
+    body, status, _ = call("POST", f"/api/drafts/{did2}/accept-labels", {}, team_b)
+    check("libellés du bon gardés en un clic", status == 200 and body["draft"]["extractedData"]["lineItems"][0]["match"]["erpLabel"] == "PRODUIT INCONNU 5MG CP B/30", body)
+    check("puis approbation possible", call("POST", f"/api/drafts/{did2}/approve", {}, team_b)[1] == 200)
+
     # Journal des ventes → proposition de commande → panier
     sales_csv = "Date;Désignation;Qté vendue\n01/11/2026;DOLIPRANE 1000MG CP B/8;12\n10/11/2026;DOLIPRANE 1000MG CP B/8;8\n10/11/2026;AMOXICILLINE 500MG GELULE B/12;5\n"
     check("journal des ventes : réservé au Pharmacien", call("POST", f"/api/pharmacies/{pb}/sales/import", {"fileBase64": b64(sales_csv)}, team_b)[1] == 403)
@@ -146,8 +165,18 @@ try:
     check("panier CSV téléchargé", status == 200 and "attachment" in headers.get("Content-Disposition", "") and b"3400930000001;DOLIPRANE 1000MG CP B/8;10" in data, data[:120])
     check("proposition d'une autre officine refusée", call("GET", f"/api/pharmacies/{pa}/order-proposal", token=team_b)[1] == 403)
 
+    # Sécurité : sessions, jeton dans l'adresse, ancienne route, en-têtes du navigateur
+    tok1 = login(cred_c, "pharmacien", cred_c["password"])[0]["token"]
+    check("jeton refusé dans l'adresse (?token=)", call("GET", f"/api/pharmacy/auth/me?token={tok1}")[1] == 401)
+    check("changement de mot de passe accepté", call("POST", "/api/pharmacy/auth/change-password", {"current": cred_c["password"], "next": "Nouveau-mdp-1"}, tok1)[1] == 200)
+    check("anciennes sessions coupées après changement de mot de passe", call("GET", "/api/pharmacy/auth/me", token=tok1)[1] == 401 and call("GET", "/api/pharmacy/auth/me", token=user_c)[1] == 401)
+    check("nouvelle connexion avec le nouveau mot de passe", call("GET", "/api/pharmacy/auth/me", token=login(cred_c, "pharmacien", "Nouveau-mdp-1")[0]["token"])[1] == 200)
+    check("ancienne route de connexion supprimée", call("POST", f"/api/pharmacies/{pb}/auth/login", {"loginId": "titulaire", "password": "x"})[1] == 404)
+    _, _, h = call("GET", "/", raw=True)
+    check("en-têtes de sécurité (CSP, HSTS, anti-iframe)", "script-src 'self'" in (h.get("Content-Security-Policy") or "") and h.get("Strict-Transport-Security") and h.get("X-Frame-Options") == "DENY", dict(h))
+
     data, status, headers = call("GET", "/install/mac.zip", raw=True)
-    check("installeur Mac (zip)", status == 200 and data[:2] == b"PK" and b"PharmAgent-Mac.command" in data)
+    check("installeur Mac : application avec exécutable", status == 200 and data[:2] == b"PK" and b"Installer PharmAgent.app/Contents/MacOS/PharmAgent" in data and b"Info.plist" in data and b"display dialog" in data)
     version = call("GET", "/agent/version")[0]["version"]
     agent_src = pathlib.Path(ROOT, "agent", "pharmagent_agent.py").read_text(encoding="utf-8")
     check("version de l'agent servie", f'AGENT_VERSION = "{version}"' in agent_src, version)
