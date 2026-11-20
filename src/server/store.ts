@@ -947,4 +947,4 @@ class PharmAgentStore {
 }
 
 export const store = new PharmAgentStore();
-export { hashPassword, checkPassword, nanoid };
+export { hashPassword, checkPassword, nanoid, readable as readableCode };

@@ -92,6 +92,13 @@ try:
     pres = call("GET", B + f"/api/pharmacies/{pid}/agent", t=owner)[0]["presence"]
     check("diagnostic de l'agent visible sur le site (version, mode, fichier, dernier bon)",
           pres and pres.get("mode") == "file" and pres.get("target") == "Reception.xlsx" and "BL-TEST-2611" in (pres.get("lastResult") or ""), pres)
+    # Aide à distance : sur clic, l'agent envoie état + journal ; le support les lit avec le code (1 h)
+    code_s = panel("POST", "/api/support", {})[0].get("result")
+    check("aide à distance : code fourni", bool(code_s) and len(code_s) == 9, code_s)
+    pk, st = call("GET", B + f"/api/support/{code_s}")
+    check("aide à distance : le support voit le mode, le dernier bon et le journal",
+          st == 200 and pk["state"]["profile"]["mode"] == "file" and "BL-TEST-2611" in (pk["state"]["lastResult"] or {}).get("documentNumber", "") and len(pk["logs"]) > 3, pk.get("state"))
+    check("aide à distance : code inconnu refusé", call("GET", B + "/api/support/ABCD-EFGH")[1] == 404)
 finally:
     if agent:
         agent.terminate()

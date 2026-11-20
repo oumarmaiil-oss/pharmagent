@@ -74,7 +74,7 @@ try:
         check(f"Équipe refusée : {p}", call(m, p, {"fileBase64": "AA==", "code": "1"}, teamA)[0] == 403)
 
     # Agent : sans clé ou avec une fausse clé, rien
-    agent = [("POST", f"/api/agent-client/tasks/{did}/fill-file"), ("POST", "/api/agent-client/heartbeat"), ("GET", "/api/agent-client/profile"), ("PUT", "/api/agent-client/profile"), ("GET", "/api/agent-client/sample"),
+    agent = [("POST", "/api/agent-client/support"), ("POST", f"/api/agent-client/tasks/{did}/fill-file"), ("POST", "/api/agent-client/heartbeat"), ("GET", "/api/agent-client/profile"), ("PUT", "/api/agent-client/profile"), ("GET", "/api/agent-client/sample"),
              ("POST", "/api/agent-client/claim"), ("POST", f"/api/agent-client/tasks/{did}/result"), ("POST", "/api/agent-client/catalog")]
     for label, h in (("sans clé", None), ("fausse clé", {"X-Agent-Key": "ak-faux"})):
         ok = [(m, p, st) for m, p in agent for st in [call(m, p, {}, None, h)[0]] if st != 401]

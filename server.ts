@@ -25,7 +25,7 @@ import { DEFAULT_ORDER_PARAMS, orderFile, parseSalesJournal, proposeOrder, type 
 import { blockingReason, needsSecondLook } from './src/components/draftChecks.ts';
 import { checkTextSafety } from './src/server/guardrail.ts';
 import { attachReference, AUTO_THRESHOLD, matchLines, normalizeSupplier } from './src/server/productMatcher.ts';
-import { store, type CatalogRowInput } from './src/server/store.ts';
+import { readableCode, store, type CatalogRowInput } from './src/server/store.ts';
 import type {
   AgentProfile,
   DocumentCategory,
@@ -1188,6 +1188,47 @@ app.post('/api/agent/ground-interface', async (req, res) => {
 });
 
 // ─── Agent local : appairage ─────────────────────────────
+
+// ─── Aide à distance : l'agent envoie (sur clic de l'utilisateur) capture + état + journal, lisibles 1 h avec un code ─
+interface SupportPacket { pharmacyId: string; createdAt: number; screenshot?: Buffer; data: Record<string, unknown> }
+const supportPackets = new Map<string, SupportPacket>();
+const SUPPORT_TTL_MS = 60 * 60 * 1000;
+const purgeSupport = () => { for (const [c, p] of supportPackets) if (Date.now() - p.createdAt > SUPPORT_TTL_MS) supportPackets.delete(c); };
+
+app.post('/api/agent-client/support', (req, res) => {
+  const ph = requireAgent(req, res);
+  if (!ph) return;
+  purgeSupport();
+  const b = req.body as { screenshot?: string; state?: unknown; windows?: unknown; foreground?: unknown; logs?: unknown; code?: string };
+  const prev = b.code ? supportPackets.get(String(b.code)) : undefined;
+  const code = prev && prev.pharmacyId === ph.id ? String(b.code) : `${readableCode(4)}-${readableCode(4)}`;
+  const shot = typeof b.screenshot === 'string' && b.screenshot ? Buffer.from(b.screenshot, 'base64') : undefined;
+  supportPackets.set(code, {
+    pharmacyId: ph.id, createdAt: Date.now(), screenshot: shot && shot.length < 6_000_000 ? shot : undefined,
+    data: { pharmacy: ph.name, agent: ph.agent ?? store.getPharmacies().find((p) => p.id === ph.id)?.agent, state: b.state, windows: b.windows, foreground: b.foreground,
+      logs: Array.isArray(b.logs) ? b.logs.slice(-200).map((l) => String(l).slice(0, 300)) : [], profile: store.getProfile(ph.id) ?? null,
+      queue: store.getDrafts(ph.id).filter((d) => d.status === 'approved').slice(0, 10).map((d) => ({ id: d.id, n: d.extractedData.documentNumber, execution: d.execution })) },
+  });
+  store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent local', action: `Aide à distance : informations envoyées (code ${code})`, level: 'info' });
+  res.json({ code });
+});
+
+// Lecture par le support : le code (8 caractères, 1 h) est la seule clé ; essais limités contre la devinette
+app.get('/api/support/:code', (req, res) => {
+  if (rateLimited(req, res, 'support')) return;
+  purgeSupport();
+  const p = supportPackets.get(req.params.code.toUpperCase());
+  if (!p) { recordFailure(req, 'support'); res.status(404).json({ error: 'Code inconnu ou expiré.' }); return; }
+  res.json({ ...p.data, createdAt: new Date(p.createdAt).toISOString(), screenshot: p.screenshot ? `/api/support/${req.params.code.toUpperCase()}/screen.jpg` : null });
+});
+app.get('/api/support/:code/screen.jpg', (req, res) => {
+  if (rateLimited(req, res, 'support')) return;
+  const p = supportPackets.get(req.params.code.toUpperCase());
+  if (!p?.screenshot) { recordFailure(req, 'support'); res.status(404).end(); return; }
+  res.setHeader('Content-Type', 'image/jpeg');
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(p.screenshot);
+});
 
 app.post('/api/agent-client/pair/start', (req, res) => {
   purgePairings();

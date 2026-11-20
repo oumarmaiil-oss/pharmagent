@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-AGENT_VERSION = "2.3.1"
+AGENT_VERSION = "2.3.2"
 DEFAULT_SERVER = "https://pharmagent.onrender.com"
 PANEL_PORT = int(os.environ.get("PHARMAGENT_PORT", "8765"))
 POLL_SECONDS = float(os.environ.get("PHARMAGENT_POLL", "5"))
@@ -478,6 +478,30 @@ def filled_path(template: str, document_number: str) -> Path:
         out = src.with_name(f"{src.stem} - {num} ({k}).xlsx")
         k += 1
     return out
+
+
+def capture_screen() -> Optional[bytes]:
+    """Capture de l'écran en JPEG réduit, pour l'aide à distance (jamais sans clic de l'utilisateur)."""
+    tmp = HOME / "aide.jpg"
+    try:
+        if SYSTEM == "Darwin":
+            # Sans l'autorisation « Enregistrement de l'écran », macOS ne capture que le fond d'écran : on l'envoie quand même
+            subprocess.run(["screencapture", "-x", "-t", "jpg", str(tmp)], timeout=20, check=True)
+            subprocess.run(["sips", "-Z", "1600", "-s", "formatOptions", "60", str(tmp)], timeout=20, capture_output=True)
+        elif SYSTEM == "Windows":
+            ps = ("Add-Type -AssemblyName System.Windows.Forms,System.Drawing; $b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; "
+                  "$i=New-Object System.Drawing.Bitmap $b.Width,$b.Height; $g=[System.Drawing.Graphics]::FromImage($i); "
+                  "$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size); "
+                  f"$i.Save('{tmp}',[System.Drawing.Imaging.ImageFormat]::Jpeg)")
+            subprocess.run(["powershell", "-NoProfile", "-Command", ps], timeout=30, check=True, capture_output=True)
+        else:
+            return None
+        data = tmp.read_bytes()
+        tmp.unlink(missing_ok=True)
+        return data if len(data) < 6_000_000 else None
+    except Exception as e:
+        log.info("Capture d'écran impossible : %s", e)
+        return None
 
 
 def foreground_is(title: str) -> bool:
@@ -1416,6 +1440,20 @@ class Engine:
     def _handle(self, name: str, p: Dict[str, Any]) -> Any:
         if name == "pick_file":
             return pick_file()
+        if name == "support":
+            # Aide à distance : l'utilisateur envoie capture + état + journal ; le serveur rend un code valable 1 h
+            shot = capture_screen()
+            st = self.state()
+            res = self.api.call("POST", "/api/agent-client/support", {
+                "screenshot": base64.b64encode(shot).decode() if shot else "",
+                "state": {k: st.get(k) for k in ("version", "os", "status", "profile", "setup", "task", "lastResult", "lastError",
+                                                   "accessibilityOk", "inputMonitoringOk", "serverOk", "paired")},
+                "windows": list_windows(), "foreground": foreground_title(),
+                "logs": [f"{x['t']} {x['level']} {x['msg']}" for x in LOG_LINES],
+                "code": p.get("code") or "",
+            }, timeout=60)
+            log.info("Aide à distance : informations envoyées (code %s).", res.get("code"))
+            return res.get("code")
         if name == "setup" and p.get("mode") == "file":
             path = (p.get("filePath") or "").strip()
             if not path or not Path(path).is_file():
@@ -1883,6 +1921,8 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:8px 6px;b
 <div><h1>PharmAgent — Agent local</h1><div class="sub" id="sub"></div></div><span class="pill" id="pill">…</span></header>
 <div id="app"></div>
 <div class="card"><div class="shield"><span>🛡️</span><div><b>Garde-fou actif.</b> L'agent remplit l'écran de saisie de l'ERP puis s'arrête. Il ne clique jamais sur Valider, Confirmer, Clôturer ou Enregistrer définitivement : la validation reste au pharmacien.</div></div></div>
+<div class="card"><h2>Aide à distance</h2><p class="muted">Envoie au support une capture de l'écran, l'état et le journal de l'agent. Rien n'est envoyé sans ce clic. Donnez ensuite le code au support (valable 1 heure).</p>
+<div class="row"><button class="sec" id="supbtn" onclick="support()">Envoyer au support</button></div><div id="supcode"></div></div>
 <details class="card"><summary class="muted" style="cursor:pointer">Journal de l'agent</summary><div class="logs" id="logs"></div></details>
 </div>
 <script>
@@ -1948,6 +1988,8 @@ function render(){if(!S)return;const st=S.status;
   <p class="muted" style="margin-top:14px">Démo du ${p.recordedAt?new Date(p.recordedAt).toLocaleString('fr-FR'):'—'} · ${p.headerSteps||0} étape(s) d'en-tête · ${p.lineSteps||0} par ligne</p></div>`;
   h+=`<div class="card"><h2>Cet ordinateur</h2><p>Relié à <b>${esc(S.pharmacyName)}</b> · serveur ${esc(S.server)}</p><div class="row"><button class="sec red" onclick="if(confirm('Délier cet ordinateur de l\\'officine ?'))call('unpair')">Délier l'ordinateur</button></div></div>`}
  if(a.dataset.h!==h){a.innerHTML=h;a.dataset.h=h}}
+let supportCode='';
+async function support(){const b=$('#supbtn');b.disabled=true;b.textContent='Envoi…';try{const r=await fetch('/api/support',{method:'POST',headers:{'X-PharmAgent':'1','Content-Type':'application/json'},body:JSON.stringify({code:supportCode})});const d=await r.json();if(d.result){supportCode=d.result;$('#supcode').innerHTML=`<div class="code">${esc(supportCode)}</div><p class="muted">Code à donner au support. « Envoyer au support » à nouveau envoie une nouvelle capture avec le même code.</p>`}else{$('#supcode').innerHTML=`<div class="alert e">${esc(d.error||'Envoi impossible')}</div>`}}catch(e){$('#supcode').innerHTML='<div class="alert e">Envoi impossible</div>'}b.disabled=false;b.textContent='Envoyer au support'}
 async function pickFile(){busy=true;render();try{const r=await fetch('/api/pick_file',{method:'POST',headers:{'X-PharmAgent':'1','Content-Type':'application/json'},body:'{}'});const d=await r.json();if(d.result)filePick=d.result}catch(e){}busy=false;render()}
 async function loadWins(){try{const r=await fetch('/api/windows',{method:'POST',headers:{'X-PharmAgent':'1'}});winList=(await r.json()).result||[]}catch(e){winList=[]}render()}
 refresh();setInterval(()=>{if(!busy&&!(S&&S.status==='review'))refresh()},1000);
@@ -1998,7 +2040,7 @@ class Panel(BaseHTTPRequestHandler):
             return self._json(403, {"error": "Accès refusé."})
         name = self.path.removeprefix("/api/") if hasattr(str, "removeprefix") else self.path[5:]
         allowed = {"setup", "open_erp", "windows", "record_start", "record_stop", "record_cancel", "review_save",
-                   "redo_demo", "change_setup", "test_run", "pause", "unpair", "mac_permissions", "quit", "pick_file"}
+                   "redo_demo", "change_setup", "test_run", "pause", "unpair", "mac_permissions", "quit", "pick_file", "support"}
         if name not in allowed:
             return self._json(404, {"error": "Commande inconnue."})
         length = min(int(self.headers.get("Content-Length") or 0), 2_000_000)
