@@ -129,7 +129,11 @@ try:
         o.click("button:has-text(\"J'ai noté\")")
         # Réinitialisation depuis la fiche (en bas de page) : la fenêtre doit apparaître quand même, au centre
         o.click("text=Pharmacie Créée UI")
-        o.click("button:has-text('Réinitialiser le mot de passe Pharmacien')")
+        o.click("button:has-text('Nouveau mot de passe Pharmacien')")
+        o.wait_for_selector("text=Votre mot de passe superviseur")
+        check("réinitialisation : confirmation par le mot de passe superviseur demandée", o.is_disabled("button:has-text('Confirmer')"))
+        o.fill("[role=dialog] input[type='password']", "ownerpw")
+        o.click("button:has-text('Confirmer')")
         o.wait_for_selector("[data-testid=cred-password]")
         box = o.locator("[data-testid=cred-password]").bounding_box()
         check("réinitialisation : mot de passe visible à l'écran sans défiler", box is not None and 0 <= box["y"] <= 900, box)

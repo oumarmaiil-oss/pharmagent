@@ -399,6 +399,49 @@ class PharmAgentStore {
     return { pharmacy, password };
   }
 
+  /** Mot de passe du superviseur redemandé avant une action sensible (réinitialisation, suppression…). */
+  verifyOwnerPassword(password: string): boolean {
+    return this.passOk(this.db.owner, password ?? '');
+  }
+
+  updatePharmacyInfo(id: string, info: Partial<Pick<Pharmacy, 'name' | 'city' | 'region' | 'pharmacist' | 'targetSoftware'>>): Pharmacy | undefined {
+    const ph = this.db.pharmacies.find((p) => p.id === id);
+    if (!ph) return undefined;
+    for (const k of ['name', 'city', 'region', 'pharmacist', 'targetSoftware'] as const) {
+      const v = info[k];
+      if (typeof v === 'string' && v.trim()) (ph as unknown as Record<string, string>)[k] = v.trim().slice(0, 120);
+    }
+    this.persist();
+    return ph;
+  }
+
+  /** Coupe l'ordinateur relié : nouvelle clé, l'ancien agent est refusé et devra être relié à nouveau. */
+  revokeAgent(id: string): boolean {
+    const ph = this.db.pharmacies.find((p) => p.id === id);
+    if (!ph) return false;
+    ph.agentKey = `ak-${nanoid(24)}`;
+    ph.agent = undefined;
+    this.presence.delete(id);
+    this.persist();
+    return true;
+  }
+
+  /** Supprime l'officine et ses données (comptes, brouillons, catalogue, ventes, réglages agent). Le journal est gardé. */
+  deletePharmacy(id: string): boolean {
+    if (!this.db.pharmacies.some((p) => p.id === id)) return false;
+    const other = <T extends { pharmacyId?: string }>(x: T) => x.pharmacyId !== id;
+    this.db.pharmacies = this.db.pharmacies.filter((p) => p.id !== id);
+    this.db.users = this.db.users.filter(other);
+    this.db.drafts = this.db.drafts.filter(other);
+    this.db.catalog = this.db.catalog.filter(other);
+    this.db.sales = this.db.sales.filter(other);
+    this.db.agentProfiles = this.db.agentProfiles.filter(other);
+    this.db.learnedMemory.productAliases = this.db.learnedMemory.productAliases.filter(other);
+    this.presence.delete(id);
+    this.persist();
+    return true;
+  }
+
   updatePharmacySubscription(id: string, plan: SubscriptionPlan, quota?: number): void {
     const ph = this.db.pharmacies.find((p) => p.id === id);
     if (!ph) return;

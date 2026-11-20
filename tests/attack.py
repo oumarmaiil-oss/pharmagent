@@ -63,6 +63,7 @@ try:
     # Supervision : réservée au propriétaire
     owner_routes = [("GET", "/api/dashboard"), ("GET", "/api/owner/backup"), ("POST", "/api/owner/restore"), ("POST", "/api/pharmacies"),
                     ("POST", f"/api/pharmacies/{A}/reset-password"), ("PATCH", f"/api/pharmacies/{A}/subscription"), ("GET", "/api/audit"),
+                    ("PATCH", f"/api/pharmacies/{A}"), ("POST", f"/api/pharmacies/{A}/agent/revoke"), ("POST", f"/api/pharmacies/{A}/delete"),
                     ("DELETE", f"/api/pharmacies/{A}/catalog"), ("GET", "/api/training/download/memory"), ("POST", "/api/training/rules"),
                     ("POST", "/api/agent/ground-interface"), ("POST", "/api/owner/auth/change-credentials")]
     ok = [(m, p, st) for m, p in owner_routes for st in [call(m, p, {"data": {}}, tokA)[0]] if st not in (401, 403)]

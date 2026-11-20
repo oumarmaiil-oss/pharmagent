@@ -76,7 +76,9 @@ try:
     check("l'Équipe ne branche pas l'agent", call("POST", f"/api/pharmacies/{pb}/pair", {"code": "123456"}, team_b)[1] == 403)
     check("changement de mot de passe : ancien requis", call("POST", "/api/pharmacy/auth/change-password", {"current": "x", "next": "nouveau1"}, team_b)[1] == 401)
     check("changement de mot de passe", call("POST", "/api/pharmacy/auth/change-password", {"current": team_pw, "next": "nouveau1"}, team_b)[1] == 200 and login(cred_b, "equipe", "nouveau1")[1] == 200)
-    body, status, _ = call("POST", f"/api/pharmacies/{pb}/reset-password", {}, owner)
+    check("réinitialisation sans mot de passe superviseur refusée", call("POST", f"/api/pharmacies/{pb}/reset-password", {}, owner)[1] == 403)
+    check("réinitialisation avec un mauvais mot de passe superviseur refusée", call("POST", f"/api/pharmacies/{pb}/reset-password", {"password": "faux"}, owner)[1] == 403)
+    body, status, _ = call("POST", f"/api/pharmacies/{pb}/reset-password", {"password": "ownerpw"}, owner)
     check("réinitialisation par le superviseur", status == 200 and login(cred_b, "pharmacien", body["password"])[1] == 200 and login(cred_b, "pharmacien", cred_b["password"])[1] == 401)
     check("réinitialisation : l'ancienne session du Pharmacien est coupée", call("GET", "/api/pharmacy/auth/me", token=user_b)[1] == 401)
     user_b = login(cred_b, "pharmacien", body["password"])[0]["token"]
@@ -181,6 +183,21 @@ try:
     check("connexion unique : mauvais mot de passe refusé", uni(cred_c["code"], "faux-faux")[1] == 401)
     body, status, _ = call("POST", "/api/pharmacy/auth/change-password", {"current": cred_c["password"], "next": team_pw_c}, user_c)
     check("Pharmacien et Équipe ne peuvent pas avoir le même mot de passe", status == 400 and "différent" in body.get("error", ""), body)
+
+    # Fiche de l'officine : modifier, mot de passe Équipe, déconnecter l'ordinateur, supprimer (avec confirmation)
+    body, status, _ = call("PATCH", f"/api/pharmacies/{pb}", {"name": "ZZ C Modifiée", "city": "Thiès"}, owner)
+    check("informations de l'officine modifiées", status == 200 and body["pharmacy"]["name"] == "ZZ C Modifiée" and body["pharmacy"]["city"] == "Thiès", body)
+    check("modification refusée à une pharmacie", call("PATCH", f"/api/pharmacies/{pb}", {"name": "pirate"}, user_c)[1] == 401)
+    body, status, _ = call("POST", f"/api/pharmacies/{pb}/reset-password", {"password": "ownerpw", "account": "equipe"}, owner)
+    check("nouveau mot de passe Équipe par le superviseur", status == 200 and body["account"] == "equipe" and uni(cred_c["code"], body["password"])[0]["user"]["profile"] == "equipe", body)
+    check("déconnecter l'ordinateur : mot de passe exigé", call("POST", f"/api/pharmacies/{pb}/agent/revoke", {}, owner)[1] == 403)
+    check("déconnecter l'ordinateur", call("POST", f"/api/pharmacies/{pb}/agent/revoke", {"password": "ownerpw"}, owner)[1] == 200)
+    check("abonnement : quota invalide refusé", call("PATCH", f"/api/pharmacies/{pb}/subscription", {"plan": "standard", "quota": -5}, owner)[1] == 400)
+    gone, _ = mk("ZZ À Supprimer")
+    check("suppression : nom mal retapé refusé", call("POST", f"/api/pharmacies/{gone}/delete", {"password": "ownerpw", "confirmName": "autre"}, owner)[1] == 400)
+    check("suppression : mot de passe exigé", call("POST", f"/api/pharmacies/{gone}/delete", {"confirmName": "zz à supprimer"}, owner)[1] == 403)
+    check("suppression avec nom et mot de passe", call("POST", f"/api/pharmacies/{gone}/delete", {"password": "ownerpw", "confirmName": "zz à supprimer"}, owner)[1] == 200
+          and gone not in [p["id"] for p in call("GET", "/api/dashboard", token=owner)[0]["pharmacies"]])
 
     # Sécurité : sessions, jeton dans l'adresse, ancienne route, en-têtes du navigateur
     tok1 = login(cred_c, "pharmacien", cred_c["password"])[0]["token"]

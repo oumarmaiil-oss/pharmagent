@@ -456,13 +456,54 @@ app.post('/api/pharmacies', (req, res) => {
   res.status(201).json({ pharmacy, credentials: { code: pharmacy.code, password } });
 });
 
+// Actions sensibles du superviseur : son mot de passe est redemandé (standard « confirmer votre identité »)
+function requireOwnerConfirm(req: express.Request, res: express.Response): boolean {
+  if (!requireOwner(req, res)) return false;
+  if (rateLimited(req, res, 'confirm')) return false;
+  if (!store.verifyOwnerPassword(String((req.body as { password?: string })?.password ?? ''))) {
+    recordFailure(req, 'confirm');
+    res.status(403).json({ error: 'Mot de passe du superviseur incorrect : action annulée.' });
+    return false;
+  }
+  clearFailures(req, 'confirm');
+  return true;
+}
+
 app.post('/api/pharmacies/:id/reset-password', (req, res) => {
-  if (!requireOwner(req, res)) return;
+  if (!requireOwnerConfirm(req, res)) return;
   const ph = store.getPharmacy(req.params.id);
-  const password = ph ? store.resetPharmacistPassword(ph.id) : null;
-  if (!ph || !password) { res.status(404).json({ error: 'Officine introuvable.' }); return; }
-  store.addAuditLog({ pharmacyId: ph.id, actorId: 'OWNER-01', actorName: store.getOwner().fullName, action: 'Mot de passe du compte Pharmacien réinitialisé', level: 'warning' });
-  res.json({ code: ph.code, password });
+  if (!ph) { res.status(404).json({ error: 'Officine introuvable.' }); return; }
+  const team = (req.body as { account?: string }).account === 'equipe';
+  const password = team ? store.resetTeamAccount(ph.id) : store.resetPharmacistPassword(ph.id);
+  if (!password) { res.status(404).json({ error: 'Officine introuvable.' }); return; }
+  store.addAuditLog({ pharmacyId: ph.id, actorId: 'OWNER-01', actorName: store.getOwner().fullName, action: `Mot de passe du compte ${team ? 'Équipe' : 'Pharmacien'} réinitialisé par le superviseur`, level: 'warning' });
+  res.json({ code: ph.code, password, account: team ? 'equipe' : 'pharmacien' });
+});
+
+app.patch('/api/pharmacies/:id', (req, res) => {
+  if (!requireOwner(req, res)) return;
+  const ph = store.updatePharmacyInfo(req.params.id, req.body as Record<string, string>);
+  if (!ph) { res.status(404).json({ error: 'Officine introuvable.' }); return; }
+  store.addAuditLog({ pharmacyId: ph.id, actorId: 'OWNER-01', actorName: store.getOwner().fullName, action: 'Informations de l\'officine modifiées', level: 'info' });
+  res.json({ pharmacy: ph });
+});
+
+app.post('/api/pharmacies/:id/agent/revoke', (req, res) => {
+  if (!requireOwnerConfirm(req, res)) return;
+  if (!store.revokeAgent(req.params.id)) { res.status(404).json({ error: 'Officine introuvable.' }); return; }
+  store.addAuditLog({ pharmacyId: req.params.id, actorId: 'OWNER-01', actorName: store.getOwner().fullName, action: 'Ordinateur déconnecté par le superviseur (clé de l\'agent révoquée)', level: 'warning' });
+  res.json({ ok: true });
+});
+
+app.post('/api/pharmacies/:id/delete', (req, res) => {
+  if (!requireOwnerConfirm(req, res)) return;
+  const ph = store.getPharmacy(req.params.id);
+  if (!ph) { res.status(404).json({ error: 'Officine introuvable.' }); return; }
+  const typed = String((req.body as { confirmName?: string }).confirmName ?? '').trim().toLowerCase();
+  if (typed !== ph.name.trim().toLowerCase()) { res.status(400).json({ error: "Le nom saisi ne correspond pas : l'officine n'est pas supprimée." }); return; }
+  store.deletePharmacy(ph.id);
+  store.addAuditLog({ pharmacyId: ph.id, actorId: 'OWNER-01', actorName: store.getOwner().fullName, action: `Officine supprimée : ${ph.name} (${ph.city})`, level: 'warning' });
+  res.json({ ok: true });
 });
 
 // ─── Espace pharmacie (compte Pharmacien ou Équipe) ──────
@@ -548,7 +589,11 @@ app.patch('/api/pharmacies/:id/subscription', (req, res) => {
   if (!requireOwner(req, res)) return;
   const { plan, quota } = req.body as { plan: string; quota?: number };
   if (!['trial', 'standard', 'premium', 'suspended'].includes(plan)) { res.status(400).json({ error: 'Formule inconnue.' }); return; }
-  store.updatePharmacySubscription(req.params.id, plan as 'trial', quota);
+  const q = quota === undefined ? undefined : Math.round(Number(quota));
+  if (q !== undefined && !(q >= 0 && q <= 100_000)) { res.status(400).json({ error: 'Quota invalide (0 à 100 000).' }); return; }
+  if (!store.getPharmacy(req.params.id)) { res.status(404).json({ error: 'Officine introuvable.' }); return; }
+  store.updatePharmacySubscription(req.params.id, plan as 'trial', q);
+  store.addAuditLog({ pharmacyId: req.params.id, actorId: 'OWNER-01', actorName: store.getOwner().fullName, action: `Abonnement : ${plan}${q !== undefined ? `, ${q} bons/mois` : ''}`, level: 'info' });
   res.json({ ok: true });
 });
 

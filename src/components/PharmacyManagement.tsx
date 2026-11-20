@@ -1,5 +1,6 @@
 import { Building2, ChevronDown, ChevronUp, Download, Loader2, Plus, Upload } from 'lucide-react';
 import { useRef, useState } from 'react';
+import PharmacyAdmin, { SOFTWARE_OPTIONS } from './PharmacyAdmin.tsx';
 import type { DashboardSnapshot, OwnerAccount, TargetSoftwareType } from '../types/pharmagent.ts';
 
 interface Props {
@@ -11,14 +12,6 @@ interface Props {
   onSelectPharmacy: (id: string) => void;
 }
 
-const SOFTWARE_OPTIONS: TargetSoftwareType[] = ['ERP Officine Intégré', 'Excel / Tableur', 'Dossier Patient'];
-const PLAN_OPTIONS = [
-  { value: 'trial', label: 'Essai (50/mois)' },
-  { value: 'standard', label: 'Standard (200/mois)' },
-  { value: 'premium', label: 'Premium (500/mois)' },
-  { value: 'suspended', label: 'Suspendu' },
-];
-const PLAN_QUOTA: Record<string, number> = { trial: 50, standard: 200, premium: 500, suspended: 0 };
 
 export default function PharmacyManagement({ token, snapshot, onRefresh }: Props) {
   const [showForm, setShowForm] = useState(false);
@@ -50,23 +43,6 @@ export default function PharmacyManagement({ token, snapshot, onRefresh }: Props
     } finally {
       setLoading(false);
     }
-  };
-
-  const resetPharmacistPassword = async (id: string, name: string) => {
-    if (!window.confirm(`Réinitialiser le mot de passe du compte Pharmacien de ${name} ? L'ancien ne fonctionnera plus.`)) return;
-    const r = await fetch(`/api/pharmacies/${id}/reset-password`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
-    const data = await r.json() as { code?: string; password?: string; error?: string };
-    if (r.ok && data.code && data.password) setCredentials({ name, code: data.code, password: data.password });
-    else window.alert(data.error ?? 'Réinitialisation impossible.');
-  };
-
-  const handlePlanChange = async (id: string, plan: string) => {
-    await fetch(`/api/pharmacies/${id}/subscription`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ plan, quota: PLAN_QUOTA[plan] }),
-    });
-    onRefresh();
   };
 
   return (
@@ -183,35 +159,8 @@ export default function PharmacyManagement({ token, snapshot, onRefresh }: Props
                 </div>
 
                 {isOpen && (
-                  <div className="border-t border-slate-800 p-5 space-y-4">
-                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
-                      <div><span className="text-slate-500">Identifiant de connexion :</span> <span className="font-mono font-bold tracking-widest text-emerald-300">{ph.code}</span></div>
-                      <div><span className="text-slate-500">Région :</span> <span className="text-slate-300">{ph.region}</span></div>
-                      <div><span className="text-slate-500">Créé le :</span> <span className="text-slate-300">{new Date(ph.createdAt).toLocaleDateString('fr-FR')}</span></div>
-                      <div><span className="text-slate-500">Agent :</span> <span className={ph.agent && Date.now() - Date.parse(ph.agent.lastSeen) < 70000 ? 'text-emerald-300' : 'text-slate-400'}>{ph.agent ? (Date.now() - Date.parse(ph.agent.lastSeen) < 70000 ? `en ligne (${ph.agent.hostname ?? 'PC'})` : 'hors ligne') : 'non installé'}</span></div>
-                    </div>
-
-                    {/* Changer le plan */}
-                    <div>
-                      <label className="block text-xs text-slate-400 mb-1.5">Abonnement</label>
-                      <select
-                        value={ph.subscription}
-                        onChange={(e) => handlePlanChange(ph.id, e.target.value)}
-                        className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-white focus:border-emerald-500 outline-none"
-                      >
-                        {PLAN_OPTIONS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
-                      </select>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-3">
-                      <button onClick={() => resetPharmacistPassword(ph.id, ph.name)} className="text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-3 py-1.5 rounded-lg">
-                        Réinitialiser le mot de passe Pharmacien
-                      </button>
-                      <p className="text-xs text-slate-500">
-                        Connexion : identifiant <b className="text-slate-300">{ph.code}</b> + mot de passe Pharmacien (ou Équipe). Installation de l'ordinateur : onglet <b className="text-slate-300">Agent local</b>.
-                      </p>
-                    </div>
-                  </div>
+                  <PharmacyAdmin key={ph.id} ph={ph} token={token} onChanged={onRefresh}
+                    onCredentials={(c) => setCredentials({ name: c.account === 'equipe' ? `${c.name} — compte Équipe` : c.name, code: c.code, password: c.password })} />
                 )}
               </div>
             );
