@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-AGENT_VERSION = "2.3.4"
+AGENT_VERSION = "2.3.5"
 DEFAULT_SERVER = "https://pharmagent.onrender.com"
 PANEL_PORT = int(os.environ.get("PHARMAGENT_PORT", "8765"))
 POLL_SECONDS = float(os.environ.get("PHARMAGENT_POLL", "5"))
