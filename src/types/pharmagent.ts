@@ -23,6 +23,7 @@ export interface Pharmacy {
   subscription: SubscriptionPlan;
   monthlyQuota: number;        // brouillons autorisés par mois
   usedThisMonth: number;
+  quotaMonth?: string;         // mois (AAAA-MM) du compteur usedThisMonth
   agentKey: string;            // clé secrète pour l'agent Python local
   agent?: AgentPresence;
 }
@@ -171,6 +172,7 @@ export interface DraftRecord {
   status: DraftStatus;
   extractionStatus?: ExtractionStatus;
   extractionError?: string;
+  duplicateOf?: { id: string; createdAt: string; status: DraftStatus };
   documentCategory: DocumentCategory;
   extractedData: ExtractedDocumentData;
   columnMapping: ColumnMapping[];

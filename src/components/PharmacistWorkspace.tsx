@@ -5,6 +5,7 @@ import {
 import { useRef, useState } from 'react';
 import type { DashboardSnapshot, DraftRecord, OwnerAccount } from '../types/pharmagent.ts';
 import DraftLines, { countToReview } from './DraftLines.tsx';
+import { draftChecks } from './draftChecks.ts';
 import { ExecutionBadge, ExecutionDetail } from './ExecutionStatus.tsx';
 
 interface Props {
@@ -147,6 +148,10 @@ export default function PharmacistWorkspace({ token, snapshot, onRefresh, select
   };
 
   const decide = async (d: DraftRecord, action: 'approve' | 'reject') => {
+    if (action === 'approve') {
+      const errs = draftChecks(d).filter((c) => c.level === 'error');
+      if (errs.length && !window.confirm(`${errs.length} alerte(s) importante(s) :\n\n- ${errs.map((c) => c.text).join('\n- ')}\n\nApprouver quand même ?`)) return;
+    }
     setBusyId(d.id); setError('');
     try {
       const r = await fetch(`/api/drafts/${d.id}/${action}`, {
@@ -361,8 +366,26 @@ function DraftPanel(props: DraftProps) {
         </div>
         <span className={`text-xs px-2.5 py-1 rounded-full border font-medium whitespace-nowrap ${status[1]}`}>{status[0]}</span>
       </div>
+      <DraftChecks draft={draft} />
       <DraftBody {...props} />
     </section>
+  );
+}
+
+function DraftChecks({ draft }: { draft: DraftRecord }) {
+  if (draft.extractionStatus === 'processing' || draft.extractionStatus === 'error') return null;
+  const checks = draftChecks(draft);
+  if (!checks.length) {
+    return <div className="mb-3 flex items-center gap-2 text-[11px] text-emerald-300"><CheckCircle2 size={13} /> Contrôles OK : total, péremptions, doublon, quantités et prix.</div>;
+  }
+  return (
+    <div className="mb-3 space-y-1.5">
+      {checks.map((c, i) => (
+        <div key={i} className={`flex items-start gap-2 text-xs rounded-lg px-3 py-2 border ${c.level === 'error' ? 'bg-red-500/10 border-red-500/30 text-red-200' : 'bg-amber-500/10 border-amber-500/30 text-amber-200'}`}>
+          <AlertCircle size={14} className="flex-shrink-0 mt-0.5" /> <span>{c.text}</span>
+        </div>
+      ))}
+    </div>
   );
 }
 

@@ -1,5 +1,5 @@
-import { Building2, ChevronDown, ChevronUp, Loader2, Plus } from 'lucide-react';
-import { useState } from 'react';
+import { Building2, ChevronDown, ChevronUp, Download, Loader2, Plus, Upload } from 'lucide-react';
+import { useRef, useState } from 'react';
 import type { DashboardSnapshot, OwnerAccount, TargetSoftwareType } from '../types/pharmagent.ts';
 
 interface Props {
@@ -61,6 +61,8 @@ export default function PharmacyManagement({ token, snapshot, onRefresh }: Props
 
   return (
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
+      <BackupCard token={token} />
+
       {/* En-tête */}
       <div className="flex items-center justify-between">
         <div>
@@ -181,5 +183,67 @@ export default function PharmacyManagement({ token, snapshot, onRefresh }: Props
         </div>
       )}
     </div>
+  );
+}
+
+function BackupCard({ token }: { token: string }) {
+  const input = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const download = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const r = await fetch('/api/owner/backup', { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) { setMsg({ ok: false, text: 'Sauvegarde impossible.' }); return; }
+      const url = URL.createObjectURL(await r.blob());
+      const a = document.createElement('a');
+      a.href = url; a.download = `pharmagent-sauvegarde-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click(); URL.revokeObjectURL(url);
+      setMsg({ ok: true, text: 'Sauvegarde téléchargée. Gardez ce fichier en lieu sûr : il contient les comptes et les clés des agents.' });
+    } catch {
+      setMsg({ ok: false, text: 'Connexion impossible.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const restore = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !window.confirm('Remplacer TOUTES les données actuelles par cette sauvegarde ?')) return;
+    setBusy(true); setMsg(null);
+    try {
+      const data = JSON.parse(await file.text()) as unknown;
+      const r = await fetch('/api/owner/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ data }),
+      });
+      const d = await r.json() as { pharmacies?: number; drafts?: number; error?: string };
+      if (!r.ok) { setMsg({ ok: false, text: d.error ?? 'Restauration impossible.' }); return; }
+      setMsg({ ok: true, text: `Restauré : ${d.pharmacies} officine(s), ${d.drafts} brouillon(s). Rechargez la page et reconnectez-vous si besoin.` });
+    } catch {
+      setMsg({ ok: false, text: 'Fichier de sauvegarde illisible.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-2">
+      <div className="text-sm font-semibold text-white">Sauvegarde des données</div>
+      <p className="text-xs text-slate-400">La base gratuite expire 30 jours après sa création. Avant cette date : téléchargez une sauvegarde, créez une nouvelle base, puis restaurez la sauvegarde ici.</p>
+      <div className="flex flex-wrap gap-2">
+        <button onClick={download} disabled={busy} className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium px-3 py-2 rounded-lg disabled:opacity-50">
+          {busy ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />} Télécharger la sauvegarde
+        </button>
+        <button onClick={() => input.current?.click()} disabled={busy} className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium px-3 py-2 rounded-lg disabled:opacity-50">
+          <Upload size={14} /> Restaurer une sauvegarde
+        </button>
+        <input ref={input} type="file" accept=".json,application/json" className="hidden" onChange={restore} />
+      </div>
+      {msg && <p className={`text-[11px] ${msg.ok ? 'text-emerald-300' : 'text-red-300'}`}>{msg.text}</p>}
+    </section>
   );
 }

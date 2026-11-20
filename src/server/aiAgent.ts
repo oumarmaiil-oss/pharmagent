@@ -43,7 +43,18 @@ function documentBlock(mimeType: string, data: string): Anthropic.ContentBlockPa
   return { type: 'image', source: { type: 'base64', media_type: mimeType as ImageType, data } };
 }
 
+// Garde-fou de dépense : nombre maximal d'appels à l'IA par jour, toutes officines confondues
+const DAILY_LIMIT = Number(process.env.PHARMAGENT_DAILY_AI_LIMIT) || 300;
+let usage = { day: '', count: 0 };
+function countAiCall(): void {
+  const day = new Date().toISOString().slice(0, 10);
+  if (usage.day !== day) usage = { day, count: 0 };
+  if (usage.count >= DAILY_LIMIT) throw new Error(`Limite quotidienne d'analyses IA atteinte (${DAILY_LIMIT}). Réessayez demain.`);
+  usage.count++;
+}
+
 async function ask<T>(content: Anthropic.ContentBlockParam[], schema: Record<string, unknown>): Promise<{ data: T; tokens: number }> {
+  countAiCall();
   try {
     const res = await getClient().messages.create({
       model: MODEL,

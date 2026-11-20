@@ -403,6 +403,26 @@ app.post('/api/owner/auth/change-credentials', (req, res) => {
 
 // ─── Dashboard ────────────────────────────────────────────
 
+// Sauvegarde complète (à garder en lieu sûr : contient les comptes et clés d'agents)
+app.get('/api/owner/backup', (req, res) => {
+  if (!requireOwner(req, res)) return;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="pharmagent-sauvegarde-${new Date().toISOString().slice(0, 10)}.json"`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(JSON.stringify(store.exportState()));
+});
+
+app.post('/api/owner/restore', async (req, res) => {
+  if (!requireOwner(req, res)) return;
+  try {
+    const result = await store.importState((req.body as { data?: unknown }).data);
+    store.addAuditLog({ pharmacyId: 'OWNER', actorId: 'OWNER-01', actorName: store.getOwner().fullName, action: `Restauration d'une sauvegarde : ${result.pharmacies} officine(s), ${result.drafts} brouillon(s)`, level: 'warning' });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
 app.get('/api/dashboard', (req, res) => {
   if (!requireOwner(req, res)) return;
   res.json(store.getDashboard());
@@ -766,6 +786,8 @@ app.post('/api/agent/extract', async (req, res) => {
   const effPharmacyId = pharmacyId ?? pharmacyUser?.pharmacyId;
   if (!effPharmacyId || !store.getPharmacy(effPharmacyId)) { res.status(400).json({ error: 'Officine inconnue.' }); return; }
   if (pharmacyUser && pharmacyUser.pharmacyId !== effPharmacyId) { res.status(403).json({ error: 'Accès interdit à une autre officine.' }); return; }
+  const quota = store.checkQuota(effPharmacyId);
+  if (!quota.ok) { res.status(429).json({ error: quota.reason }); return; }
 
   let resolved: { base64: string; mimeType: string };
   try {

@@ -410,10 +410,41 @@ class PharmAgentStore {
     const draft: DraftRecord = { ...params, id: `dr-${nanoid(10)}`, createdAt: now(), updatedAt: now() };
     this.db.drafts.unshift(draft);
     const ph = this.db.pharmacies.find((p) => p.id === params.pharmacyId);
-    if (ph) ph.usedThisMonth += 1;
+    if (ph) { this.rollMonth(ph); ph.usedThisMonth += 1; }
     if (this.db.drafts.length > 500) this.db.drafts = this.db.drafts.slice(0, 500);
     this.persist();
     return draft;
+  }
+
+  private rollMonth(ph: Pharmacy): void {
+    const month = new Date().toISOString().slice(0, 7);
+    if (ph.quotaMonth !== month) { ph.quotaMonth = month; ph.usedThisMonth = 0; }
+  }
+
+  checkQuota(pharmacyId: string): { ok: true } | { ok: false; reason: string } {
+    const ph = this.db.pharmacies.find((p) => p.id === pharmacyId);
+    if (!ph) return { ok: false, reason: 'Officine inconnue.' };
+    this.rollMonth(ph);
+    if (ph.subscription === 'suspended') return { ok: false, reason: 'Abonnement suspendu : contactez le responsable PharmAgent.' };
+    if (ph.usedThisMonth >= ph.monthlyQuota) {
+      return { ok: false, reason: `Quota mensuel atteint (${ph.usedThisMonth}/${ph.monthlyQuota} bons). Le propriétaire peut l'augmenter dans Mes Officines.` };
+    }
+    return { ok: true };
+  }
+
+  exportState(): Database {
+    return JSON.parse(JSON.stringify(this.db)) as Database;
+  }
+
+  async importState(data: unknown): Promise<{ pharmacies: number; drafts: number }> {
+    const d = data as Partial<Database> | null;
+    if (!d || typeof d !== 'object' || !d.owner || !Array.isArray(d.pharmacies) || !Array.isArray(d.drafts)) {
+      throw new Error('Fichier de sauvegarde invalide.');
+    }
+    this.db = this.migrate(d as Database);
+    this.writeFile();
+    await this.flushPg();
+    return { pharmacies: this.db.pharmacies.length, drafts: this.db.drafts.length };
   }
 
   finalizeExtraction(id: string, data: DraftRecord['extractedData'], mapping: DraftRecord['columnMapping'], tokens: number): void {
@@ -423,6 +454,12 @@ class PharmAgentStore {
     draft.columnMapping = mapping;
     draft.tokensConsumed = tokens;
     draft.extractionStatus = 'ready';
+    const key = (s?: string) => (s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const number = key(data.documentNumber);
+    const dup = number ? this.db.drafts.find((d) => d.id !== id && d.pharmacyId === draft.pharmacyId && d.status !== 'rejected'
+      && d.extractionStatus !== 'error' && key(d.extractedData.documentNumber) === number
+      && key(d.extractedData.supplierOrOrg) === key(data.supplierOrOrg)) : undefined;
+    draft.duplicateOf = dup ? { id: dup.id, createdAt: dup.createdAt, status: dup.status } : undefined;
     draft.updatedAt = now();
     this.persist();
   }
