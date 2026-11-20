@@ -1536,6 +1536,15 @@ app.get('/install/install.sh', (req, res) => {
   sendScript(res, agentFile('install.sh').replaceAll('__SERVER_URL__', publicBaseUrl(req)), 'install.sh', 'text/x-shellscript');
 });
 
+app.get('/uninstall/mac', (req, res) => {
+  const base = publicBaseUrl(req);
+  sendScript(res, `#!/bin/bash\n# PharmAgent — suppression macOS\ncurl -fsSL "${base}/uninstall/uninstall.sh" | bash\nread -n 1 -s -r -p "Appuyez sur une touche pour fermer cette fenêtre..."\n`, 'PharmAgent-Desinstaller.command', 'application/octet-stream');
+});
+
+app.get('/uninstall/uninstall.sh', (_req, res) => {
+  sendScript(res, agentFile('uninstall.sh'), 'uninstall.sh', 'text/x-shellscript');
+});
+
 app.get('/agent/pharmagent_agent.py', (_req, res) => {
   sendScript(res, agentFile('pharmagent_agent.py'), 'pharmagent_agent.py', 'text/x-python');
 });
