@@ -13,6 +13,7 @@ reste au pharmacien.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -632,6 +633,7 @@ class Engine:
         self.erp_url: str = self.cfg.get("erpUrl", "")
         self.paused = bool(self.cfg.get("paused"))
         self.pairing: Optional[Dict[str, Any]] = None
+        self.support_code: str = ""
         self.task: Optional[Dict[str, Any]] = None
         self.last_result: Optional[Dict[str, Any]] = self.cfg.get("lastResult")
         self.last_error = ""
@@ -658,6 +660,7 @@ class Engine:
             "version": AGENT_VERSION, "os": SYSTEM, "status": status, "paired": paired,
             "pharmacyName": self.cfg.get("pharmacyName", ""), "erpUrl": self.erp_url,
             "pairingCode": (self.pairing or {}).get("code"), "task": self.task,
+            "supportCode": self.support_code,
             "lastResult": self.last_result, "lastError": self.last_error,
             "serverOk": self.server_ok, "server": self.api.server,
             "logs": list(LOG_LINES)[-60:],
@@ -724,6 +727,33 @@ class Engine:
                 self.cfg.pop(k, None)
             self._persist()
             return True
+        if name == "support":
+            # Envoi volontaire : état, journal, et surtout ce que l'agent voit de l'ERP.
+            payload: Dict[str, Any] = {
+                "state": self.state(),
+                "logs": [l["t"] + " " + l["msg"] for l in LOG_LINES],
+                "code": self.support_code or None,
+            }
+            try:
+                if self.browser.is_open:
+                    page = self.browser.ctx.pages[0]
+                    payload["foreground"] = page.url
+                    # Les champs reconnus sur la page : c'est ce qui explique un mauvais remplissage.
+                    survey = Filler(page).survey()
+                    payload["windows"] = {
+                        "enTete": [f.get("label") or f.get("name") for f in survey.get("header") or []],
+                        "colonnes": [f.get("label") or f.get("name") for f in (survey.get("rows") or [[]])[0]],
+                        "lignesPresentes": len(survey.get("rows") or []),
+                        "boutons": [{"texte": b.get("text"), "interdit": b.get("forbidden")}
+                                    for b in survey.get("buttons") or []],
+                    }
+                    payload["screenshot"] = base64.b64encode(page.screenshot(full_page=True)).decode()
+            except Exception as e:
+                payload["foreground"] = "lecture de l'ERP impossible : %s" % str(e)[:120]
+            res = self.api.call("POST", "/api/agent-client/support", payload, timeout=60)
+            self.support_code = str((res or {}).get("code") or "")
+            log.info("Aide à distance : code %s (valable 1 heure).", self.support_code)
+            return {"code": self.support_code}
         if name == "quit":
             self.shutdown.set()
             return True
@@ -984,6 +1014,13 @@ function render(){
   Il ne clique jamais sur Valider, Confirmer, Clôturer ni Enregistrer définitivement : la validation reste au pharmacien.</div>
   ${S.lastError?`<div class="err">${esc(S.lastError)}</div>`:''}</div>`;
 
+  h+=`<div class="card"><label>Aide à distance</label>
+  <p class="sub">Envoie au support l'état de l'agent, son journal, et ce qu'il voit de l'ERP. Rien n'est envoyé sans ce clic.</p>
+  <div class="row"><button class="sec" ${busy?'disabled':''} onclick="call('support')">Envoyer au support</button></div>
+  ${S.supportCode?`<div class="coderow"><div class="code">${esc(S.supportCode)}</div>
+  <button class="sec" onclick="copyText('${esc(S.supportCode)}',this)">Copier</button></div>
+  <p class="sub">Donnez ce code au support (valable 1 heure).</p>`:''}</div>`;
+
   h+=`<div class="card"><label>Journal</label><pre>${S.logs.map(l=>esc(l.t+'  '+l.msg)).join('\n')}</pre>
   <div class="row"><button class="sec" onclick="if(confirm('Détacher cet ordinateur de la pharmacie ?'))call('unpair')">Détacher</button></div></div>`;
   // Rien n'a bougé : on laisse le HTML tel quel plutôt que de le reconstruire pour rien.
@@ -1029,7 +1066,7 @@ class Panel(BaseHTTPRequestHandler):
         if not self._local_only() or self.headers.get("X-PharmAgent") != "1":
             return self._json(403, {"error": "Accès refusé."})
         name = self.path[5:] if self.path.startswith("/api/") else ""
-        if name not in ("set_url", "open_erp", "pause", "unpair", "quit"):
+        if name not in ("set_url", "open_erp", "pause", "unpair", "support", "quit"):
             return self._json(404, {"error": "Commande inconnue."})
         length = min(int(self.headers.get("Content-Length") or 0), 100000)
         try:
