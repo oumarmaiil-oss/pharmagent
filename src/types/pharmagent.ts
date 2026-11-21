@@ -90,7 +90,14 @@ export interface DraftExecution {
   attempts: number;
   message?: string;
   durationMs?: number;
-  lines?: Array<{ index: number; ok: boolean; message?: string }>;
+  lines?: Array<{
+    index: number;
+    ok: boolean;
+    message?: string;
+    /** Ce que l'agent a écrit, champ par champ, et ce que l'ERP a réaffiché quand
+     *  l'affichage diffère. Permet de reconstituer un écart des semaines plus tard. */
+    written?: Array<{ champ: string; valeur: string; affiche?: string }>;
+  }>;
 }
 
 export interface PharmacyUser {

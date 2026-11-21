@@ -26,6 +26,8 @@ jobs:
         run: python tests/product_match.py
       - name: Remplissage d'une copie de l'ERP, garde-fou compris
         run: python tests/test_erp_fill.py tests/mock-erp/mock-erp.html
+      - name: Reprise d'une saisie interrompue (sans doublon)
+        run: python tests/resume.py
 
   serveur:
     name: Serveur et interface
@@ -67,87 +69,82 @@ jobs:
       - name: Remplissage d'une copie de l'ERP sous Windows, garde-fou compris
         run: python tests/test_erp_fill.py tests/mock-erp/mock-erp.html
 
-      - name: Lancer le faux serveur PharmAgent
+      - name: Reprise d'une saisie interrompue sous Windows
+        run: python tests/resume.py
+
+      # Sur Windows, le runner tue l'arbre de processus a la fin de chaque etape :
+      # un serveur lance dans une etape est mort dans la suivante. Toute la
+      # sequence tient donc dans une seule etape.
+      - name: Installation reelle, puis saisie de bout en bout
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $out = Join-Path $env:RUNNER_TEMP 'resultat.json'
-          "RESULT_FILE=$out" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Start-Process -FilePath python `
+          $srvLog = Join-Path $env:RUNNER_TEMP 'serveur.log'
+          $srvErr = Join-Path $env:RUNNER_TEMP 'serveur.err'
+
+          Write-Host '--- 1. faux serveur PharmAgent ---'
+          $srv = Start-Process -FilePath python -PassThru -WindowStyle Hidden `
             -ArgumentList "tests/fake_server.py","--port","$env:PORT","--out","$out" `
-            -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'serveur.log') `
-            -RedirectStandardError  (Join-Path $env:RUNNER_TEMP 'serveur.err') `
-            -WindowStyle Hidden
+            -RedirectStandardOutput $srvLog -RedirectStandardError $srvErr
+          $up = $false
           foreach ($i in 1..20) {
-            try { Invoke-RestMethod "http://127.0.0.1:$env:PORT/ci/state" -TimeoutSec 2 | Out-Null; break }
+            try { Invoke-RestMethod "http://127.0.0.1:$env:PORT/ci/state" -TimeoutSec 2 | Out-Null
+                  $up = $true; break }
             catch { Start-Sleep -Seconds 1 }
           }
-          Invoke-RestMethod "http://127.0.0.1:$env:PORT/ci/state" | ConvertTo-Json -Compress
-
-      - name: Pointer l'agent vers la copie de l'ERP
-        shell: pwsh
-        run: |
-          # L'agent lit son ERP dans sa configuration : on l'écrit avant l'installation.
-          $dir = Join-Path $env:APPDATA 'PharmAgent'
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          @{ erpUrl = "http://127.0.0.1:$env:PORT/erp"
-             server = "http://127.0.0.1:$env:PORT" } |
-            ConvertTo-Json | Set-Content -Path (Join-Path $dir 'config.json') -Encoding utf8
-          Get-Content (Join-Path $dir 'config.json')
-
-      - name: Exécuter install.ps1 (comme sur le poste d'une officine)
-        shell: pwsh
-        run: |
-          # Le vrai serveur remplace ce marqueur au téléchargement ; ici, nous.
-          $script = Get-Content agent/install.ps1 -Raw
-          $script = $script.Replace('__SERVER_URL__', "http://127.0.0.1:$env:PORT")
-          $path = Join-Path $env:RUNNER_TEMP 'install.ps1'
-          Set-Content -Path $path -Value $script -Encoding utf8
-          & $path
-
-      - name: Vérifier ce que l'installeur a produit
-        shell: pwsh
-        run: python tests/install_windows_check.py
-
-      - name: Attendre que l'agent saisisse le bon de livraison
-        shell: pwsh
-        run: |
-          $deadline = (Get-Date).AddMinutes(5)
-          while ((Get-Date) -lt $deadline -and -not (Test-Path $env:RESULT_FILE)) {
-            Start-Sleep -Seconds 3
-          }
-          if (-not (Test-Path $env:RESULT_FILE)) {
-            Write-Host 'Aucun compte rendu : la chaine ne va pas jusqu''au bout.'
+          if (-not $up) {
+            Write-Host 'Le faux serveur ne repond pas.'
+            Get-Content $srvLog, $srvErr -ErrorAction SilentlyContinue
             exit 1
           }
-          $r = Get-Content $env:RESULT_FILE -Raw | ConvertFrom-Json
-          Write-Host "Compte rendu : $($r.status) - $($r.message)"
-          $r.lines | ForEach-Object { Write-Host ("  ligne {0} : {1} {2}" -f $_.index, $_.ok, $_.message) }
-          if ($r.status -ne 'done') { Write-Host 'La saisie a echoue.'; exit 1 }
-          $rates = @($r.lines | Where-Object { -not $_.ok })
-          if ($rates.Count -gt 0) { Write-Host "$($rates.Count) ligne(s) non saisie(s)."; exit 1 }
-          Write-Host 'Installation, appairage, saisie et compte rendu : verifies sur Windows.'
+          Write-Host '    serveur en ecoute.'
 
-      - name: Journaux en cas d'échec
-        if: failure()
-        shell: pwsh
-        run: |
-          # L'agent n'ecrit pas de fichier : son journal se lit dans son panneau.
-          Write-Host '===== journal de l''agent (panneau 127.0.0.1:8765) ====='
           try {
-            $s = Invoke-RestMethod 'http://127.0.0.1:8765/api/state' -TimeoutSec 5
-            Write-Host ("version {0} | etat {1} | appaire {2} | serveur joignable {3}" -f `
-                        $s.version, $s.status, $s.paired, $s.serverOk)
-            Write-Host ("ERP vise : {0}" -f $s.erpUrl)
-            if ($s.lastError)  { Write-Host ("derniere erreur : {0}" -f $s.lastError) }
-            if ($s.lastResult) { Write-Host ("dernier resultat : {0}" -f $s.lastResult.message) }
-            $s.logs | ForEach-Object { Write-Host ("  {0}  {1}" -f $_.t, $_.msg) }
-          } catch {
-            Write-Host "Le panneau ne repond pas : $($_.Exception.Message)"
+            Write-Host '--- 2. configuration de l''agent (ERP vise) ---'
+            $dir = Join-Path $env:APPDATA 'PharmAgent'
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            @{ erpUrl = "http://127.0.0.1:$env:PORT/erp"
+               server = "http://127.0.0.1:$env:PORT" } |
+              ConvertTo-Json | Set-Content -Path (Join-Path $dir 'config.json') -Encoding utf8
+
+            Write-Host '--- 3. install.ps1, comme sur le poste d''une officine ---'
+            # Le vrai serveur remplace ce marqueur au telechargement ; ici, nous.
+            $script = (Get-Content agent/install.ps1 -Raw).Replace(
+              '__SERVER_URL__', "http://127.0.0.1:$env:PORT")
+            $installer = Join-Path $env:RUNNER_TEMP 'install.ps1'
+            Set-Content -Path $installer -Value $script -Encoding utf8
+            & $installer
+            if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw "install.ps1 a echoue ($LASTEXITCODE)" }
+
+            Write-Host '--- 4. ce que l''installeur a produit ---'
+            python tests/install_windows_check.py
+            if ($LASTEXITCODE -ne 0) { throw 'La verification de l''installation a echoue.' }
+
+            Write-Host '--- 5. saisie du bon de livraison par l''agent ---'
+            $deadline = (Get-Date).AddMinutes(5)
+            while ((Get-Date) -lt $deadline -and -not (Test-Path $out)) { Start-Sleep -Seconds 3 }
+            if (-not (Test-Path $out)) { throw 'Aucun compte rendu : la chaine ne va pas au bout.' }
+            $r = Get-Content $out -Raw | ConvertFrom-Json
+            Write-Host "    compte rendu : $($r.status) - $($r.message)"
+            $r.lines | ForEach-Object {
+              Write-Host ("      ligne {0} : ok={1} {2}" -f $_.index, $_.ok, $_.message) }
+            if ($r.status -ne 'done') { throw 'La saisie a echoue.' }
+            $rates = @($r.lines | Where-Object { -not $_.ok })
+            if ($rates.Count -gt 0) { throw "$($rates.Count) ligne(s) non saisie(s)." }
+            Write-Host ''
+            Write-Host 'Installation, appairage, saisie et compte rendu : verifies sur Windows.'
           }
-          foreach ($f in @((Join-Path $env:RUNNER_TEMP 'serveur.log'),
-                           (Join-Path $env:RUNNER_TEMP 'serveur.err'))) {
-            if (Test-Path $f) { Write-Host "===== $f ====="; Get-Content $f -Tail 80 }
+          finally {
+            Write-Host '--- journal de l''agent (panneau) ---'
+            try {
+              $st = Invoke-RestMethod 'http://127.0.0.1:8765/api/state' -TimeoutSec 5
+              Write-Host ("version {0} | etat {1} | appaire {2} | serveur joignable {3}" -f `
+                          $st.version, $st.status, $st.paired, $st.serverOk)
+              if ($st.lastError) { Write-Host ("derniere erreur : {0}" -f $st.lastError) }
+              $st.logs | ForEach-Object { Write-Host ("  {0}  {1}" -f $_.t, $_.msg) }
+            } catch { Write-Host "Le panneau ne repond pas : $($_.Exception.Message)" }
+            Write-Host '--- journal du faux serveur ---'
+            Get-Content $srvLog, $srvErr -ErrorAction SilentlyContinue
+            if ($srv -and -not $srv.HasExited) { Stop-Process -Id $srv.Id -Force }
           }
-          Write-Host '===== contenu du dossier de l''agent ====='
-          Get-ChildItem (Join-Path $env:LOCALAPPDATA 'PharmAgent') -Recurse -Depth 1 `
-            -ErrorAction SilentlyContinue | Select-Object FullName, Length | Format-Table -AutoSize

@@ -1363,10 +1363,22 @@ app.post('/api/agent-client/claim', (req, res) => {
 app.post('/api/agent-client/tasks/:draftId/result', (req, res) => {
   const ph = requireAgent(req, res);
   if (!ph) return;
-  const b = req.body as { status?: string; message?: string; durationMs?: number; lines?: Array<{ index: number; ok: boolean; message?: string }> };
+  const b = req.body as { status?: string; message?: string; durationMs?: number; lines?: Array<{ index: number; ok: boolean; message?: string; written?: Array<{ champ?: unknown; valeur?: unknown; affiche?: unknown }> }>; headerWritten?: unknown };
   if (b.status !== 'done' && b.status !== 'failed') { res.status(400).json({ error: 'status doit être "done" ou "failed".' }); return; }
+  // La trace d'écriture vient de l'agent : on la borne avant de la conserver.
+  const sanitizeWritten = (w: unknown) => (Array.isArray(w) ? w : []).slice(0, 40)
+    .filter((e): e is { champ?: unknown; valeur?: unknown; affiche?: unknown } => !!e && typeof e === 'object')
+    .map((e) => ({
+      champ: String(e.champ ?? '').slice(0, 60),
+      valeur: String(e.valeur ?? '').slice(0, 80),
+      affiche: typeof e.affiche === 'string' ? e.affiche.slice(0, 80) : undefined,
+    }))
+    .filter((e) => e.champ !== '');
   const lines = Array.isArray(b.lines)
-    ? b.lines.filter((l) => typeof l?.index === 'number').map((l) => ({ index: l.index, ok: !!l.ok, message: typeof l.message === 'string' ? l.message.slice(0, 300) : undefined }))
+    ? b.lines.filter((l) => typeof l?.index === 'number').map((l) => {
+        const written = sanitizeWritten(l.written);
+        return { index: l.index, ok: !!l.ok, message: typeof l.message === 'string' ? l.message.slice(0, 300) : undefined, written: written.length ? written : undefined };
+      })
     : undefined;
   const draft = store.finishExecution(req.params.draftId, ph.id, {
     status: b.status, message: typeof b.message === 'string' ? b.message : undefined,
@@ -1382,6 +1394,32 @@ app.post('/api/agent-client/tasks/:draftId/result', (req, res) => {
     level: b.status === 'done' ? 'info' : 'warning',
     details: b.message,
   });
+  // Un champ réaffiché autrement qu'écrit est tracé à part : c'est le cas qui
+  // fausse un stock sans que personne ne s'en aperçoive.
+  // L'en-tête saisi (fournisseur, référence, date) est consigné tel qu'écrit.
+  const entete = sanitizeWritten(b.headerWritten);
+  if (entete.length) {
+    store.addAuditLog({
+      pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent Floki',
+      action: `En-tête saisi dans l'ERP : ${draft.extractedData.documentNumber || draft.id}`,
+      level: 'info',
+      details: entete.map((w) => `${w.champ} = « ${w.valeur} »${w.affiche !== undefined ? ` (l'ERP affiche « ${w.affiche} »)` : ''}`).join(' ; '),
+    });
+  }
+  const ecarts = [
+    ...entete.filter((w) => w.affiche !== undefined)
+      .map((w) => `en-tête — ${w.champ} : écrit « ${w.valeur} », l'ERP affiche « ${w.affiche} »`),
+    ...(lines ?? []).flatMap((l) => (l.written ?? [])
+    .filter((w) => w.affiche !== undefined)
+      .map((w) => `ligne ${l.index + 1} — ${w.champ} : écrit « ${w.valeur} », l'ERP affiche « ${w.affiche} »`)),
+  ];
+  if (ecarts.length) {
+    store.addAuditLog({
+      pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent Floki',
+      action: `${ecarts.length} champ(s) réaffiché(s) différemment par l'ERP : ${draft.extractedData.documentNumber || draft.id}`,
+      level: 'warning', details: ecarts.slice(0, 12).join(' ; '),
+    });
+  }
   res.json({ ok: true });
 });
 

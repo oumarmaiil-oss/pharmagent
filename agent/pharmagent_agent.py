@@ -36,7 +36,7 @@ from collections import deque
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 AGENT_VERSION = "3.0.0"
@@ -304,6 +304,36 @@ def already_entered(survey: Dict[str, Any], header: Dict[str, Any]) -> bool:
     return bool(field and same_value(reference, field.get("value")))
 
 
+def lines_already_done(survey: Dict[str, Any], lines: List[Dict[str, Any]]) -> Set[int]:
+    """Positions des lignes du bon déjà présentes dans l'écran ouvert.
+
+    Une saisie interrompue à la cinquième ligne sur huit laisse l'écran à
+    moitié rempli. Sans ce relevé, renvoyer le bon ajouterait tout une seconde
+    fois — le stock compterait les médicaments en double — et le refuser
+    obligerait le pharmacien à tout reprendre à la main. On reconnaît donc ce
+    qui est déjà là, et on ne saisit que ce qui manque.
+
+    Le numéro de lot identifie une ligne de façon sûre : un même médicament
+    peut figurer deux fois sur un bon, avec deux lots différents. À défaut de
+    lot, on se rabat sur la désignation.
+    """
+    available = [norm(t) for t in (survey.get("rowTexts") or []) if norm(t)]
+    done: Set[int] = set()
+    for position, line in enumerate(lines):
+        lot = norm(line.get("lotNumber") or "")
+        product = norm(line.get("product") or line.get("designation") or "")
+        for marker in ([lot] if lot else []) + ([product] if product else []):
+            # Un lot très court (« R1 ») se retrouverait par hasard dans un prix.
+            if len(marker) < 3:
+                continue
+            hit = next((t for t in available if marker in t), None)
+            if hit:
+                available.remove(hit)  # une ligne de l'ERP ne vaut que pour un produit
+                done.add(position)
+                break
+    return done
+
+
 def looks_like_login(survey: Dict[str, Any]) -> bool:
     """Un écran de connexion n'a jamais de tableau de lignes à remplir."""
     if survey.get("hasLineTable"):
@@ -569,10 +599,17 @@ SURVEY_JS = r"""() => {
   }
 
   const rows = [];
+  // Texte de chaque ligne deja presente, valeurs des champs comprises : c'est ce
+  // qui permet de reconnaitre ce qui a deja ete saisi apres une interruption,
+  // que l'ERP affiche ses lignes en champs modifiables ou en texte fige.
+  const rowTexts = [];
   if (lineTable) {
     for (const tr of lineTable.querySelectorAll('tbody tr')) {
       const fields = Array.from(tr.querySelectorAll('input, select, textarea')).filter((e) => editable(e) && visible(e)).map(describe);
+      const values = Array.from(tr.querySelectorAll('input, select, textarea')).map((e) => e.value || '');
+      const text = ((tr.textContent || '') + ' ' + values.join(' ')).replace(/\s+/g, ' ').trim();
       if (fields.length) rows.push(fields);
+      if (text) rowTexts.push(text);
     }
   }
 
@@ -588,7 +625,8 @@ SURVEY_JS = r"""() => {
     buttons.push({ sel: sel(b), text: text, forbidden: FORBIDDEN.test(text), inTable: !!(lineTable && lineTable.contains(b)) });
   }
 
-  return { url: location.href, title: document.title, header: header, rows: rows, buttons: buttons,
+  return { url: location.href, title: document.title, header: header, rows: rows,
+           rowTexts: rowTexts, buttons: buttons,
            hasLineTable: !!lineTable, hasPassword: !!document.querySelector('input[type=password]') };
 }"""
 
@@ -752,6 +790,10 @@ class Filler:
         self.filled = 0
         self.skipped: List[str] = []
         self.altered: List[Dict[str, str]] = []
+        # Trace de chaque champ écrit, avec ce que l'ERP a réaffiché : c'est ce
+        # qui permet, des semaines plus tard, de savoir si une quantité fausse
+        # vient de la lecture du bon, de l'approbation, ou de la saisie.
+        self.written: List[Dict[str, str]] = []
         self.header_used: set = set()
 
     def survey(self) -> Dict[str, Any]:
@@ -868,10 +910,15 @@ class Filler:
             else:
                 got = loc.input_value(timeout=2000)
         except Exception:
-            return
-        if same_value(wanted, got):
-            return
+            # Champ devenu illisible : on garde quand même la trace de l'écriture.
+            got = None
         label = field.get("label") or field.get("name") or field.get("sel")
+        trace = {"champ": str(label)[:60], "valeur": str(wanted)[:80]}
+        if got is not None and not same_value(wanted, got):
+            trace["affiche"] = str(got)[:80]
+        self.written.append(trace)
+        if got is None or same_value(wanted, got):
+            return
         self.altered.append({"champ": label, "voulu": wanted, "obtenu": got})
         log.info("Champ « %s » : écrit « %s », l'ERP affiche « %s ».", label, wanted, got)
 
@@ -967,6 +1014,7 @@ class Filler:
                 results.append({"index": idx, "ok": False, "message": str(line["skip"])[:300]})
                 continue
             self.on_progress(position, len(lines), wanted or "?")
+            mark = len(self.written)  # pour isoler ce qui est écrit pour cette ligne
             choice = best_option(wanted, options)
             if not choice:
                 results.append({"index": idx, "ok": False,
@@ -976,6 +1024,13 @@ class Filler:
             try:
                 chooser.select_option(label=choice, timeout=5000)
                 self.page.wait_for_timeout(150)
+                # Le médicament retenu est la donnée la plus importante de la trace :
+                # on note le libellé du bon et l'article du catalogue effectivement choisi.
+                trace = {"champ": str(cat["chooser"].get("label") or "Produit")[:60],
+                         "valeur": str(choice)[:80]}
+                if norm(choice) != norm(wanted):
+                    trace["affiche"] = "demandé : " + str(wanted)[:66]
+                self.written.append(trace)
             except Exception as e:
                 results.append({"index": idx, "ok": False, "message": "Choix du produit impossible : %s" % str(e)[:150]})
                 continue
@@ -997,6 +1052,7 @@ class Filler:
                 "index": idx, "ok": added,
                 "message": (("Non rempli : " + ", ".join(missed))[:300] if missed else None) if added
                            else "L'ERP n'a pas ajouté la ligne.",
+                "written": self.written[mark:],
             })
             log.info("Ligne %d : %s (catalogue).", position + 1, choice[:60])
         return results
@@ -1015,6 +1071,7 @@ class Filler:
                 continue
             label = line.get("product") or line.get("designation") or "?"
             self.on_progress(position, len(lines), label)
+            mark = len(self.written)
             fields = self.ensure_row(position)
             if fields is None:
                 results.append({"index": idx, "ok": False, "message": "Impossible d'ajouter une ligne dans l'ERP."})
@@ -1039,6 +1096,7 @@ class Filler:
                 "index": idx,
                 "ok": wrote > 0,
                 "message": ("Non rempli : " + ", ".join(missed))[:300] if missed else None,
+                "written": self.written[mark:],
             })
             log.info("Ligne %d : %s (%d champ(s)).", position + 1, label, wrote)
         return results
@@ -1255,6 +1313,7 @@ class Engine:
         }
         log.info("Saisie : %s (%d ligne(s)).", self.task["documentNumber"], len(lines))
         status, message, results = "done", "", []
+        header_written: List[Dict[str, str]] = []
         try:
             try:
                 page = self.browser.open(self.erp_url)
@@ -1275,22 +1334,52 @@ class Engine:
                     "L'ERP demande une connexion : rien n'a été saisi. Connectez-vous dans la "
                     "fenêtre Agent Floki, ouvrez l'écran de réception, puis renvoyez le bon."
                 )
-            if already_entered(survey, header):
-                raise RuntimeError(
-                    "Le bon %s est déjà saisi dans l'écran ouvert (%d ligne(s) présentes) : rien n'a "
-                    "été ajouté. Validez ou videz cet écran avant de renvoyer le bon."
-                    % (header.get("documentNumber") or "", len(survey.get("rows") or []))
-                )
             if not survey.get("header") and not survey.get("rows") and not survey.get("hasLineTable"):
                 raise RuntimeError(
                     "Aucun champ de saisie sur « %s ». Ouvrez dans l'ERP l'écran de réception d'un bon de livraison."
                     % (survey.get("url") or self.erp_url)[:80]
                 )
-            filler.fill_header(header, survey)
-            results = filler.fill_lines(lines, survey)
+
+            # ── Reprise d'une saisie interrompue ──
+            # Un échec à la cinquième ligne sur huit laissait le pharmacien sans
+            # issue : tout resaisir comptait les médicaments en double, et le
+            # renvoi du bon était refusé en bloc. On relève donc ce qui est déjà
+            # dans l'écran et on ne saisit que ce qui manque.
+            done = lines_already_done(survey, lines)
+            if lines and len(done) >= len(lines):
+                raise RuntimeError(
+                    "Le bon %s est déjà entièrement saisi dans l'écran ouvert (%d ligne(s)) : rien "
+                    "n'a été ajouté. Vérifiez puis validez dans l'ERP."
+                    % (header.get("documentNumber") or "", len(lines))
+                )
+            header_done = already_entered(survey, header)
+            if done or header_done:
+                log.info("Reprise de la saisie : %d ligne(s) sur %d déjà présente(s) dans l'ERP.",
+                         len(done), len(lines))
+            if not header_done:
+                filler.fill_header(header, survey)
+            # Ce qui précède la première ligne est la trace de l'en-tête.
+            header_written = list(filler.written)
+            remaining = [line for i, line in enumerate(lines) if i not in done]
+            filled = filler.fill_lines(remaining, survey) if remaining else []
+
+            # Compte rendu rendu au bon dans son ordre d'origine, lignes reprises comprises.
+            by_index = {r.get("index"): r for r in filled}
+            results = []
+            for i, line in enumerate(lines):
+                idx = line.get("index", i)
+                if i in done:
+                    results.append({"index": idx, "ok": True,
+                                    "message": "Déjà présente dans l'ERP : non resaisie."})
+                else:
+                    results.append(by_index.get(idx, {"index": idx, "ok": False,
+                                                      "message": "Non traitée."}))
+
             ok_lines = sum(1 for r in results if r.get("ok"))
             message = "%d champ(s) saisi(s), %d ligne(s) sur %d, en %.1f s." % (
                 filler.filled, ok_lines, len(lines), time.time() - started)
+            if done:
+                message += " %d ligne(s) déjà présente(s), non resaisie(s)." % len(done)
             if filler.skipped:
                 message += " Non rempli : " + ", ".join(filler.skipped[:6]) + "."
             if filler.altered:
@@ -1322,6 +1411,7 @@ class Engine:
             try:
                 self.api.call("POST", "/api/agent-client/tasks/%s/result" % task["id"], {
                     "status": status, "message": message, "durationMs": duration, "lines": results,
+                    "headerWritten": header_written,
                 })
             except ApiError as e:
                 log.info("Compte rendu non transmis : %s", e)
