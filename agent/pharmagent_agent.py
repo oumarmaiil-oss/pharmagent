@@ -1122,6 +1122,7 @@ class Engine:
         self.support_code: str = ""
         self.mappings: Dict[str, Any] = dict(self.cfg.get("mappings") or {})
         self.check: Optional[Dict[str, Any]] = None
+        self.diagnosis: Optional[Dict[str, Any]] = None
         self.task: Optional[Dict[str, Any]] = None
         self.last_result: Optional[Dict[str, Any]] = self.cfg.get("lastResult")
         self.last_error = ""
@@ -1149,6 +1150,7 @@ class Engine:
             "pharmacyName": self.cfg.get("pharmacyName", ""), "erpUrl": self.erp_url,
             "pairingCode": (self.pairing or {}).get("code"), "task": self.task,
             "supportCode": self.support_code, "check": self.check,
+            "diagnosis": self.diagnosis,
             "lastResult": self.last_result, "lastError": self.last_error,
             "serverOk": self.server_ok, "server": self.api.server,
             "logs": list(LOG_LINES)[-60:],
@@ -1172,6 +1174,187 @@ class Engine:
         if "error" in box:
             raise box["error"]
         return box.get("result")
+
+    # ── Mode essai : montrer l'agent sans brancher le vrai ERP ─────────────
+
+    # Bon d'exemple : produits du catalogue de l'ERP de démonstration.
+    DEMO_TASK = {
+        "header": {"supplier": "UBIPHARM SENEGAL", "documentNumber": "BL-DEMO-001",
+                   "documentDate": "2026-11-21"},
+        "lines": [
+            {"index": 0, "product": "COTRIMOXAZOLE 480MG CP B/20", "quantity": 30,
+             "lotNumber": "LOT-CTX-2611", "expiryDate": "2028-08-31", "purchasePrice": 650},
+            {"index": 1, "product": "PARACETAMOL 250MG SUPP B/10", "quantity": 60,
+             "lotNumber": "LOT-PAR-2615", "expiryDate": "2029-01-31", "purchasePrice": 420},
+            {"index": 2, "product": "FER SULFATE 200MG CP B/30", "quantity": 45,
+             "lotNumber": "LOT-FER-2620", "expiryDate": "2028-05-31", "purchasePrice": 720},
+        ],
+    }
+
+    def _demo(self) -> Dict[str, Any]:
+        """Remplit l'ERP de démonstration servi par PharmAgent, sous les yeux du pharmacien.
+
+        Ne touche ni au vrai ERP, ni aux bons de la pharmacie : rien n'est
+        envoyé au serveur, et le garde-fou reste entier — la réception de
+        démonstration n'est pas validée non plus.
+        """
+        url = self.api.server.rstrip("/") + "/demo/erp"
+        log.info("Démonstration : ouverture de l'ERP d'exemple.")
+        page = self.browser.open(url)
+        Browser._settle(page)
+        filler = Filler(page)
+        survey = filler.survey()
+        if not survey.get("header") and not survey.get("hasLineTable"):
+            raise RuntimeError(
+                "L'ERP de démonstration ne s'est pas chargé. Vérifiez la connexion à PharmAgent.")
+        started = time.time()
+        filler.fill_header(self.DEMO_TASK["header"], survey)
+        results = filler.fill_lines(self.DEMO_TASK["lines"], survey)
+        ok = sum(1 for r in results if r.get("ok"))
+        interdits = [b.get("text") for b in survey.get("buttons") or [] if b.get("forbidden")]
+        message = ("Démonstration : %d champ(s) et %d ligne(s) sur %d remplis en %.1f s, "
+                   "sans rien valider." % (filler.filled, ok, len(self.DEMO_TASK["lines"]),
+                                           time.time() - started))
+        log.info("%s", message)
+        return {"message": message, "lignes": ok, "total": len(self.DEMO_TASK["lines"]),
+                "jamaisClique": [str(t)[:40] for t in interdits]}
+
+    # ── « Un problème ? » : l'agent se relit et se répare lui-même ──────────
+
+    def _diagnose(self) -> Dict[str, Any]:
+        """Cherche la cause de la panne, répare ce qui est sans risque, dit le reste.
+
+        Conçu pour une officine sans personne à appeler : tout se passe sur le
+        poste, rien ne part sur le réseau, et le garde-fou n'est jamais touché —
+        aucune réparation ne clique un bouton de validation.
+        """
+        constats: List[Dict[str, Any]] = []
+
+        def note(etat: str, titre: str, explication: str, geste: str = "", repare: bool = False) -> None:
+            constats.append({"etat": etat, "titre": titre, "explication": explication,
+                             "geste": geste, "repare": repare})
+
+        # 1. Le lien avec PharmAgent — vérifié pour de bon, pas d'après un
+        #    indicateur qui peut dater de plusieurs minutes.
+        try:
+            self.api.call("GET", "/agent/version", timeout=10)
+            self.server_ok = True
+            self.last_error = ""
+        except ApiError as e:
+            self.server_ok = e.status != 0 and e.status < 500
+            if not self.server_ok:
+                self.last_error = str(e)
+        except Exception as e:
+            self.server_ok = False
+            self.last_error = str(e)
+
+        if not self.api.key:
+            note("attention", "Cet ordinateur n'est pas encore relié à la pharmacie",
+                 "Sans liaison, aucun bon ne peut arriver jusqu'ici.",
+                 "Saisissez le code affiché ci-dessus dans PharmAgent, à la page « Agent local ».")
+        elif not self.server_ok:
+            note("probleme", "PharmAgent est injoignable",
+                 "L'agent n'arrive pas à parler au serveur : %s" % (self.last_error or "cause inconnue")[:150],
+                 "Vérifiez la connexion Internet du poste. L'agent réessaie tout seul en continu.")
+        else:
+            note("ok", "Liaison avec PharmAgent en ordre",
+                 "Le serveur répond et cet ordinateur est reconnu comme celui de « %s »."
+                 % (self.cfg.get("pharmacyName") or "la pharmacie"))
+
+        # 2. L'agent est-il en pause ?
+        if self.paused:
+            self.paused = False
+            self._persist()
+            note("repare", "L'agent était en pause",
+                 "En pause, il reçoit les bons mais n'écrit rien dans l'ERP.",
+                 repare=True)
+
+        # 3. L'adresse de l'ERP
+        if not self.erp_url:
+            note("probleme", "Aucune adresse d'ERP n'est enregistrée",
+                 "L'agent ne sait pas quelle page remplir.",
+                 "Collez l'adresse de l'écran de réception de votre ERP dans le champ ci-dessus.")
+            self.diagnosis = {"at": datetime.now().strftime("%d/%m %H:%M"), "constats": constats,
+                              "repares": sum(1 for c in constats if c.get("repare")),
+                              "restants": sum(1 for c in constats if c["etat"] == "probleme")}
+            return self.diagnosis
+
+        # 4. Le navigateur, et la page réellement ouverte
+        try:
+            relance = not self.browser.is_open
+            page = self.browser.open(self.erp_url)
+            Browser._settle(page)
+            if relance:
+                note("repare", "La fenêtre de l'agent était fermée",
+                     "Elle a été rouverte sur votre ERP : la saisie peut reprendre.", repare=True)
+        except Exception as e:
+            note("probleme", "Le navigateur ne démarre pas",
+                 friendly_error(e),
+                 "Relancez l'installateur PharmAgent : il réinstalle le navigateur et le vérifie.")
+            self.diagnosis = {"at": datetime.now().strftime("%d/%m %H:%M"), "constats": constats,
+                              "repares": sum(1 for c in constats if c.get("repare")),
+                              "restants": sum(1 for c in constats if c["etat"] == "probleme")}
+            return self.diagnosis
+
+        over = self.mappings.get(map_key(page.url)) or {}
+        filler = Filler(page, overrides=over)
+        survey = filler.survey()
+
+        if looks_like_login(survey):
+            note("attention", "Votre ERP demande une connexion",
+                 "L'agent n'écrit jamais dans un écran de connexion, et ne connaît pas votre mot de passe.",
+                 "Dans la fenêtre Agent Floki, connectez-vous, ouvrez l'écran de réception d'un bon, "
+                 "puis renvoyez le bon depuis PharmAgent.")
+        elif not survey.get("header") and not survey.get("rows") and not survey.get("hasLineTable"):
+            bonne_page = (page.url or "").split("#")[0] != (self.erp_url or "").split("#")[0]
+            if bonne_page:
+                try:
+                    page.goto(self.erp_url, wait_until="domcontentloaded", timeout=60000)
+                    Browser._settle(page)
+                    survey = filler.survey()
+                    note("repare", "La fenêtre s'était égarée sur une autre page",
+                         "Elle a été ramenée sur l'écran de votre ERP.", repare=True)
+                except Exception:
+                    pass
+            if not survey.get("header") and not survey.get("rows") and not survey.get("hasLineTable"):
+                note("probleme", "Cette page ne contient aucun champ à remplir",
+                     "L'agent voit « %s », qui n'est pas un écran de saisie."
+                     % (survey.get("title") or survey.get("url") or "")[:70],
+                     "Ouvrez dans la fenêtre Agent Floki l'écran de réception d'un bon de livraison, "
+                     "puis cliquez « Vérifier l'ERP ».")
+        else:
+            head_map = resolve(survey.get("header") or [], HEADER_VOCAB, over.get("header"), "sel")
+            manquants = [n for n in ("supplier", "documentNumber", "documentDate") if n not in head_map]
+            noms = {"supplier": "Fournisseur", "documentNumber": "Référence du bon",
+                    "documentDate": "Date de réception"}
+            if manquants:
+                note("attention", "Des champs d'en-tête ne sont pas reconnus",
+                     "L'agent ne sait pas où écrire : %s." % ", ".join(noms[n] for n in manquants),
+                     "Cliquez « Vérifier l'ERP » : vous pourrez désigner vous-même le bon champ.")
+            else:
+                note("ok", "L'écran de votre ERP est bien reconnu",
+                     "En-tête, colonnes de ligne et boutons sont identifiés.")
+            interdits = [b.get("text") for b in survey.get("buttons") or [] if b.get("forbidden")]
+            if interdits:
+                note("ok", "Le garde-fou est en place",
+                     "L'agent ne cliquera jamais : %s." % ", ".join(str(t)[:30] for t in interdits[:4]))
+
+        # 5. Ce que dit la dernière saisie
+        dernier = self.last_result or {}
+        if dernier.get("status") == "failed":
+            note("attention", "La dernière saisie s'est arrêtée",
+                 dernier.get("message") or "",
+                 "Renvoyez le bon depuis PharmAgent : l'agent reprend là où il s'était arrêté, "
+                 "sans saisir deux fois ce qui est déjà dans l'écran.")
+        elif dernier.get("message"):
+            note("ok", "Dernière saisie : %s" % dernier.get("at", ""), dernier["message"])
+
+        repares = sum(1 for c in constats if c.get("repare"))
+        restants = [c for c in constats if c["etat"] == "probleme"]
+        log.info("Diagnostic : %d réparation(s), %d problème(s) restant(s).", repares, len(restants))
+        self.diagnosis = {"at": datetime.now().strftime("%d/%m %H:%M"), "constats": constats,
+                          "repares": repares, "restants": len(restants)}
+        return self.diagnosis
 
     def _persist(self) -> None:
         self.cfg.update({
@@ -1251,6 +1434,13 @@ class Engine:
             log.info("Vérification de l'ERP : %d champ(s) d'en-tête, %d colonne(s) de ligne.",
                      len(head_fields), len(row_fields))
             return self.check
+        if name == "demo":
+            return self._demo()
+        if name == "diagnose":
+            return self._diagnose()
+        if name == "close_diagnosis":
+            self.diagnosis = None
+            return True
         if name == "save_mapping":
             if not self.check:
                 raise ValueError("Lancez d'abord « Vérifier l'ERP ».")
@@ -1537,6 +1727,12 @@ button:disabled{opacity:.5;cursor:default}
 .maprow select{flex:1 1 180px;min-width:0;padding:9px 11px;border-radius:9px;border:1px solid var(--line);background:#0e1527;color:var(--ink);font-size:14px}
 .guard{font-size:13px;color:var(--mut);border-left:3px solid var(--ok);padding-left:12px}
 .err{color:var(--bad);font-size:13px;margin-top:10px}
+.diag{border-left:3px solid var(--line);padding:2px 0 2px 12px;margin:12px 0}
+.diag.ok{border-color:var(--ok)}.diag.repare{border-color:var(--ok)}
+.diag.attention{border-color:#d08a1e}.diag.probleme{border-color:var(--bad)}
+.diag b{display:block;font-size:14px;margin-bottom:3px}
+.diag .geste{display:block;margin-top:6px;font-size:13px}
+.tag{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase}
 pre{background:#0e1527;border:1px solid var(--line);border-radius:10px;padding:12px;max-height:260px;overflow:auto;font:12px ui-monospace,Menlo,monospace;color:var(--mut);white-space:pre-wrap}
 .bar{height:6px;background:#0e1527;border-radius:999px;overflow:hidden;margin-top:10px}
 .bar i{display:block;height:100%;background:var(--ok)}
@@ -1611,7 +1807,27 @@ function render(){
     <button class="sec" ${busy?'disabled':''} onclick="call('open_erp')">Ouvrir l'ERP</button>
     <button class="sec" ${busy?'disabled':''} onclick="call('check_erp')">Vérifier l'ERP</button>
     <button class="sec" ${busy?'disabled':''} onclick="call('pause')">${S.status==='paused'?'Reprendre':'Mettre en pause'}</button></div>
-    <p class="sub">« Vérifier l'ERP » montre ce que l'agent a compris de votre écran de réception. Facultatif : sans cela, il se débrouille seul.</p></div>`;
+    <p class="sub">« Vérifier l'ERP » montre ce que l'agent a compris de votre écran de réception. Facultatif : sans cela, il se débrouille seul.</p></div>
+    <div class="card"><label>Quelque chose ne va pas ?</label>
+    <p class="sub">L'agent relit son journal et son écran, répare ce qu'il peut tout seul, et vous dit quoi faire pour le reste. Rien ne sort de la pharmacie.</p>
+    <div class="row"><button ${busy?'disabled':''} onclick="call('diagnose')">Un problème ?</button>
+    <button class="sec" ${busy?'disabled':''} onclick="call('demo')">Démonstration</button></div>
+    <p class="sub">« Démonstration » remplit un ERP d'exemple, sans toucher au vôtre : à montrer avant de brancher le vrai.</p></div>`;
+  }
+
+  if(S.diagnosis){
+    const d=S.diagnosis, mot={ok:'En ordre',repare:'Réparé',attention:'À regarder',probleme:'Bloquant'};
+    const coul={ok:'var(--ok)',repare:'var(--ok)',attention:'#d08a1e',probleme:'var(--bad)'};
+    h+=`<div class="card"><label>Diagnostic du ${esc(d.at||'')}</label>
+    <p class="sub">${d.repares?`${d.repares} chose(s) réparée(s) automatiquement. `:''}${d.restants?`${d.restants} point(s) demandent votre geste.`:'Rien ne bloque la saisie.'}</p>
+    ${(d.constats||[]).map((c)=>`<div class="diag ${esc(c.etat)}">
+      <span class="tag" style="color:${coul[c.etat]||'var(--mut)'}">${esc(mot[c.etat]||c.etat)}</span>
+      <b>${esc(c.titre)}</b>
+      <span class="sub">${esc(c.explication||'')}</span>
+      ${c.geste?`<span class="geste">→ ${esc(c.geste)}</span>`:''}
+    </div>`).join('')}
+    <div class="row"><button class="sec" ${busy?'disabled':''} onclick="call('diagnose')">Revérifier</button>
+    <button class="sec" ${busy?'disabled':''} onclick="call('close_diagnosis')">Fermer</button></div></div>`;
   }
 
   if(S.check){
@@ -1697,7 +1913,8 @@ class Panel(BaseHTTPRequestHandler):
             return self._json(403, {"error": "Accès refusé."})
         name = self.path[5:] if self.path.startswith("/api/") else ""
         if name not in ("set_url", "open_erp", "pause", "unpair", "support", "quit",
-                        "check_erp", "save_mapping", "close_check", "forget_mapping"):
+                        "check_erp", "save_mapping", "close_check", "forget_mapping",
+                        "diagnose", "close_diagnosis", "demo"):
             return self._json(404, {"error": "Commande inconnue."})
         length = min(int(self.headers.get("Content-Length") or 0), 100000)
         try:

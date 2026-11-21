@@ -13,7 +13,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "agent")
 import pharmagent_agent as A  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
 
-ERP = (pathlib.Path(__file__).resolve().parent / "mock-erp" / "mock-erp.html").as_uri()
+ERP = (pathlib.Path(__file__).resolve().parent.parent / "agent" / "demo-erp.html").as_uri()
 
 HEADER = {"supplier": "UBIPHARM SENEGAL", "documentNumber": "BL-REPRISE-001",
           "documentDate": "2026-11-21"}

@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 AGENT_FILE = ROOT / "agent" / "pharmagent_agent.py"
-ERP_FILE = ROOT / "tests" / "mock-erp" / "mock-erp.html"
+ERP_FILE = ROOT / "agent" / "demo-erp.html"
 
 KEY = "cle-de-test-ci"
 PHARMACY = "PHARMACIE DE TEST CI"
@@ -69,7 +69,7 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path == "/agent/pharmagent_agent.py":
             return self._send(200, AGENT_FILE.read_bytes(), "text/x-python; charset=utf-8")
-        if path in ("/erp", "/erp/", "/erp/index.html"):
+        if path in ("/erp", "/erp/", "/erp/index.html", "/demo/erp"):
             return self._send(200, ERP_FILE.read_bytes(), "text/html; charset=utf-8")
         if path == "/api/agent-client/pair/status":
             with lock:

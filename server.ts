@@ -1587,6 +1587,15 @@ app.get('/agent/pharmagent_agent.py', (_req, res) => {
   sendScript(res, agentFile('pharmagent_agent.py'), 'pharmagent_agent.py', 'text/x-python');
 });
 
+// ERP de démonstration : la copie exacte d'un écran de réception, servie pour
+// que l'agent puisse être montré en rendez-vous sans brancher le vrai ERP.
+// C'est le même fichier que celui sur lequel tournent les tests.
+app.get('/demo/erp', (_req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(agentFile('demo-erp.html'));
+});
+
 app.get('/agent/version', (_req, res) => {
   const src = agentFile('pharmagent_agent.py');
   const version = src.match(/^AGENT_VERSION\s*=\s*"([^"]+)"/m)?.[1] ?? '0';

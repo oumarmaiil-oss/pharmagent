@@ -25,9 +25,13 @@ jobs:
       - name: Appariement des médicaments (doit refuser les mauvais produits)
         run: python tests/product_match.py
       - name: Remplissage d'une copie de l'ERP, garde-fou compris
-        run: python tests/test_erp_fill.py tests/mock-erp/mock-erp.html
+        run: python tests/test_erp_fill.py agent/demo-erp.html
       - name: Reprise d'une saisie interrompue (sans doublon)
         run: python tests/resume.py
+      - name: Boîte « Un problème ? » (l'agent se répare seul)
+        run: python tests/diagnose.py
+      - name: Mode essai sur l'ERP de démonstration
+        run: python tests/demo_mode.py
 
   serveur:
     name: Serveur et interface
@@ -67,10 +71,16 @@ jobs:
           python -m playwright install chromium
 
       - name: Remplissage d'une copie de l'ERP sous Windows, garde-fou compris
-        run: python tests/test_erp_fill.py tests/mock-erp/mock-erp.html
+        run: python tests/test_erp_fill.py agent/demo-erp.html
 
       - name: Reprise d'une saisie interrompue sous Windows
         run: python tests/resume.py
+
+      - name: Boîte « Un problème ? » sous Windows
+        run: python tests/diagnose.py
+
+      - name: Mode essai sous Windows
+        run: python tests/demo_mode.py
 
       # Sur Windows, le runner tue l'arbre de processus a la fin de chaque etape :
       # un serveur lance dans une etape est mort dans la suivante. Toute la
