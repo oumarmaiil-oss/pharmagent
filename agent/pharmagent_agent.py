@@ -182,6 +182,19 @@ def same_value(wanted: Any, got: Any) -> bool:
         return False
 
 
+def already_entered(survey: Dict[str, Any], header: Dict[str, Any]) -> bool:
+    """Ce bon est-il déjà saisi dans l'écran ouvert ?
+
+    Après un échec à mi-parcours, renvoyer le bon ajouterait une seconde fois
+    toutes les lignes : le stock compterait les médicaments en double.
+    """
+    reference = str(header.get("documentNumber") or "").strip()
+    if not reference or not (survey.get("rows") or []):
+        return False
+    field = assign(survey.get("header") or [], HEADER_VOCAB).get("documentNumber")
+    return bool(field and same_value(reference, field.get("value")))
+
+
 def looks_like_login(survey: Dict[str, Any]) -> bool:
     """Un écran de connexion n'a jamais de tableau de lignes à remplir."""
     if survey.get("hasLineTable"):
@@ -435,6 +448,55 @@ SURVEY_JS = r"""() => {
 }"""
 
 
+# Liste de suggestions ouverte sous un champ : on ne retient que ce qui est
+# visible, proche du champ, et qui ressemble à une entrée de liste.
+SUGGEST_JS = r"""(sel) => {
+  const input = document.querySelector(sel);
+  if (!input) return [];
+  const r = input.getBoundingClientRect();
+  const FORBIDDEN = /valid|confirm|clotur|soumett|submit|commander|payer|checkout/i;
+  const esc = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/[^\w-]/g, '\\$&'));
+  const path = (el) => {
+    if (el.id) return '#' + esc(el.id);
+    const parts = [];
+    let n = el;
+    while (n && n.nodeType === 1 && parts.length < 8) {
+      if (n.id) { parts.unshift('#' + esc(n.id)); break; }
+      let p = n.tagName.toLowerCase();
+      const parent = n.parentElement;
+      if (parent) {
+        const same = Array.from(parent.children).filter((c) => c.tagName === n.tagName);
+        if (same.length > 1) p += ':nth-of-type(' + (same.indexOf(n) + 1) + ')';
+      }
+      parts.unshift(p);
+      n = n.parentElement;
+    }
+    return parts.join(' > ');
+  };
+  const holders = '[role=listbox], [class*=suggest], [class*=autocomplete], [class*=typeahead], [class*=result], [class*=dropdown]';
+  const nodes = new Set();
+  // Une liste de suggestions n'a pas toujours un nom de classe reconnaissable :
+  // c'est la position sous le champ qui la désigne, filtrée juste après.
+  document.querySelectorAll('[role=option], li').forEach((e) => nodes.add(e));
+  document.querySelectorAll(holders).forEach((h) => h.querySelectorAll('a, div[data-value], [class*=item]').forEach((e) => nodes.add(e)));
+  const out = [];
+  for (const el of nodes) {
+    if (el.querySelector('li, [role=option]')) continue;      // conteneur, pas une entrée
+    const b = el.getBoundingClientRect();
+    if (!b.width || !b.height) continue;
+    const s = getComputedStyle(el);
+    if (s.visibility === 'hidden' || s.display === 'none') continue;
+    if (b.top < r.top - 40 || b.top > r.bottom + 420) continue;   // doit être sous le champ
+    if (b.right < r.left - 40 || b.left > r.right + 320) continue; // et aligné avec lui
+    const text = (el.textContent || '').trim();
+    if (!text || text.length > 160 || FORBIDDEN.test(text)) continue;
+    out.push({ sel: path(el), text: text });
+    if (out.length > 60) break;
+  }
+  return out;
+}"""
+
+
 # ─── Navigateur ─────────────────────────────────────────────────────────────
 
 
@@ -549,8 +611,12 @@ class Filler:
     def survey(self) -> Dict[str, Any]:
         return self.page.evaluate(SURVEY_JS)
 
-    def write(self, field: Dict[str, Any], value: Any) -> bool:
-        """Remplit un champ. Jamais de touche Entrée (elle pourrait valider)."""
+    def write(self, field: Dict[str, Any], value: Any, pick: bool = False) -> bool:
+        """Remplit un champ. Jamais de touche Entrée (elle pourrait valider).
+
+        « pick » : champ produit, où l'ERP peut ouvrir une liste de suggestions
+        qu'il faut cliquer plutôt que de laisser le texte libre.
+        """
         text = "" if value is None else str(value)
         if text == "" or text.strip() == "":
             return False
@@ -579,6 +645,14 @@ class Filler:
                 loc.scroll_into_view_if_needed(timeout=3000)
                 loc.fill(text, timeout=5000)
                 written = text
+                if pick:
+                    chosen = self.pick_suggestion(field, text)
+                    self._dismiss_list()
+                    if chosen:
+                        # L'ERP a inscrit lui-même l'article : sa version fait foi.
+                        self.filled += 1
+                        log.info("Produit choisi dans la liste : %s", chosen[:60])
+                        return True
             # Beaucoup d'ERP ne valident et ne reformatent qu'en quittant le champ.
             # On se contente de le quitter : Playwright a déjà émis « change », et le
             # réémettre ferait reformater deux fois (650 deviendrait 65 000).
@@ -592,6 +666,53 @@ class Filler:
         except Exception as e:
             log.info("Champ « %s » non rempli : %s", field.get("label") or field.get("sel"), str(e)[:90])
             return False
+
+    def _click(self, loc, what: str) -> bool:
+        """Clique en réessayant une fois : une liste restée ouverte peut masquer le bouton."""
+        try:
+            loc.click(timeout=4000)
+            return True
+        except Exception:
+            self._dismiss_list()
+            try:
+                loc.click(timeout=4000)
+                return True
+            except Exception as e:
+                log.info("%s : clic impossible (%s)", what, str(e).splitlines()[0][:90])
+                return False
+
+    def _dismiss_list(self) -> None:
+        """Referme une liste restée ouverte : elle recouvrirait les boutons de la page.
+        Échap ne valide rien — contrairement à Entrée, qu'on ne touche jamais."""
+        try:
+            self.page.keyboard.press("Escape")
+            self.page.wait_for_timeout(80)
+        except Exception:
+            pass
+
+    def pick_suggestion(self, field: Dict[str, Any], wanted: str) -> Optional[str]:
+        """Choisit dans la liste qui s'ouvre sous un champ produit. Ne clique qu'à coup sûr."""
+        try:
+            self.page.wait_for_timeout(350)
+            items = self.page.evaluate(SUGGEST_JS, field["sel"])
+        except Exception:
+            return None
+        if not items:
+            return None
+        texts = [i["text"] for i in items]
+        choice = best_option(wanted, texts)
+        if not choice:
+            log.info("Liste ouverte sous « %s » mais aucune entrée ne correspond à « %s » : "
+                     "le texte est laissé tel quel.", field.get("label") or field["sel"], wanted[:40])
+            return None
+        target = next(i for i in items if i["text"] == choice)
+        try:
+            self.page.locator(target["sel"]).first.click(timeout=4000)
+            self.page.wait_for_timeout(200)
+            return choice
+        except Exception as e:
+            log.info("Entrée « %s » non cliquable : %s", choice[:40], str(e)[:80])
+            return None
 
     def _verify(self, loc, field: Dict[str, Any], wanted: str) -> None:
         """Relit le champ : l'ERP peut avoir tronqué, reformaté ou refusé la valeur."""
@@ -645,10 +766,7 @@ class Filler:
             btn = self.add_row_button(survey)
             if not btn:
                 return None
-            try:
-                self.page.locator(btn["sel"]).first.click(timeout=5000)
-            except Exception as e:
-                log.info("Ajout de ligne impossible : %s", str(e)[:90])
+            if not self._click(self.page.locator(btn["sel"]).first, "Ajout d'une ligne"):
                 return None
             self.page.wait_for_timeout(120)
             survey = self.survey()
@@ -723,12 +841,11 @@ class Filler:
                 if not self.write(field, value) and str(value or "").strip():
                     missed.append(field.get("label") or name)
             before = len(self.survey().get("rows") or [])
-            try:
-                adder.click(timeout=5000)
-                self.page.wait_for_timeout(250)
-            except Exception as e:
-                results.append({"index": idx, "ok": False, "message": "Ajout de la ligne impossible : %s" % str(e)[:150]})
+            if not self._click(adder, "Ajout au bon"):
+                results.append({"index": idx, "ok": False,
+                                "message": "Le bouton « %s » de l'ERP n'a pas pu être cliqué." % (cat["button"].get("text") or "Ajouter")[:40]})
                 continue
+            self.page.wait_for_timeout(250)
             added = len(self.survey().get("rows") or []) > before
             results.append({
                 "index": idx, "ok": added,
@@ -768,7 +885,7 @@ class Filler:
             missed: List[str] = []
             for name, field in mapping.items():
                 value = self.value_for(name, data, field)
-                if self.write(field, value):
+                if self.write(field, value, pick=(name == "designation")):
                     wrote += 1
                 elif str(value or "").strip():
                     missed.append(field.get("label") or name)
@@ -955,6 +1072,12 @@ class Engine:
                 raise RuntimeError(
                     "L'ERP demande une connexion : rien n'a été saisi. Connectez-vous dans la "
                     "fenêtre Agent Floki, ouvrez l'écran de réception, puis renvoyez le bon."
+                )
+            if already_entered(survey, header):
+                raise RuntimeError(
+                    "Le bon %s est déjà saisi dans l'écran ouvert (%d ligne(s) présentes) : rien n'a "
+                    "été ajouté. Validez ou videz cet écran avant de renvoyer le bon."
+                    % (header.get("documentNumber") or "", len(survey.get("rows") or []))
                 )
             if not survey.get("header") and not survey.get("rows") and not survey.get("hasLineTable"):
                 raise RuntimeError(
