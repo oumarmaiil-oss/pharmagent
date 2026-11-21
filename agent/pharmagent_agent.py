@@ -14,6 +14,7 @@ reste au pharmacien.
 from __future__ import annotations
 
 import base64
+import difflib
 import hashlib
 import json
 import logging
@@ -145,6 +146,52 @@ FORBIDDEN_RE = re.compile(
 ADD_ROW_RE = re.compile(r"ajouter|nouvelle\s*ligne|add\s*(a\s*)?(line|row|item)|\+|＋", re.I)
 
 
+PRODUCT_LIST_RE = re.compile(r"produit|article|medicament|catalogue|designation|specialite")
+
+
+def best_option(target: str, options: List[str]) -> Optional[str]:
+    """L'entrée de la liste qui correspond au produit cherché, ou rien si le doute subsiste."""
+    t = norm(target)
+    if not t:
+        return None
+    best, score = None, 0.0
+    for opt in options:
+        o = norm(opt)
+        if not o:
+            continue
+        if o == t:
+            return opt
+        r = difflib.SequenceMatcher(None, t, o).ratio()
+        if t in o or o in t:
+            r = max(r, 0.92)
+        if r > score:
+            best, score = opt, r
+    return best if score >= 0.72 else None
+
+
+def same_value(wanted: Any, got: Any) -> bool:
+    """L'ERP reformate souvent ce qu'on lui donne (espaces, virgule décimale).
+    On ne signale que les écarts qui changent réellement la valeur."""
+    a = re.sub(r"[\s  ]", "", str(wanted or ""))
+    b = re.sub(r"[\s  ]", "", str(got or ""))
+    if a == b:
+        return True
+    try:
+        return float(a.replace(",", ".")) == float(b.replace(",", "."))
+    except ValueError:
+        return False
+
+
+def looks_like_login(survey: Dict[str, Any]) -> bool:
+    """Un écran de connexion n'a jamais de tableau de lignes à remplir."""
+    if survey.get("hasLineTable"):
+        return False
+    if survey.get("hasPassword"):
+        return True
+    texts = " ".join(str(b.get("text") or "") for b in survey.get("buttons") or [])
+    return bool(re.search(r"se\s*connecter|connexion|s'identifier|sign\s*in|log\s*in", texts, re.I))
+
+
 def friendly_error(e: Exception) -> str:
     """Traduit les pannes courantes de Playwright en une phrase qui dit quoi faire."""
     text = str(e)
@@ -182,8 +229,10 @@ HEADER_VOCAB: Dict[str, Tuple[List[str], List[str]]] = {
 }
 
 LINE_VOCAB: Dict[str, Tuple[List[str], List[str]]] = {
-    "designation": (["designation produit", "designation", "produit", "article", "libelle",
-                     "medicament", "denomination", "description", "nom"], ["code", "cip"]),
+    # « nom » seul est trop vague : « Nom du fournisseur » n'est pas une désignation de produit.
+    "designation": (["designation produit", "designation", "nom du produit", "nom commercial",
+                     "produit", "article", "libelle", "medicament", "denomination", "description"],
+                    ["code", "cip", "fournisseur", "grossiste", "laboratoire"]),
     "lotNumber": (["numero de lot", "n lot", "no lot", "numero lot", "lot", "batch"], []),
     "quantity": (["quantite recue", "qte recue", "quantite", "qte", "qty", "quantity",
                   "nombre", "recu"], ["commandee", "gratuit", "restant"]),
@@ -381,7 +430,8 @@ SURVEY_JS = r"""() => {
     buttons.push({ sel: sel(b), text: text, forbidden: FORBIDDEN.test(text), inTable: !!(lineTable && lineTable.contains(b)) });
   }
 
-  return { url: location.href, title: document.title, header: header, rows: rows, buttons: buttons, hasLineTable: !!lineTable };
+  return { url: location.href, title: document.title, header: header, rows: rows, buttons: buttons,
+           hasLineTable: !!lineTable, hasPassword: !!document.querySelector('input[type=password]') };
 }"""
 
 
@@ -493,6 +543,8 @@ class Filler:
         self.on_progress = on_progress or (lambda *_: None)
         self.filled = 0
         self.skipped: List[str] = []
+        self.altered: List[Dict[str, str]] = []
+        self.header_used: set = set()
 
     def survey(self) -> Dict[str, Any]:
         return self.page.evaluate(SURVEY_JS)
@@ -522,14 +574,39 @@ class Filler:
                 if choice is None:
                     return False
                 loc.select_option(label=choice, timeout=5000)
+                written = choice
             else:
                 loc.scroll_into_view_if_needed(timeout=3000)
                 loc.fill(text, timeout=5000)
+                written = text
+            # Beaucoup d'ERP ne valident et ne reformatent qu'en quittant le champ.
+            # On se contente de le quitter : Playwright a déjà émis « change », et le
+            # réémettre ferait reformater deux fois (650 deviendrait 65 000).
+            try:
+                loc.evaluate("e => e.blur()")
+            except Exception:
+                pass
             self.filled += 1
+            self._verify(loc, field, written)
             return True
         except Exception as e:
             log.info("Champ « %s » non rempli : %s", field.get("label") or field.get("sel"), str(e)[:90])
             return False
+
+    def _verify(self, loc, field: Dict[str, Any], wanted: str) -> None:
+        """Relit le champ : l'ERP peut avoir tronqué, reformaté ou refusé la valeur."""
+        try:
+            if field.get("tag") == "select":
+                got = loc.evaluate("e => (e.options[e.selectedIndex] || {}).textContent || ''").strip()
+            else:
+                got = loc.input_value(timeout=2000)
+        except Exception:
+            return
+        if same_value(wanted, got):
+            return
+        label = field.get("label") or field.get("name") or field.get("sel")
+        self.altered.append({"champ": label, "voulu": wanted, "obtenu": got})
+        log.info("Champ « %s » : écrit « %s », l'ERP affiche « %s ».", label, wanted, got)
 
     def value_for(self, name: str, data: Dict[str, Any], field: Dict[str, Any]) -> Any:
         raw = data.get(name)
@@ -539,6 +616,7 @@ class Filler:
 
     def fill_header(self, header: Dict[str, Any], survey: Dict[str, Any]) -> None:
         mapping = assign(survey.get("header") or [], HEADER_VOCAB)
+        self.header_used = {f["sel"] for f in mapping.values()}
         if not mapping:
             log.info("Aucun champ d'en-tête reconnu sur cette page.")
         for name, field in mapping.items():
@@ -578,7 +656,94 @@ class Filler:
             guard += 1
         return rows[index] if len(rows) > index else None
 
-    def fill_lines(self, lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def catalogue(self, survey: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Repère le bloc « choisir un produit du catalogue, puis Ajouter ».
+
+        Ce chemin rattache la ligne à un article réel de l'ERP — code, stock, prix —
+        là où une ligne tapée librement reste du texte.
+        """
+        header = survey.get("header") or []
+        chooser = None
+        for f in header:
+            if f.get("tag") != "select":
+                continue
+            options = [o for o in (f.get("options") or []) if norm(o)]
+            label = norm(str(f.get("label") or "") + " " + str(f.get("name") or ""))
+            if len(options) >= 3 or PRODUCT_LIST_RE.search(label):
+                chooser = f
+                break
+        if not chooser:
+            return None
+        # Un champ déjà reconnu comme appartenant à l'en-tête du bon n'est pas un champ
+        # de ligne : sans cela l'agent écraserait le fournisseur avec le nom du produit.
+        rest = [f for f in header if f["sel"] != chooser["sel"] and f["sel"] not in self.header_used]
+        fields = assign(rest, LINE_VOCAB)
+        button = None
+        for b in survey.get("buttons") or []:
+            text = b.get("text") or ""
+            if b.get("forbidden") or not re.search(r"ajouter|add", text, re.I):
+                continue
+            if re.search(r"ligne|row|line", text, re.I):  # celui-là crée une ligne vide
+                continue
+            button = b
+            break
+        if not button or not fields:
+            return None
+        return {"chooser": chooser, "fields": fields, "button": button}
+
+    def fill_lines_catalogue(self, lines: List[Dict[str, Any]], cat: Dict[str, Any]) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+        options = cat["chooser"].get("options") or []
+        chooser = self.page.locator(cat["chooser"]["sel"]).first
+        adder = self.page.locator(cat["button"]["sel"]).first
+        for position, line in enumerate(lines):
+            idx = line.get("index", position)
+            wanted = line.get("product") or line.get("designation") or ""
+            if line.get("skip"):
+                results.append({"index": idx, "ok": False, "message": str(line["skip"])[:300]})
+                continue
+            self.on_progress(position, len(lines), wanted or "?")
+            choice = best_option(wanted, options)
+            if not choice:
+                results.append({"index": idx, "ok": False,
+                                "message": "« %s » est absent du catalogue de l'ERP : créez l'article, puis renvoyez le bon." % wanted[:80]})
+                log.info("Ligne %d : « %s » absent du catalogue.", position + 1, wanted[:50])
+                continue
+            try:
+                chooser.select_option(label=choice, timeout=5000)
+                self.page.wait_for_timeout(150)
+            except Exception as e:
+                results.append({"index": idx, "ok": False, "message": "Choix du produit impossible : %s" % str(e)[:150]})
+                continue
+            data = dict(line)
+            data.setdefault("designation", wanted)
+            missed: List[str] = []
+            for name, field in cat["fields"].items():
+                value = self.value_for(name, data, field)
+                if not self.write(field, value) and str(value or "").strip():
+                    missed.append(field.get("label") or name)
+            before = len(self.survey().get("rows") or [])
+            try:
+                adder.click(timeout=5000)
+                self.page.wait_for_timeout(250)
+            except Exception as e:
+                results.append({"index": idx, "ok": False, "message": "Ajout de la ligne impossible : %s" % str(e)[:150]})
+                continue
+            added = len(self.survey().get("rows") or []) > before
+            results.append({
+                "index": idx, "ok": added,
+                "message": (("Non rempli : " + ", ".join(missed))[:300] if missed else None) if added
+                           else "L'ERP n'a pas ajouté la ligne.",
+            })
+            log.info("Ligne %d : %s (catalogue).", position + 1, choice[:60])
+        return results
+
+    def fill_lines(self, lines: List[Dict[str, Any]], survey: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        cat = self.catalogue(survey) if survey else None
+        if cat:
+            log.info("Catalogue détecté : les produits sont choisis dans la liste « %s ».",
+                     cat["chooser"].get("label") or cat["chooser"].get("name"))
+            return self.fill_lines_catalogue(lines, cat)
         results: List[Dict[str, Any]] = []
         for position, line in enumerate(lines):
             idx = line.get("index", position)
@@ -786,18 +951,28 @@ class Engine:
 
             filler = Filler(page, progress)
             survey = filler.survey()
+            if looks_like_login(survey):
+                raise RuntimeError(
+                    "L'ERP demande une connexion : rien n'a été saisi. Connectez-vous dans la "
+                    "fenêtre Agent Floki, ouvrez l'écran de réception, puis renvoyez le bon."
+                )
             if not survey.get("header") and not survey.get("rows") and not survey.get("hasLineTable"):
                 raise RuntimeError(
                     "Aucun champ de saisie sur « %s ». Ouvrez dans l'ERP l'écran de réception d'un bon de livraison."
                     % (survey.get("url") or self.erp_url)[:80]
                 )
             filler.fill_header(header, survey)
-            results = filler.fill_lines(lines)
+            results = filler.fill_lines(lines, survey)
             ok_lines = sum(1 for r in results if r.get("ok"))
             message = "%d champ(s) saisi(s), %d ligne(s) sur %d, en %.1f s." % (
                 filler.filled, ok_lines, len(lines), time.time() - started)
             if filler.skipped:
                 message += " Non rempli : " + ", ".join(filler.skipped[:6]) + "."
+            if filler.altered:
+                message += " %d champ(s) affichés différemment par l'ERP : %s." % (
+                    len(filler.altered),
+                    ", ".join("%s (« %s » → « %s »)" % (a["champ"], a["voulu"], a["obtenu"])
+                              for a in filler.altered[:4]))
             message += " Vérifiez puis validez dans l'ERP."
             try:
                 page.screenshot(path=str(HOME / "derniere_saisie.png"), full_page=True)
