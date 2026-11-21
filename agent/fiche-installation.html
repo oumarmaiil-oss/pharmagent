@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PharmAgent — Fiche d'installation</title>
+<style>
+  :root{--fg:#111827;--mut:#6b7280;--line:#d1d5db;--ok:#047857;--bad:#b91c1c;--bg:#fff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+  .page{max-width:760px;margin:0 auto;padding:28px max(18px,env(safe-area-inset-right,0px)) 40px max(18px,env(safe-area-inset-left,0px))}
+  h1{font-size:23px;margin:0 0 2px}
+  .sous{color:var(--mut);margin:0 0 22px}
+  h2{font-size:15px;margin:26px 0 9px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}
+  ol{margin:0;padding-left:22px}
+  ol li{margin-bottom:13px}
+  .note{border-left:3px solid var(--line);padding:3px 0 3px 12px;margin:12px 0;color:var(--mut);font-size:14px}
+  .garde{border:1px solid var(--ok);border-radius:8px;padding:13px 15px;margin:22px 0}
+  .garde b{color:var(--ok)}
+  table{border-collapse:collapse;width:100%;margin-top:8px;font-size:14px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:#f3f4f6;font-weight:600;width:38%}
+  .ligne{border:0;border-top:1px solid var(--line);margin:26px 0 0}
+  .pied{color:var(--mut);font-size:13px;margin-top:9px}
+  code{background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:13px}
+  @media print{ .page{max-width:none;padding:0} h2{margin-top:18px} }
+</style></head>
+<body><div class="page">
+
+<h1>PharmAgent — installation en officine</h1>
+<p class="sous">À remplir par la personne qui installe, et à laisser au titulaire.</p>
+
+<table>
+  <tr><th>Officine</th><td>&nbsp;</td></tr>
+  <tr><th>Date d'installation</th><td>&nbsp;</td></tr>
+  <tr><th>Ordinateur (où est-il ?)</th><td>&nbsp;</td></tr>
+  <tr><th>Logiciel de gestion (ERP)</th><td>&nbsp;</td></tr>
+  <tr><th>Personne formée</th><td>&nbsp;</td></tr>
+</table>
+
+<div class="garde">
+  <b>Ce que l'agent ne fera jamais.</b> Il remplit l'écran de réception, puis s'arrête.
+  Il ne clique jamais sur Valider, Confirmer, Clôturer, Enregistrer définitivement,
+  Commander ni Payer. <b>C'est le pharmacien qui valide, toujours.</b> L'agent sait
+  reconnaître ces boutons et les marque comme interdits : vous pouvez le vérifier
+  vous-même à l'étape 4.
+</div>
+
+<h2>Avant de commencer</h2>
+<ol>
+  <li>Un ordinateur qui reste allumé pendant les heures d'ouverture.</li>
+  <li>Une connexion Internet.</li>
+  <li>L'accès à l'ERP de l'officine, avec un compte qui peut saisir une réception.</li>
+</ol>
+
+<h2>Installation</h2>
+<ol>
+  <li><b>Lancer l'installateur</b> téléchargé depuis PharmAgent. Il installe tout seul ce
+    qu'il faut et vérifie qu'un navigateur démarre. Comptez 1 à 3 minutes la première fois.
+    <div class="note">S'il termine en disant que le navigateur ne démarre pas, installez
+    Microsoft Edge ou Google Chrome, puis relancez l'installateur.</div></li>
+
+  <li><b>Relier l'ordinateur à la pharmacie.</b> Le panneau Agent Floki s'ouvre et affiche
+    un code à six chiffres. Saisissez-le dans PharmAgent, page « Agent local ».
+    Le code expire au bout de dix minutes ; s'il est passé, un nouveau s'affiche.</li>
+
+  <li><b>Indiquer l'écran de réception.</b> Dans l'ERP, ouvrez l'écran où l'on saisit
+    habituellement un bon de livraison. Copiez l'adresse de cette page et collez-la dans
+    le panneau, puis Enregistrer.
+    <div class="note">C'est l'écran de saisie qu'il faut, pas la page d'accueil de l'ERP.</div></li>
+
+  <li><b>Vérifier ce que l'agent a compris.</b> Cliquez « Vérifier l'ERP ». Il liste les
+    champs qu'il a reconnus et les boutons qu'il ne touchera pas. Corrigez une association
+    si elle est fausse. Montrez au titulaire la mention <b>JAMAIS CLIQUÉ</b> en face du
+    bouton de validation : c'est là que la promesse devient visible.</li>
+
+  <li><b>Faire un essai à blanc.</b> Cliquez « Démonstration ». L'agent remplit un ERP
+    d'exemple sous les yeux du pharmacien, sans toucher au sien. C'est le moment de lui
+    montrer à quoi ressemble une saisie.</li>
+
+  <li><b>Premier vrai bon.</b> Depuis PharmAgent, approuvez un bon de livraison réel.
+    Restez à côté du pharmacien pendant qu'il arrive, et laissez-le valider lui-même.</li>
+</ol>
+
+<h2>Ce qu'il faut montrer au titulaire avant de partir</h2>
+<ol>
+  <li>Où est le panneau Agent Floki (icône sur le Bureau, ou <code>127.0.0.1:8765</code>).</li>
+  <li>Le bouton <b>« Un problème ? »</b> : l'agent se relit, répare ce qu'il peut tout seul,
+    et affiche en français ce qui reste à faire. À utiliser avant d'appeler.</li>
+  <li>Le bouton <b>« Envoyer au support »</b> : donne un code à huit caractères à
+    communiquer. Il n'envoie rien tant que personne ne clique.</li>
+  <li>Qu'il doit <b>relire avant de valider</b>, chaque fois. L'agent prépare, il ne décide pas.</li>
+</ol>
+
+<h2>Si quelque chose ne va pas</h2>
+<table>
+  <tr><th>La fenêtre de l'agent a été fermée</th>
+      <td>Sans gravité. Cliquez « Un problème ? » : elle se rouvre toute seule.</td></tr>
+  <tr><th>L'ERP demande une connexion</th>
+      <td>Connectez-vous dans la fenêtre Agent Floki, ouvrez l'écran de réception,
+          puis renvoyez le bon. L'agent n'écrit jamais dans un écran de connexion.</td></tr>
+  <tr><th>Une saisie s'est arrêtée en route</th>
+      <td>Renvoyez le bon. L'agent reprend où il s'était arrêté, sans saisir deux fois
+          ce qui est déjà dans l'écran.</td></tr>
+  <tr><th>Un produit n'est pas passé</th>
+      <td>Il est absent du catalogue de l'ERP. Créez l'article, puis renvoyez le bon.
+          L'agent refuse plutôt que de choisir un médicament voisin.</td></tr>
+  <tr><th>Un champ reste vide</th>
+      <td>Cliquez « Vérifier l'ERP » et désignez vous-même le bon champ.
+          L'agent s'en souviendra pour cet ERP.</td></tr>
+</table>
+
+<hr class="ligne">
+<p class="pied">Fiche à conserver près du poste. En cas de doute sur une saisie,
+le pharmacien a toujours le dernier mot.</p>
+
+</div></body></html>

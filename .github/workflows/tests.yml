@@ -78,6 +78,8 @@ jobs:
         run: python tests/matrice_erp.py
       - name: L'agent apprend les champs qu'aucun vocabulaire ne reconnaît
         run: python tests/apprentissage.py
+      - name: Le parcours du premier jour en officine
+        run: python tests/premier_jour.py
 
   serveur:
     name: Serveur et interface

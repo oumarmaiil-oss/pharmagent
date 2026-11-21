@@ -1406,6 +1406,40 @@ class Engine:
 
     # ── État affiché dans le panneau ──
 
+    def etapes(self) -> List[Dict[str, Any]]:
+        """Où en est l'installation, du point de vue du pharmacien.
+
+        Le premier jour, personne n'est derrière lui. Il ouvre ce panneau et
+        doit comprendre seul ce qui est fait, ce qui reste, et ce qu'on attend
+        de lui maintenant. Chaque étape dit ce qu'elle attend, en une phrase.
+        """
+        relie = bool(self.api.key)
+        adresse = bool(self.erp_url)
+        reconnu = bool(self.cfg.get("erpReconnu"))
+        essai = bool(self.cfg.get("essaiFait"))
+        saisie = bool((self.last_result or {}).get("status") == "done")
+
+        brut = [
+            ("relier", "Relier cet ordinateur à la pharmacie", relie,
+             "Saisissez le code ci-dessous dans PharmAgent, à la page « Agent local »."),
+            ("adresse", "Indiquer l'écran de réception de votre ERP", adresse,
+             "Ouvrez dans votre ERP l'écran de réception d'un bon de livraison — celui "
+             "où vous saisissez les lignes, pas la page d'accueil — copiez son adresse "
+             "et collez-la ci-dessus."),
+            ("reconnu", "Vérifier ce que l'agent a compris de cet écran", reconnu,
+             "Cliquez « Vérifier l'ERP ». Vous verrez les champs reconnus et pourrez "
+             "les corriger. Facultatif : sans cela, l'agent se débrouille seul."),
+            ("essai", "Faire un essai à blanc", essai,
+             "Cliquez « Démonstration ». L'agent remplit un ERP d'exemple sous vos yeux, "
+             "sans toucher au vôtre."),
+            ("saisie", "Recevoir un premier bon", saisie,
+             "Depuis PharmAgent, approuvez un bon de livraison : il arrivera ici tout seul."),
+        ]
+        # L'étape en cours est la première qui n'est pas faite.
+        actif = next((cle for cle, _, fait, _ in brut if not fait), None)
+        return [{"cle": cle, "titre": titre, "fait": fait, "actif": cle == actif, "aide": aide}
+                for cle, titre, fait, aide in brut]
+
     def state(self) -> Dict[str, Any]:
         paired = bool(self.api.key)
         if not paired:
@@ -1426,6 +1460,7 @@ class Engine:
             "diagnosis": self.diagnosis,
             "lastResult": self.last_result, "lastError": self.last_error,
             "serverOk": self.server_ok, "server": self.api.server,
+            "etapes": self.etapes(),
             "logs": list(LOG_LINES)[-60:],
         }
 
@@ -1489,6 +1524,9 @@ class Engine:
                    "sans rien valider." % (filler.filled, ok, len(self.DEMO_TASK["lines"]),
                                            time.time() - started))
         log.info("%s", message)
+        if ok:
+            self.cfg["essaiFait"] = True
+            self._persist()
         return {"message": message, "lignes": ok, "total": len(self.DEMO_TASK["lines"]),
                 "jamaisClique": [str(t)[:40] for t in interdits]}
 
@@ -1708,6 +1746,9 @@ class Engine:
                             for b in survey.get("buttons") or []],
                 "catalogue": bool(filler.catalogue(survey)),
             }
+            if head_fields or row_fields:
+                self.cfg["erpReconnu"] = True
+                self._persist()
             log.info("Vérification de l'ERP : %d champ(s) d'en-tête, %d colonne(s) de ligne.",
                      len(head_fields), len(row_fields))
             return self.check
@@ -2025,6 +2066,16 @@ button:disabled{opacity:.5;cursor:default}
 .diag b{display:block;font-size:14px;margin-bottom:3px}
 .diag .geste{display:block;margin-top:6px;font-size:13px}
 .tag{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase}
+.etape{display:flex;gap:11px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--line)}
+.etape:last-child{border-bottom:0}
+.puce{flex:0 0 22px;height:22px;border-radius:999px;border:1px solid var(--line);
+  display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:var(--mut)}
+.etape.fait .puce{border-color:var(--ok);color:var(--ok)}
+.etape.actif .puce{border-color:var(--fg);color:var(--fg)}
+.etape .quoi{font-size:14px}
+.etape.fait .quoi{color:var(--mut)}
+.etape.actif .quoi{font-weight:600}
+.etape .aide{display:block;font-size:13px;color:var(--mut);margin-top:3px}
 pre{background:#0e1527;border:1px solid var(--line);border-radius:10px;padding:12px;max-height:260px;overflow:auto;font:12px ui-monospace,Menlo,monospace;color:var(--mut);white-space:pre-wrap}
 .bar{height:6px;background:#0e1527;border-radius:999px;overflow:hidden;margin-top:10px}
 .bar i{display:block;height:100%;background:var(--ok)}
@@ -2087,9 +2138,23 @@ function render(){
   let h=`<div class="head"><div><h1>Agent Floki</h1><div class="sub">${esc(S.pharmacyName||'non appairé')} · v${esc(S.version)} · ${esc(S.os)}</div></div>
   <span class="pill ${S.serverOk?'ok':'bad'}">${S.serverOk?'Serveur OK':'Serveur injoignable'}</span></div>`;
 
+  // Le premier jour, le pharmacien est seul devant cet écran : on lui montre où
+  // il en est et ce qu'on attend de lui maintenant. Une fois tout franchi, ce
+  // bloc disparaît — il n'a plus rien à y apprendre.
+  const et=S.etapes||[], reste=et.filter((e)=>!e.fait).length;
+  if(reste){
+    h+=`<div class="card"><label>Installation — ${et.length-reste} sur ${et.length}</label>
+    ${et.map((e,i)=>`<div class="etape ${e.fait?'fait':''} ${e.actif?'actif':''}">
+      <span class="puce">${e.fait?'✓':(i+1)}</span>
+      <span><span class="quoi">${esc(e.titre)}</span>
+      ${e.actif?`<span class="aide">${esc(e.aide)}</span>`:''}</span>
+    </div>`).join('')}</div>`;
+  }
+
   if(st==='pairing'){
     const pc=S.pairingCode||'';
-    h+=`<div class="card"><label>1. Appairage</label><p class="sub">Saisissez ce code dans PharmAgent › Agent local.</p>
+    // La consigne est déjà portée par l'étape 1 : ici, seulement le code.
+    h+=`<div class="card"><label>Code d'appairage</label>
     <div class="coderow"><div class="code">${esc(pc||'……')}</div>
     ${pc?`<button class="sec" onclick="copyText('${esc(pc)}',this)">Copier</button>`:''}</div></div>`;
   }else{

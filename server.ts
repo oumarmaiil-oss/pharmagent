@@ -1596,6 +1596,12 @@ app.get('/demo/erp', (_req, res) => {
   res.send(agentFile('demo-erp.html'));
 });
 
+// Fiche d'installation : une page à imprimer et à laisser au titulaire.
+app.get('/install/fiche', (_req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(agentFile('fiche-installation.html'));
+});
+
 app.get('/agent/version', (_req, res) => {
   const src = agentFile('pharmagent_agent.py');
   const version = src.match(/^AGENT_VERSION\s*=\s*"([^"]+)"/m)?.[1] ?? '0';
