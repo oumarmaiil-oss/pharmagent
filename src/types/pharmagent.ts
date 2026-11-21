@@ -1,221 +1,299 @@
+// ============================================================
+// PharmAgent — Types partagés frontend/backend
+// ============================================================
+
+export type TargetSoftwareType = 'ERP Officine Intégré' | 'Excel / Tableur' | 'Dossier Patient';
 export type DocumentCategory = 'bon_livraison' | 'facture' | 'mutuelle';
+/** Ce que l'IA a réellement reconnu sur la photo (peut contredire le type choisi à l'envoi). */
+export type ReadDocumentType = DocumentCategory | 'avoir' | 'ordonnance' | 'autre';
+export type PhotoQuality = 'bonne' | 'moyenne' | 'illisible';
+export type SubscriptionPlan = 'trial' | 'standard' | 'premium' | 'suspended';
+export type PharmacyUserRole = 'titulaire' | 'adjoint' | 'assistant';
+export type DraftStatus = 'pending' | 'approved' | 'rejected';
+export type ExtractionStatus = 'processing' | 'ready' | 'error';
+export type AuditLevel = 'info' | 'warning' | 'blocked' | 'approved' | 'rejected';
 
-export type TargetSoftwareType =
-  | 'ERP Officine Intégré'
-  | 'Logiciel Comptoir Local'
-  | 'Tableur Excel Stock'
-  | 'Progiciel Gestion Stock';
+// ─── Entités principales ───────────────────────────────────
 
-export type TargetExecutionMode = 'erp_live' | 'excel_upload' | 'local_desktop';
-
-export interface OfficineRecord {
+export interface Pharmacy {
   id: string;
   name: string;
   city: string;
   region: string;
   pharmacist: string;
   targetSoftware: TargetSoftwareType;
-  agentKey: string;
-  status: 'active' | 'idle' | 'guardrail_halted';
-  documentsProcessed: number;
-  bonsLivraisonCount: number;
-  facturesCount: number;
-  mutuellesCount: number;
-  draftsCreated: number;
-  guardrailBlocks: number;
-  tokensUsed: number;
-  estimatedCostFCFA: number;
-  lastActiveAt: string;
-  dailyVolume: number[];
+  createdAt: string;
+  subscription: SubscriptionPlan;
+  monthlyQuota: number;        // brouillons autorisés par mois
+  usedThisMonth: number;
+  quotaMonth?: string;         // mois (AAAA-MM) du compteur usedThisMonth
+  agentKey: string;            // clé secrète pour l'agent Python local
+  code?: string;               // code de connexion de la pharmacie (ex. K7M2QX)
+  validationLevel?: 1 | 2 | 3; // 1=manuel (défaut), 2=brouillon si dispo, 3=auto si totaux OK
+  agent?: AgentPresence;
 }
 
+// ─── Agent local ──────────────────────────────────────────
+
+export interface AgentPresence {
+  lastSeen: string;
+  hostname?: string;
+  os?: string;
+  version?: string;
+  state?: string;              // ex. « En attente », « Saisie en cours »
+  mode?: string;               // web | desktop | file
+  target?: string;             // fichier, fenêtre ou adresse visée
+  lastResult?: string;
+  lastError?: string;
+  logs?: string[];             // dernières lignes du journal de l'agent
+}
+
+/** web : ERP dans un navigateur ; desktop : logiciel installé (clavier) ; file : fichier Excel/Numbers rempli directement. */
+export type ErpMode = 'web' | 'desktop' | 'file';
+
+// Étape d'une recette enregistrée pendant la démo (interprétée par l'agent)
+export interface RecipeStep {
+  kind: 'fill' | 'pick' | 'click' | 'press' | 'select' | 'type' | 'key' | 'wait';
+  field?: string;
+  value?: string;
+  selectors?: string[];
+  text?: string;
+  key?: string;
+  format?: string;
+  label?: string;
+  ms?: number;
+  frame?: string;              // « name:xxx » ou « url:/chemin » si le champ est dans une iframe
+  via?: 'key' | 'mouse';       // champ atteint au clavier (Tab) ou à la souris pendant la démo
+}
+
+export interface AgentProfile {
+  pharmacyId: string;
+  mode: ErpMode;
+  erpUrl?: string;
+  formUrl?: string;            // écran de saisie où la démo a été faite
+  windowTitle?: string;
+  filePath?: string;           // mode « file » : chemin du fichier à remplir sur l'ordinateur
+  headerSteps: RecipeStep[];
+  lineSteps: RecipeStep[];
+  recordedAt?: string;
+  updatedAt: string;
+}
+
+export type ExecutionStatus = 'queued' | 'running' | 'done' | 'failed';
+
+export interface DraftExecution {
+  status: ExecutionStatus;
+  queuedAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  attempts: number;
+  message?: string;
+  durationMs?: number;
+  lines?: Array<{ index: number; ok: boolean; message?: string }>;
+}
+
+export interface PharmacyUser {
+  id: string;
+  pharmacyId: string;
+  loginId: string;
+  fullName: string;
+  role: PharmacyUserRole;
+  passwordHash: string;
+  createdAt: string;
+}
+
+export interface OwnerAccount {
+  id: string;
+  loginId: string;
+  fullName: string;
+  role: 'owner' | 'co_supervisor';
+  passwordHash: string;
+  createdAt: string;
+}
+
+// ─── Extraction IA ────────────────────────────────────────
+
 export interface ExtractedLineItem {
-  designation: string;
+  designation: string;          // libellé brut du grossiste, jamais normalisé
+  cip?: string;
   quantity: number;
-  lotNumber: string;
-  expiryDate: string;
-  unitPriceFCFA: number;
-  confidence: number;
+  lotNumber?: string;
+  expiryDate?: string;
+  unitPriceFCFA: number;        // prix d'achat
+  salePriceFCFA?: number;
+  freeUnits?: number;           // UG : unités gratuites, jamais ajoutées à la quantité
+  discountPercent?: number;     // remise % (vide si le prix est déjà net)
+  vatRate?: number;             // TVA % de la ligne
+  lineTotal?: number;           // montant de la ligne tel qu'imprimé
+  confidence: number;           // confiance de lecture OCR
+  match?: ProductMatch;
+}
+
+// ─── Catalogue produits & correspondance ──────────────────
+
+export interface CatalogProduct {
+  id: string;
+  pharmacyId: string;
+  erpLabel: string;             // libellé exact tel qu'affiché dans l'ERP
+  cip?: string;
+  purchasePriceFCFA?: number;
+  salePriceFCFA?: number;
+  stockQty?: number;
+  suppliers: string[];          // grossistes déjà vus pour ce produit
+  source: 'import' | 'erp_capture' | 'learned';
+  updatedAt: string;
+}
+
+export type MatchMethod = 'cip' | 'memory' | 'score' | 'price' | 'ai' | 'manual' | 'none';
+export type MatchStatus = 'auto' | 'to_review' | 'confirmed' | 'new_product';
+
+export interface MatchCandidate {
+  productId: string;
+  erpLabel: string;
+  score: number;
+}
+
+export interface ProductMatch {
+  status: MatchStatus;
+  method: MatchMethod;
+  score: number;                // 0..1
+  productId?: string;
+  erpLabel?: string;            // ce que l'agent tape/sélectionne dans l'ERP
+  candidates: MatchCandidate[];
+  /** Fiche du produit dans la pharmacie au moment du rapprochement : sert au contrôle d'écart de prix. */
+  reference?: { purchase?: number; sale?: number; stock?: number };
 }
 
 export interface ExtractedDocumentData {
-  documentType: DocumentCategory;
+  documentType: ReadDocumentType;
+  documentCount?: number;        // documents distincts sur la même photo
+  photoQuality?: PhotoQuality;
+  /** Origine : fichier du grossiste (exact), PDF, ou photo (dernier recours). */
+  source?: 'fichier' | 'pdf' | 'photo';
   documentNumber: string;
   supplierOrOrg: string;
   recipientPharmacy: string;
   documentDate: string;
   currency: string;
-  totalAmountFCFA: number;
+  totalAmountFCFA: number;      // montant final à payer (net à payer / TTC), dans la devise du document
+  totalHT?: number;
+  totalTVA?: number;
   lineItems: ExtractedLineItem[];
   agentObservations?: string;
-  rawNotes?: string;
-  tokensConsumed?: number;
 }
 
-export interface StockItemRecord {
-  id: string;
-  pharmacyId: string;
-  designation: string;
-  quantity: number;
-  lotNumber: string;
-  expiryDate: string;
-  unitPriceFCFA: number;
-  lastUpdatedAt: string;
-  sourceDocument: string;
+export interface ColumnMapping {
+  sourceField: string;
+  targetColumn: string;
+  exampleValue: string;
 }
 
-export interface ProductMemoryRule {
-  id: string;
-  rawLabel: string;
-  canonicalName: string;
-  category: string;
-  learnedFrom: string;
-  createdAt: string;
-}
-
-export interface ColumnMemoryRule {
-  id: string;
-  excelHeaderPattern: string;
-  targetSourceField: string;
-  learnedFrom: string;
-  createdAt: string;
-}
-
-export interface SoftwareGroundProfile {
-  id: string;
-  softwareName: string;
-  pharmacyId: string;
-  detectedSoftwareType: 'erp_form' | 'excel_grid' | 'desktop_app';
-  elements: GroundedTargetElement[];
-  injectionScript: string;
-  createdAt: string;
-}
-
-export interface AgentLearnedMemory {
-  productAliases: ProductMemoryRule[];
-  columnRules: ColumnMemoryRule[];
-  softwareProfiles: SoftwareGroundProfile[];
-}
+// ─── Brouillons ───────────────────────────────────────────
 
 export interface DraftRecord {
   id: string;
   pharmacyId: string;
-  pharmacyName: string;
+  status: DraftStatus;
+  extractionStatus?: ExtractionStatus;
+  extractionError?: string;
+  duplicateOf?: { id: string; createdAt: string; status: DraftStatus };
+  documentCategory: DocumentCategory;
+  extractedData: ExtractedDocumentData;
+  columnMapping: ColumnMapping[];
   createdAt: string;
-  taskPrompt: string;
-  targetMode: TargetExecutionMode;
-  status: 'BROUILLON' | 'VALIDE_PAR_PHARMACIEN' | 'REJETE';
-  extracted: ExtractedDocumentData;
-  draftArtifactUrl?: string;
-  draftFileName?: string;
-  excelColumnsMapped?: Array<{ excelColumn: string; sourceField: string }>;
-  excelPreviewHeaders?: string[];
-  excelPreviewRows?: Array<Record<string, unknown>>;
-  validatedBy?: string;
-  validatedAt?: string;
-  guardrailNote: string;
+  updatedAt: string;
+  actorId: string;
+  actorName: string;
+  approvedBy?: string;
+  rejectionReason?: string;
+  tokensConsumed: number;
+  execution?: DraftExecution;
 }
 
-export interface QueuedDesktopTask {
+// ─── Mémoire apprise ──────────────────────────────────────
+
+export interface ProductAlias {
   id: string;
-  pharmacyId: string;
-  pharmacyName: string;
+  rawLabel: string;
+  canonicalName: string;
+  pharmacyId?: string;
+  supplier?: string;            // alias spécifique à un grossiste
+  productId?: string;
+  hits?: number;
   createdAt: string;
-  taskPrompt: string;
-  extracted: ExtractedDocumentData;
-  status: 'EN_ATTENTE_AGENT_LOCAL' | 'BROUILLON_CREE_LOCALEMENT' | 'BLOQUE_GARDE_FOU';
-  localAgentReport?: string;
 }
 
-export interface GroundedTargetElement {
+export interface ColumnRule {
   id: string;
-  detectedLabel: string;
-  elementRole: 'input_field' | 'table_column' | 'draft_button' | 'forbidden_final_button';
-  box_2d: [number, number, number, number];
-  centerPoint: { x: number; y: number };
-  semanticMapping: {
-    sourceJsonPath: string;
-    targetFieldName: string;
-    sampleValueToInsert: string;
-    confidence: number;
-  } | null;
-  safetyStatus: 'AUTHORIZED_INPUT' | 'AUTHORIZED_DRAFT_SAVE' | 'FORBIDDEN_BY_GUARDRAIL';
-  guardrailReason?: string;
+  sourceField: string;
+  targetColumn: string;
+  pharmacyId?: string;
+  createdAt: string;
 }
 
-export interface GroundingAnalysisResult {
-  targetInterfaceTitle: string;
-  detectedSoftwareType: 'erp_form' | 'excel_grid' | 'desktop_app';
-  elements: GroundedTargetElement[];
-  executionPlanSummary: string;
-  tokensConsumed?: number;
+export interface AgentLearnedMemory {
+  productAliases: ProductAlias[];
+  columnRules: ColumnRule[];
 }
 
-export interface ExecutionStepLog {
-  stepIndex: number;
-  action:
-    | 'FOCUS_WINDOW'
-    | 'CLICK_AND_TYPE'
-    | 'WRITE_EXCEL_CELL'
-    | 'CLICK_SAVE_DRAFT'
-    | 'BLOCK_FINAL_VALIDATION';
-  targetLabel: string;
-  coordinates?: { x: number; y: number };
-  valueInserted?: string;
-  status: 'EXECUTED' | 'STOPPED_AT_DRAFT' | 'BLOCKED_BY_GUARDRAIL';
-  message: string;
-  timestamp: string;
-}
-
-export interface ExecutionRunResult {
-  runId: string;
-  pharmacyId: string;
-  pharmacyName: string;
-  documentNumber: string;
-  finalState: 'DRAFT_SAVED_ONLY' | 'SECURITY_VIOLATION_BLOCKED';
-  draftArtifactUrl?: string;
-  draftFileName?: string;
-  steps: ExecutionStepLog[];
-  guardrailTriggered: boolean;
-  guardrailReport: string;
-  pythonScriptPreview: string;
-}
+// ─── Audit ────────────────────────────────────────────────
 
 export interface AuditLogEntry {
   id: string;
-  timestamp: string;
   pharmacyId: string;
   pharmacyName: string;
-  city: string;
-  documentNumber: string;
-  documentType: DocumentCategory;
-  targetSoftware: string;
-  tokensUsed: number;
-  finalState: 'BROUILLON_CREE' | 'VALIDATION_BLOQUEE' | 'VALIDE_HUMAIN';
-  guardrailMessage: string;
+  actorId: string;
+  actorName: string;
+  action: string;
+  level: AuditLevel;
+  details?: string;
+  timestamp: string;
+}
+
+// ─── UI Grounding ─────────────────────────────────────────
+
+export type SafetyStatus = 'SAFE_DRAFT' | 'FORBIDDEN_BY_GUARDRAIL' | 'UNKNOWN';
+
+export interface GroundedTargetElement {
+  elementRole: string;
+  detectedLabel: string;
+  safetyStatus: SafetyStatus;
+  confidence: number;
+  boundingBox?: { x: number; y: number; w: number; h: number };
+  suggestedAction: string;
+}
+
+export interface GroundingAnalysisResult {
+  targetSoftware: TargetSoftwareType;
+  elements: GroundedTargetElement[];
+  overallSafe: boolean;
+  observations: string;
+  tokensConsumed: number;
+}
+
+// ─── Dashboard ────────────────────────────────────────────
+
+export interface PharmacyStats {
+  pharmacyId: string;
+  pharmacyName: string;
+  pendingDrafts: number;
+  approvedThisMonth: number;
+  rejectedThisMonth: number;
+  usedThisMonth: number;
+  monthlyQuota: number;
+  subscription: SubscriptionPlan;
+  lastActivity?: string;
 }
 
 export interface DashboardSnapshot {
-  pharmacies: OfficineRecord[];
-  drafts: DraftRecord[];
-  stock: StockItemRecord[];
-  taskQueue: QueuedDesktopTask[];
-  auditLogs: AuditLogEntry[];
+  pharmacies: Pharmacy[];
+  stats: PharmacyStats[];
+  pendingDrafts: DraftRecord[];
+  recentDrafts: DraftRecord[];
+  persistence: 'postgres' | 'disk';
+  recentAudit: AuditLogEntry[];
+  totalDraftsToday: number;
+  totalApprovedMonth: number;
   learnedMemory: AgentLearnedMemory;
-  summary: {
-    totalPharmacies: number;
-    activeAgents: number;
-    totalDocuments: number;
-    totalDraftsCreated: number;
-    pendingDraftsCount: number;
-    totalGuardrailBlocks: number;
-    totalTokensUsed: number;
-    totalCostFCFA: number;
-  };
-  dailyTrend: Array<{
-    day: string;
-    documents: number;
-    tokensK: number;
-    drafts: number;
-  }>;
 }
+

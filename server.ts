@@ -1,1076 +1,1593 @@
+// ============================================================
+// PharmAgent v2 — Serveur Express principal
+// ============================================================
+
 import 'dotenv/config';
+import crypto from 'crypto';
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import zlib from 'zlib';
 import * as XLSX from 'xlsx';
 import {
-  extractDocumentWithGemini,
-  groundTargetInterfaceWithGemini,
-  mapToRealExcelColumnsWithGemini,
-} from './src/server/geminiAgent.ts';
-import { guardrail, SafetyViolationError } from './src/server/guardrail.ts';
-import { store } from './src/server/store.ts';
+  extractDocument,
+  fillTableFromDocument,
+  SECOND_LOOK_EFFORT,
+  groundTargetInterface,
+  resolveProductMatches,
+} from './src/server/aiAgent.ts';
+import { fillWorkbook, FIELD_LABELS } from './src/server/excelFill.ts';
+import { matchColumn, type ColumnField } from './src/server/vocabulary.ts';
+import { parseAmount, readWorkbook, SHEET_MIME, sheetImages, sheetToDelivery } from './src/server/sheetDocument.ts';
+import { loadTemplate, templateShape, writeRows } from './src/server/genericFill.ts';
+import { DEFAULT_ORDER_PARAMS, orderFile, parseSalesJournal, proposeOrder, type OrderParams, type SalesSummary } from './src/server/orders.ts';
+import { blockingReason, needsSecondLook } from './src/components/draftChecks.ts';
+import { checkTextSafety } from './src/server/guardrail.ts';
+import { attachReference, AUTO_THRESHOLD, matchLines, normalizeSupplier } from './src/server/productMatcher.ts';
+import { readableCode, store, type CatalogRowInput } from './src/server/store.ts';
 import type {
+  AgentProfile,
   DocumentCategory,
   DraftRecord,
-  ExecutionRunResult,
-  ExecutionStepLog,
   ExtractedDocumentData,
   ExtractedLineItem,
-  GroundedTargetElement,
-  TargetExecutionMode,
+  Pharmacy,
+  PharmacyUser,
+  RecipeStep,
   TargetSoftwareType,
 } from './src/types/pharmagent.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const AGENT_DIR = path.resolve(__dirname, 'agent');
 
 const app = express();
+// Render place un proxy devant le service : sans ceci toutes les requêtes partagent la même IP
+app.set('trust proxy', 1);
+
+// ─── Sécurité de base ─────────────────────────────────────
+
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=()');
+  if (process.env.NODE_ENV === 'production') {
+    // Le navigateur n'exécute que le code servi par PharmAgent : une injection de script éventuelle reste inerte
+    res.setHeader('Content-Security-Policy', [
+      "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "font-src 'self' https://fonts.gstatic.com", "img-src 'self' data: blob:", "connect-src 'self'", "worker-src 'self'",
+      "manifest-src 'self'", "frame-ancestors 'none'", "base-uri 'self'", "form-action 'self'", "object-src 'none'",
+    ].join('; '));
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+  }
+  next();
+});
 app.use(express.json({ limit: '30mb' }));
 
-function resolveImagePayload(
-  base64Input?: string,
-  sampleAssetPath?: string,
-  fallbackMime = 'image/jpeg'
-): { base64: string; mimeType: string } {
+// ─── Limitation des tentatives (connexion, appairage) ────
+
+const attempts = new Map<string, { count: number; until: number }>();
+
+function rateLimited(req: express.Request, res: express.Response, scope: string): boolean {
+  const rec = attempts.get(`${scope}:${req.ip}`);
+  if (rec && Date.now() < rec.until) {
+    res.status(429).json({ error: 'Trop de tentatives. Réessayez dans 5 minutes.' });
+    return true;
+  }
+  return false;
+}
+
+function recordFailure(req: express.Request, scope: string): void {
+  const key = `${scope}:${req.ip}`;
+  const rec = attempts.get(key) ?? { count: 0, until: 0 };
+  rec.count += 1;
+  if (rec.count >= 5) { rec.until = Date.now() + 5 * 60 * 1000; rec.count = 0; }
+  attempts.set(key, rec);
+}
+
+function clearFailures(req: express.Request, scope: string): void {
+  attempts.delete(`${scope}:${req.ip}`);
+}
+
+// ─── Authentification ────────────────────────────────────
+
+function extractToken(req: express.Request): string | undefined {
+  const auth = req.headers.authorization;
+  return auth?.startsWith('Bearer ') ? auth.slice(7) : undefined;
+}
+
+function getOwnerSession(req: express.Request) {
+  const t = extractToken(req);
+  return t ? store.verifyOwnerToken(t) : null;
+}
+
+function getPharmacySession(req: express.Request) {
+  const t = extractToken(req);
+  return t ? store.verifyPharmacyUserToken(t) : null;
+}
+
+function requireOwner(req: express.Request, res: express.Response) {
+  const owner = getOwnerSession(req);
+  if (!owner) { res.status(401).json({ error: 'Authentification du superviseur requise.' }); return null; }
+  return owner;
+}
+
+function requirePharmacyOrOwner(req: express.Request, res: express.Response, pharmacyId: string) {
+  const owner = getOwnerSession(req);
+  if (owner && !store.getPharmacy(pharmacyId)) { res.status(404).json({ error: 'Officine inconnue.' }); return null; }
+  if (owner) return { actor: owner, displayName: owner.fullName };
+  const user = getPharmacySession(req);
+  if (!user) { res.status(401).json({ error: 'Connexion requise.' }); return null; }
+  if (user.pharmacyId !== pharmacyId) { res.status(403).json({ error: 'Accès interdit à une autre officine.' }); return null; }
+  return { actor: user, displayName: user.fullName };
+}
+
+function requireApprover(req: express.Request, res: express.Response, pharmacyId: string) {
+  const owner = getOwnerSession(req);
+  if (owner && !store.getPharmacy(pharmacyId)) { res.status(404).json({ error: 'Officine inconnue.' }); return null; }
+  if (owner) return { actor: owner, displayName: owner.fullName };
+  const user = getPharmacySession(req);
+  if (!user) { res.status(401).json({ error: 'Connexion requise.' }); return null; }
+  if (user.pharmacyId !== pharmacyId) { res.status(403).json({ error: 'Accès interdit.' }); return null; }
+  return { actor: user, displayName: user.fullName };
+}
+// Réglages de la pharmacie (agent, compte Équipe) : propriétaire ou compte Pharmacien
+function requirePharmacist(req: express.Request, res: express.Response, pharmacyId: string) {
+  const r = requireApprover(req, res, pharmacyId);
+  if (r && !getOwnerSession(req) && 'role' in r.actor && r.actor.role !== 'titulaire') { res.status(403).json({ error: 'Réservé au compte Pharmacien.' }); return null; }
+  return r;
+}
+
+function requireAgent(req: express.Request, res: express.Response): Pharmacy | null {
+  const key = req.headers['x-agent-key'];
+  const ph = typeof key === 'string' ? store.getPharmacyByAgentKey(key) : undefined;
+  if (!ph) { res.status(401).json({ error: 'Agent non appairé ou clé révoquée.', code: 'invalid_agent_key' }); return null; }
+  return ph;
+}
+
+// ─── Utilitaires ─────────────────────────────────────────
+
+function publicBaseUrl(req: express.Request): string {
+  const proto = String(req.headers['x-forwarded-proto'] ?? req.protocol).split(',')[0].trim();
+  const host = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? '').split(',')[0].trim();
+  const safeHost = /^[A-Za-z0-9.:-]+$/.test(host) ? host : 'pharmagent.onrender.com';
+  return `${proto === 'http' ? 'http' : 'https'}://${safeHost}`;
+}
+
+function resolveDocument(base64Input?: string, sampleAssetPath?: string): { base64: string; mimeType: string } {
   if (base64Input) {
-    const match = base64Input.match(/^data:([^;]+);base64,(.+)$/);
-    if (match) {
-      return { mimeType: match[1], base64: match[2] };
-    }
-    return { mimeType: fallbackMime, base64: base64Input };
+    const m = base64Input.match(/^data:([^;]+);base64,(.+)$/);
+    if (m) return { mimeType: m[1], base64: m[2] };
+    return { mimeType: 'image/jpeg', base64: base64Input };
   }
-
   if (sampleAssetPath) {
-    const safeRelative = sampleAssetPath.replace(/^\/+/, '');
-    if (!safeRelative.startsWith('src/assets/images/')) {
-      throw new Error('Chemin d’image exemple non autorisé.');
-    }
-    const absolutePath = path.resolve(__dirname, safeRelative);
-    if (!fs.existsSync(absolutePath)) {
-      throw new Error(`Image exemple introuvable : ${safeRelative}`);
-    }
-    const buffer = fs.readFileSync(absolutePath);
-    const ext = path.extname(absolutePath).toLowerCase();
-    const mimeType = ext === '.png' ? 'image/png' : 'image/jpeg';
-    return { base64: buffer.toString('base64'), mimeType };
+    const rel = sampleAssetPath.replace(/^\/+/, '');
+    const imagesDir = path.resolve(__dirname, 'src/assets/images');
+    const abs = path.resolve(__dirname, rel);
+    if (!abs.startsWith(imagesDir + path.sep)) throw new Error('Chemin image non autorisé.');
+    if (!fs.existsSync(abs)) throw new Error(`Image introuvable : ${rel}`);
+    return { mimeType: rel.endsWith('.png') ? 'image/png' : 'image/jpeg', base64: fs.readFileSync(abs).toString('base64') };
   }
-
-  throw new Error('Aucune image fournie (ni photo prise/importée, ni exemple sélectionné).');
+  throw new Error('Aucun document fourni.');
 }
 
-function resolveSourceFieldValue(
-  extracted: ExtractedDocumentData,
-  item: ExtractedLineItem,
-  sourceField: string
-): string | number {
-  switch (sourceField) {
-    case 'documentNumber':
-      return extracted.documentNumber;
-    case 'supplierOrOrg':
-      return extracted.supplierOrOrg;
-    case 'documentDate':
-      return extracted.documentDate;
-    case 'item.designation':
-      return item.designation;
-    case 'item.quantity':
-      return item.quantity;
-    case 'item.lotNumber':
-      return item.lotNumber || 'N/A';
-    case 'item.expiryDate':
-      return item.expiryDate || 'N/A';
-    case 'item.unitPriceFCFA':
-      return item.unitPriceFCFA;
-    case 'item.lineTotalFCFA':
-      return item.quantity * item.unitPriceFCFA;
-    case 'draftStatus':
-      return 'BROUILLON - EN ATTENTE VALIDATION PHARMACIEN';
-    default:
-      return '';
+// Dates du document → ISO (YYYY-MM-DD). « 12/2027 » = fin de mois (convention péremption).
+function toIsoDate(raw?: string): string | undefined {
+  if (!raw) return undefined;
+  const s = raw.trim();
+  let m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  if (m) return iso(+m[1], +m[2], +m[3]);
+  m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/);
+  if (m) return iso(fullYear(+m[3]), +m[2], +m[1]);
+  m = s.match(/^(\d{1,2})[-/.](\d{2,4})$/);
+  if (m) return iso(fullYear(+m[2]), +m[1], 0);
+  m = s.match(/^(\d{4})[-/.](\d{1,2})$/);
+  if (m) return iso(+m[1], +m[2], 0);
+  return undefined;
+
+  function fullYear(y: number) { return y < 100 ? 2000 + y : y; }
+  function iso(y: number, mo: number, d: number) {
+    if (mo < 1 || mo > 12) return undefined;
+    const day = d || new Date(Date.UTC(y, mo, 0)).getUTCDate();
+    if (day < 1 || day > 31) return undefined;
+    return `${y}-${String(mo).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
   }
 }
+
+// ─── Correspondance produits ──────────────────────────────
+
+const isLocked = (l: ExtractedLineItem) => l.match?.status === 'confirmed' || l.match?.status === 'new_product';
+
+async function matchDocumentLines(pharmacyId: string, data: ExtractedDocumentData): Promise<{ lines: ExtractedLineItem[]; tokensConsumed: number }> {
+  const supplier = normalizeSupplier(data.supplierOrOrg);
+  const { lines, pendingAI } = matchLines(data.lineItems, {
+    catalog: store.getCatalog(pharmacyId),
+    aliases: store.getAliasesForPharmacy(pharmacyId),
+    supplier,
+  });
+  // Les choix déjà faits par le pharmacien ne sont jamais écrasés
+  data.lineItems.forEach((orig, i) => { if (isLocked(orig)) lines[i] = orig; });
+
+  const ambiguous = pendingAI.filter((p) => !isLocked(data.lineItems[p.index]));
+  let tokensConsumed = 0;
+  if (ambiguous.length) {
+    try {
+      const { decisions, tokensConsumed: t } = await resolveProductMatches({
+        supplier: data.supplierOrOrg,
+        items: ambiguous.map((p) => ({
+          index: p.index,
+          designation: lines[p.index].designation,
+          unitPriceFCFA: lines[p.index].unitPriceFCFA,
+          salePriceFCFA: lines[p.index].salePriceFCFA,
+          candidates: p.candidates,
+        })),
+      });
+      tokensConsumed = t;
+      for (const d of decisions) {
+        const m = lines[d.index].match!;
+        const pick = m.candidates.find((c) => c.productId === d.productId)!;
+        const conf = Math.max(0, Math.min(1, d.confidence));
+        lines[d.index].match = {
+          status: conf >= AUTO_THRESHOLD ? 'auto' : 'to_review',
+          method: 'ai',
+          score: conf,
+          productId: pick.productId,
+          erpLabel: pick.erpLabel,
+          candidates: [pick, ...m.candidates.filter((c) => c.productId !== pick.productId)],
+        };
+      }
+    } catch (err) {
+      // Sans IA les lignes restent « à vérifier » : on ne devine jamais
+      console.warn('[PharmAgent] Correspondance IA indisponible :', (err as Error).message);
+    }
+  }
+  return { lines: attachReference(lines, store.getCatalog(pharmacyId)), tokensConsumed };
+}
+
+function buildDraftWorkbook(draft: DraftRecord): Buffer {
+  const data = draft.extractedData;
+  const statusLabel: Record<string, string> = { auto: 'Auto', confirmed: 'Confirmé', to_review: 'À VÉRIFIER', new_product: 'Nouveau produit' };
+  const rows = data.lineItems.map((item) => ({
+    'Date Réception': data.documentDate,
+    'N° Document': data.documentNumber,
+    'Fournisseur': data.supplierOrOrg,
+    'Libellé Grossiste': item.designation,
+    'Produit ERP': item.match?.erpLabel ?? '',
+    'Correspondance': item.match ? `${statusLabel[item.match.status]} (${Math.round(item.match.score * 100)}%)` : '',
+    'CIP': item.cip ?? '',
+    'Quantité Reçue': item.quantity,
+    'N° Lot': item.lotNumber ?? '',
+    'Date Péremption': item.expiryDate ?? '',
+    'Prix Achat Unitaire (FCFA)': item.unitPriceFCFA,
+    'Prix Vente (FCFA)': item.salePriceFCFA ?? '',
+    'Total Ligne (FCFA)': item.quantity * item.unitPriceFCFA,
+    'Statut': draft.status === 'approved' ? 'APPROUVÉ PAR LE PHARMACIEN' : 'BROUILLON — EN ATTENTE VALIDATION PHARMACIEN',
+  }));
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = Object.keys(rows[0] ?? {}).map((k) => ({ wch: Math.max(12, Math.min(40, k.length + 4)) }));
+  XLSX.utils.book_append_sheet(wb, ws, 'Brouillon_Stock');
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+}
+
+// Repère les colonnes d'un export ERP quel que soit leur intitulé exact
+const CATALOG_FIELDS: Partial<Record<ColumnField, keyof CatalogRowInput>> = {
+  product: 'erpLabel', cip: 'cip', purchase: 'purchasePriceFCFA', sale: 'salePriceFCFA', stock: 'stockQty',
+};
+
+function parseCatalogFile(base64: string): { rows: CatalogRowInput[]; columns: Partial<Record<keyof CatalogRowInput, string>> } {
+  const wb = readWorkbook(Buffer.from(base64.replace(/^data:[^,]+,/, ''), 'base64'));
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' });
+  if (!raw.length) return { rows: [], columns: {} };
+
+  const columns: Partial<Record<keyof CatalogRowInput, string>> = {};
+  for (const h of Object.keys(raw[0])) {
+    const target = CATALOG_FIELDS[matchColumn(h) ?? 'discount'];
+    if (target && !columns[target]) columns[target] = h;
+  }
+  const rows = raw.map((r) => ({
+    erpLabel: columns.erpLabel ? String(r[columns.erpLabel]).trim() : '',
+    cip: columns.cip ? String(r[columns.cip]).trim() || undefined : undefined,
+    purchasePriceFCFA: columns.purchasePriceFCFA ? parseAmount(r[columns.purchasePriceFCFA]) : undefined,
+    salePriceFCFA: columns.salePriceFCFA ? parseAmount(r[columns.salePriceFCFA]) : undefined,
+    stockQty: columns.stockQty ? parseAmount(r[columns.stockQty]) : undefined,
+  })).filter((r) => r.erpLabel);
+  return { rows, columns };
+}
+
+// ─── Tâche transmise à l'agent local ─────────────────────
+
+/** Texte tapé par l'agent : jamais de saut de ligne ni de tabulation (= touches Entrée/Tab, qui pourraient valider). */
+const typed = (v: unknown, max = 200): string =>
+  String(v ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/\s{2,}/g, ' ').trim().slice(0, max);
+const typedNum = (v: unknown): number | '' => (typeof v === 'number' && Number.isFinite(v) ? v : '');
+
+function buildTaskPayload(draft: DraftRecord) {
+  const d = draft.extractedData;
+  return {
+    id: draft.id,
+    attempt: draft.execution?.attempts ?? 1,
+    header: {
+      supplier: typed(d.supplierOrOrg),
+      documentNumber: typed(d.documentNumber, 60),
+      documentDate: typed(toIsoDate(d.documentDate) ?? d.documentDate, 20),
+      totalAmount: typedNum(d.totalAmountFCFA),
+    },
+    lines: d.lineItems.map((l, index) => ({
+      index,
+      product: typed(l.match?.erpLabel ?? l.designation),
+      cip: typed(l.cip, 20),
+      designation: typed(l.designation),
+      quantity: l.quantity,
+      lotNumber: typed(l.lotNumber, 40),
+      expiryDate: typed(toIsoDate(l.expiryDate) ?? l.expiryDate, 20),
+      purchasePrice: l.unitPriceFCFA,
+      salePrice: typedNum(l.salePriceFCFA),
+      freeUnits: l.freeUnits ? typedNum(l.freeUnits) : '',
+      lineTotal: typedNum(l.lineTotal ?? l.quantity * l.unitPriceFCFA),
+      skip: l.match?.status === 'new_product' ? "Nouveau produit : à créer d'abord dans l'ERP." : undefined,
+    })),
+  };
+}
+
+const STEP_KINDS = new Set<RecipeStep['kind']>(['fill', 'pick', 'click', 'press', 'select', 'type', 'key', 'wait']);
+
+function sanitizeSteps(input: unknown): { steps: RecipeStep[]; error?: string } {
+  if (!Array.isArray(input)) return { steps: [] };
+  if (input.length > 200) return { steps: [], error: 'Recette trop longue (200 étapes max).' };
+  const str = (v: unknown, max = 300) => (typeof v === 'string' ? v.slice(0, max) : undefined);
+  const steps: RecipeStep[] = [];
+  for (const raw of input as Array<Record<string, unknown>>) {
+    if (!raw || !STEP_KINDS.has(raw.kind as RecipeStep['kind'])) return { steps: [], error: `Étape invalide : ${String(raw?.kind)}` };
+    const step: RecipeStep = {
+      kind: raw.kind as RecipeStep['kind'],
+      field: str(raw.field, 40),
+      value: str(raw.value, 500),
+      selectors: Array.isArray(raw.selectors) ? raw.selectors.filter((s): s is string => typeof s === 'string').slice(0, 8).map((s) => s.slice(0, 500)) : undefined,
+      text: str(raw.text, 200),
+      key: str(raw.key, 40),
+      format: str(raw.format, 40),
+      label: str(raw.label, 200),
+      ms: typeof raw.ms === 'number' ? Math.max(0, Math.min(10000, raw.ms)) : undefined,
+      frame: str(raw.frame, 300),
+      via: raw.via === 'key' || raw.via === 'mouse' ? raw.via : undefined,
+    };
+    // Garde-fou : jamais de clic sur un bouton de validation, même enregistré pendant la démo
+    for (const t of [step.text, step.label]) {
+      const check = t ? checkTextSafety(t) : { safe: true };
+      if (!check.safe) return { steps: [], error: `Garde-fou : ${check.reason}` };
+    }
+    steps.push(step);
+  }
+  return { steps };
+}
+
+// ─── Appairage par code ──────────────────────────────────
+
+interface Pairing { id: string; secret: string; code: string; createdAt: number; hostname?: string; os?: string; pharmacyId?: string }
+const PAIRING_TTL_MS = 15 * 60 * 1000;
+const pairings = new Map<string, Pairing>();
+
+function purgePairings(): void {
+  for (const [id, p] of pairings) if (Date.now() - p.createdAt > PAIRING_TTL_MS) pairings.delete(id);
+}
+
+// ─── Routes santé ─────────────────────────────────────────
 
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'PharmAgent' });
+  res.json({ status: 'ok', service: 'PharmAgent', version: '2.1.0', persistence: store.persistence });
 });
 
-app.get('/api/dashboard', (_req, res) => {
+// ─── Authentification propriétaire ───────────────────────
+
+app.post('/api/owner/auth/login', (req, res) => {
+  if (rateLimited(req, res, 'login')) return;
+  const { loginId, password } = req.body as { loginId?: string; password?: string };
+  if (!loginId || !password) { res.status(400).json({ error: 'Identifiant et mot de passe requis.' }); return; }
+  const token = store.loginOwner(loginId.trim(), password);
+  if (!token) {
+    recordFailure(req, 'login');
+    res.status(401).json({ error: 'Identifiant ou mot de passe incorrect.' });
+    return;
+  }
+  clearFailures(req, 'login');
+  res.json({ token, owner: store.getOwner() });
+});
+
+app.get('/api/owner/auth/me', (req, res) => {
+  const owner = requireOwner(req, res);
+  if (!owner) return;
+  res.json({ owner });
+});
+
+app.post('/api/owner/auth/change-credentials', (req, res) => {
+  const owner = requireOwner(req, res);
+  if (!owner) return;
+  const { newLoginId, newFullName, currentPassword, newPassword } = req.body as Record<string, string>;
+  if (!currentPassword) { res.status(400).json({ error: 'Mot de passe actuel requis.' }); return; }
+  const ok = store.changeOwnerCredentials(newLoginId, newFullName, currentPassword, newPassword);
+  if (!ok) { res.status(401).json({ error: 'Mot de passe actuel incorrect.' }); return; }
+  res.json({ ok: true });
+});
+
+// ─── Dashboard ────────────────────────────────────────────
+
+// Sauvegarde complète (à garder en lieu sûr : contient les comptes et clés d'agents)
+app.get('/api/owner/backup', (req, res) => {
+  if (!requireOwner(req, res)) return;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="pharmagent-sauvegarde-${new Date().toISOString().slice(0, 10)}.json"`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(JSON.stringify(store.exportState()));
+});
+
+app.post('/api/owner/restore', async (req, res) => {
+  if (!requireOwner(req, res)) return;
+  try {
+    const result = await store.importState((req.body as { data?: unknown }).data);
+    store.addAuditLog({ pharmacyId: 'OWNER', actorId: 'OWNER-01', actorName: store.getOwner().fullName, action: `Restauration d'une sauvegarde : ${result.pharmacies} officine(s), ${result.drafts} brouillon(s)`, level: 'warning' });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+app.get('/api/dashboard', (req, res) => {
+  if (!requireOwner(req, res)) return;
   res.json(store.getDashboard());
 });
 
+// ─── Pharmacies ───────────────────────────────────────────
+
 app.post('/api/pharmacies', (req, res) => {
-  try {
-    const { name, city, region, pharmacist, targetSoftware } = req.body as {
-      name: string;
-      city: string;
-      region?: string;
-      pharmacist: string;
-      targetSoftware: TargetSoftwareType;
-    };
-
-    if (!name?.trim() || !city?.trim() || !pharmacist?.trim()) {
-      res.status(400).json({ error: 'Nom de l’officine, ville et titulaire sont obligatoires.' });
-      return;
-    }
-
-    const created = store.createPharmacy({
-      name,
-      city,
-      region: region || city,
-      pharmacist,
-      targetSoftware: targetSoftware || 'ERP Officine Intégré',
-    });
-
-    res.status(201).json({ pharmacy: created });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Erreur création officine.';
-    res.status(500).json({ error: message });
-  }
-});
-
-/**
- * Génération des 3 fichiers Excel d'entraînement et de test réel :
- * 1. memory     -> PharmAgent_Memoire_Mapping.xlsx (Ce que l'agent mémorise)
- * 2. target     -> PharmAgent_Modele_Cible_Stock.xlsx (Là où il doit le remplir)
- * 3. custom_kit -> PharmAgent_Proposition_Test_Officine.xlsx (Fichier spécial proposé pour tester)
- */
-app.get('/api/training/download/:templateType', (req, res) => {
-  const { templateType } = req.params;
-  const memory = store.getMemory();
-  const wb = XLSX.utils.book_new();
-  let fileName = 'PharmAgent.xlsx';
-
-  if (templateType === 'memory') {
-    const productRows = memory.productAliases.map((p) => ({
-      'Libellé Brut Document (Alias)': p.rawLabel,
-      'Désignation Officiale Officine': p.canonicalName,
-      Catégorie: p.category,
-      Origine: p.learnedFrom,
-    }));
-    const columnRows = memory.columnRules.map((c) => ({
-      'En-tête Colonne Excel': c.excelHeaderPattern,
-      'Champ JSON Source': c.targetSourceField,
-      Origine: c.learnedFrom,
-    }));
-
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(productRows), 'Dictionnaire_Produits');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(columnRows), 'Regles_Colonnes_Excel');
-    fileName = 'PharmAgent_1_Memoire_Agent.xlsx';
-  } else if (templateType === 'target') {
-    const targetRows = [
-      {
-        'Date Réception': '17/11/2026',
-        'N° Bon / Facture': 'BL-EXEMPLE-001',
-        Fournisseur: 'COPHASE DAKAR',
-        'Désignation Médicament': 'Amoxicilline 500mg Gélule B/24',
-        'Quantité Reçue': 30,
-        'N° Lot': 'AMX2601',
-        'Date Expiration': '05/2028',
-        'Prix Unitaire (FCFA)': 1850,
-        'Total Ligne (FCFA)': 55500,
-        'Statut Validation': 'VALIDE (EXEMPLE)',
-      },
-    ];
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(targetRows), 'Reception_Stock');
-    fileName = 'PharmAgent_2_Modele_Cible_Stock.xlsx';
-  } else if (templateType === 'custom_kit') {
-    const customRows = [
-      {
-        'Référence Bon': 'BL-REF-DEMO',
-        'Laboratoire / Fournisseur': 'LABOREX SENEGAL',
-        'Date Document': '15/11/2026',
-        'Médicament (DCI)': 'Paracétamol Doliprane 1000mg B/8',
-        'Qté Livrée': 50,
-        'N° Lot Fabricant': 'DOL9001',
-        'Date Péremption': '12/2027',
-        'Prix Achat Unitaire (FCFA)': 1200,
-        'Montant Ligne (FCFA)': 60000,
-        'Contrôle Garde-Fou': 'EXEMPLE INITIAL',
-      },
-    ];
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(customRows), 'Suivi_Entrees_Test');
-    fileName = 'PharmAgent_3_Fichier_Test_Propose.xlsx';
-  } else {
-    res.status(404).json({ error: 'Type de fichier Excel inconnu.' });
+  if (!requireOwner(req, res)) return;
+  const { name, city, region, pharmacist, targetSoftware } = req.body as {
+    name: string; city: string; region?: string; pharmacist: string; targetSoftware: TargetSoftwareType;
+  };
+  if (!name?.trim() || !city?.trim() || !pharmacist?.trim()) {
+    res.status(400).json({ error: 'Nom, ville et titulaire sont obligatoires.' });
     return;
   }
-
-  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
-  res.setHeader(
-    'Content-Type',
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-  );
-  res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-  res.send(buffer);
+  const { pharmacy, password } = store.createPharmacy({ name: name.trim(), city: city.trim(), region, pharmacist: pharmacist.trim(), targetSoftware: targetSoftware ?? 'ERP Officine Intégré' });
+  store.addAuditLog({ pharmacyId: pharmacy.id, actorId: 'OWNER-01', actorName: store.getOwner().fullName, action: `Création de l'officine ${pharmacy.name}`, level: 'info' });
+  res.status(201).json({ pharmacy, credentials: { code: pharmacy.code, password } });
 });
 
-app.post('/api/training/upload-memory', (req, res) => {
-  try {
-    const { excelBase64, fileName = 'Memoire_Importee.xlsx' } = req.body as {
-      excelBase64: string;
-      fileName?: string;
-    };
-    if (!excelBase64) {
-      res.status(400).json({ error: 'Fichier Excel manquant.' });
-      return;
-    }
-
-    const cleanB64 = excelBase64.replace(/^data:[^;]+;base64,/, '');
-    const wb = XLSX.read(Buffer.from(cleanB64, 'base64'), { type: 'buffer' });
-    let importedProducts = 0;
-    let importedColumns = 0;
-
-    for (const sheetName of wb.SheetNames) {
-      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[sheetName], {
-        defval: '',
-      });
-      for (const row of rows) {
-        const rawLabel = String(
-          row['Libellé Brut Document (Alias)'] || row['Alias'] || row['rawLabel'] || ''
-        ).trim();
-        const canonicalName = String(
-          row['Désignation Officiale Officine'] || row['Nom Officiel'] || row['canonicalName'] || ''
-        ).trim();
-        const category = String(row['Catégorie'] || row['category'] || 'Médicament').trim();
-
-        if (rawLabel && canonicalName) {
-          store.addProductAliasRule({
-            rawLabel,
-            canonicalName,
-            category,
-            learnedFrom: `Import Excel (${fileName})`,
-          });
-          importedProducts += 1;
-        }
-
-        const headerPat = String(
-          row['En-tête Colonne Excel'] || row['Colonne'] || row['excelHeaderPattern'] || ''
-        ).trim();
-        const sourceField = String(
-          row['Champ JSON Source'] || row['Champ'] || row['targetSourceField'] || ''
-        ).trim();
-        if (headerPat && sourceField) {
-          store.addColumnMappingRule({
-            excelHeaderPattern: headerPat,
-            targetSourceField: sourceField,
-            learnedFrom: `Import Excel (${fileName})`,
-          });
-          importedColumns += 1;
-        }
-      }
-    }
-
-    res.json({
-      importedProducts,
-      importedColumns,
-      learnedMemory: store.getMemory(),
-    });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Erreur lecture fichier mémoire Excel.';
-    res.status(500).json({ error: message });
+// Actions sensibles du superviseur : son mot de passe est redemandé (standard « confirmer votre identité »)
+function requireOwnerConfirm(req: express.Request, res: express.Response): boolean {
+  if (!requireOwner(req, res)) return false;
+  if (rateLimited(req, res, 'confirm')) return false;
+  if (!store.verifyOwnerPassword(String((req.body as { password?: string })?.password ?? ''))) {
+    recordFailure(req, 'confirm');
+    res.status(403).json({ error: 'Mot de passe du superviseur incorrect : action annulée.' });
+    return false;
   }
+  clearFailures(req, 'confirm');
+  return true;
+}
+
+app.post('/api/pharmacies/:id/reset-password', (req, res) => {
+  if (!requireOwnerConfirm(req, res)) return;
+  const ph = store.getPharmacy(req.params.id);
+  if (!ph) { res.status(404).json({ error: 'Officine introuvable.' }); return; }
+  const team = (req.body as { account?: string }).account === 'equipe';
+  const password = team ? store.resetTeamAccount(ph.id) : store.resetPharmacistPassword(ph.id);
+  if (!password) { res.status(404).json({ error: 'Officine introuvable.' }); return; }
+  store.addAuditLog({ pharmacyId: ph.id, actorId: 'OWNER-01', actorName: store.getOwner().fullName, action: `Mot de passe du compte ${team ? 'Équipe' : 'Pharmacien'} réinitialisé par le superviseur`, level: 'warning' });
+  res.json({ code: ph.code, password, account: team ? 'equipe' : 'pharmacien' });
+});
+
+app.patch('/api/pharmacies/:id', (req, res) => {
+  if (!requireOwner(req, res)) return;
+  const ph = store.updatePharmacyInfo(req.params.id, req.body as Record<string, string>);
+  if (!ph) { res.status(404).json({ error: 'Officine introuvable.' }); return; }
+  store.addAuditLog({ pharmacyId: ph.id, actorId: 'OWNER-01', actorName: store.getOwner().fullName, action: 'Informations de l\'officine modifiées', level: 'info' });
+  res.json({ pharmacy: ph });
+});
+
+app.post('/api/pharmacies/:id/agent/revoke', (req, res) => {
+  if (!requireOwnerConfirm(req, res)) return;
+  if (!store.revokeAgent(req.params.id)) { res.status(404).json({ error: 'Officine introuvable.' }); return; }
+  store.addAuditLog({ pharmacyId: req.params.id, actorId: 'OWNER-01', actorName: store.getOwner().fullName, action: 'Ordinateur déconnecté par le superviseur (clé de l\'agent révoquée)', level: 'warning' });
+  res.json({ ok: true });
+});
+
+app.post('/api/pharmacies/:id/delete', (req, res) => {
+  if (!requireOwnerConfirm(req, res)) return;
+  const ph = store.getPharmacy(req.params.id);
+  if (!ph) { res.status(404).json({ error: 'Officine introuvable.' }); return; }
+  const typed = String((req.body as { confirmName?: string }).confirmName ?? '').trim().toLowerCase();
+  if (typed !== ph.name.trim().toLowerCase()) { res.status(400).json({ error: "Le nom saisi ne correspond pas : l'officine n'est pas supprimée." }); return; }
+  store.deletePharmacy(ph.id);
+  store.addAuditLog({ pharmacyId: ph.id, actorId: 'OWNER-01', actorName: store.getOwner().fullName, action: `Officine supprimée : ${ph.name} (${ph.city})`, level: 'warning' });
+  res.json({ ok: true });
+});
+
+// ─── Espace pharmacie (compte Pharmacien ou Équipe) ──────
+
+const publicUser = (u: PharmacyUser) => ({ id: u.id, pharmacyId: u.pharmacyId, fullName: u.fullName, profile: u.role === 'titulaire' ? 'pharmacien' : 'equipe' });
+const publicPharmacy = (p: Pharmacy) => ({ id: p.id, name: p.name, city: p.city, code: p.code });
+
+app.post('/api/pharmacy/auth/login', (req, res) => {
+  if (rateLimited(req, res, 'login')) return;
+  const { code, profile, password } = req.body as { code?: string; profile?: string; password?: string };
+  if (!code || !password || (profile !== 'pharmacien' && profile !== 'equipe')) {
+    res.status(400).json({ error: 'Code pharmacie, profil et mot de passe requis.' });
+    return;
+  }
+  const r = store.loginPharmacyProfile(code, profile, password);
+  if (!r) {
+    recordFailure(req, 'login');
+    res.status(401).json({ error: 'Code pharmacie ou mot de passe incorrect.' });
+    return;
+  }
+  clearFailures(req, 'login');
+  res.json({ token: r.token, user: publicUser(r.user), pharmacy: publicPharmacy(r.pharmacy), teamAccount: store.hasTeamAccount(r.pharmacy.id) });
+});
+
+// Connexion unique (standard) : identifiant + mot de passe.
+// Identifiant = celui du superviseur, ou le code de la pharmacie. Le mot de passe désigne le compte (Pharmacien ou Équipe).
+app.post('/api/auth/login', (req, res) => {
+  if (rateLimited(req, res, 'login')) return;
+  const { identifiant, password } = req.body as { identifiant?: string; password?: string };
+  if (!identifiant?.trim() || !password) { res.status(400).json({ error: 'Identifiant et mot de passe requis.' }); return; }
+  const ownerToken = store.loginOwner(identifiant, password);
+  if (ownerToken) {
+    clearFailures(req, 'login');
+    res.json({ kind: 'owner', token: ownerToken, owner: store.getOwner() });
+    return;
+  }
+  const r = store.loginPharmacyProfile(identifiant, 'pharmacien', password) ?? store.loginPharmacyProfile(identifiant, 'equipe', password);
+  if (!r) {
+    recordFailure(req, 'login');
+    res.status(401).json({ error: 'Identifiant ou mot de passe incorrect.' });
+    return;
+  }
+  clearFailures(req, 'login');
+  res.json({ kind: 'pharmacy', token: r.token, user: publicUser(r.user), pharmacy: publicPharmacy(r.pharmacy), teamAccount: store.hasTeamAccount(r.pharmacy.id) });
+});
+
+app.get('/api/pharmacy/auth/me', (req, res) => {
+  const u = getPharmacySession(req);
+  const ph = u ? store.getPharmacy(u.pharmacyId) : undefined;
+  if (!u || !ph) { res.status(401).json({ error: 'Connexion requise.' }); return; }
+  res.json({ user: publicUser(u), pharmacy: publicPharmacy(ph), teamAccount: store.hasTeamAccount(ph.id) });
+});
+
+app.get('/api/pharmacy/dashboard', (req, res) => {
+  const u = getPharmacySession(req);
+  if (!u) { res.status(401).json({ error: 'Connexion requise.' }); return; }
+  const snap = store.getDashboard(u.pharmacyId);
+  res.json({ ...snap, pharmacies: snap.pharmacies.map(({ agentKey: _key, ...p }) => p) });
+});
+
+app.post('/api/pharmacy/auth/change-password', (req, res) => {
+  const u = getPharmacySession(req);
+  if (!u) { res.status(401).json({ error: 'Connexion requise.' }); return; }
+  const { current, next } = req.body as { current?: string; next?: string };
+  if (!next || next.length < 6) { res.status(400).json({ error: 'Nouveau mot de passe : 6 caractères minimum.' }); return; }
+  if (!current || !store.verifyUserPassword(u.id, current)) { res.status(401).json({ error: 'Mot de passe actuel incorrect.' }); return; }
+  // Le mot de passe désigne le compte à la connexion : Pharmacien et Équipe ne peuvent pas avoir le même
+  if (store.passwordUsedByOther(u, next)) { res.status(400).json({ error: "Choisissez un mot de passe différent de celui de l'autre compte de la pharmacie." }); return; }
+  store.setUserPassword(u.id, next);
+  res.json({ ok: true });
+});
+
+app.post('/api/pharmacy/team-account', (req, res) => {
+  const u = getPharmacySession(req);
+  if (!u) { res.status(401).json({ error: 'Connexion requise.' }); return; }
+  if (u.role !== 'titulaire') { res.status(403).json({ error: 'Réservé au compte Pharmacien.' }); return; }
+  const password = store.resetTeamAccount(u.pharmacyId);
+  store.addAuditLog({ pharmacyId: u.pharmacyId, actorId: u.id, actorName: u.fullName, action: 'Compte Équipe créé ou réinitialisé', level: 'info' });
+  res.json({ password });
+});
+
+app.patch('/api/pharmacies/:id/subscription', (req, res) => {
+  if (!requireOwner(req, res)) return;
+  const { plan, quota } = req.body as { plan: string; quota?: number };
+  if (!['trial', 'standard', 'premium', 'suspended'].includes(plan)) { res.status(400).json({ error: 'Formule inconnue.' }); return; }
+  const q = quota === undefined ? undefined : Math.round(Number(quota));
+  if (q !== undefined && !(q >= 0 && q <= 100_000)) { res.status(400).json({ error: 'Quota invalide (0 à 100 000).' }); return; }
+  if (!store.getPharmacy(req.params.id)) { res.status(404).json({ error: 'Officine introuvable.' }); return; }
+  store.updatePharmacySubscription(req.params.id, plan as 'trial', q);
+  store.addAuditLog({ pharmacyId: req.params.id, actorId: 'OWNER-01', actorName: store.getOwner().fullName, action: `Abonnement : ${plan}${q !== undefined ? `, ${q} bons/mois` : ''}`, level: 'info' });
+  res.json({ ok: true });
+});
+
+app.patch('/api/pharmacies/:id/validation-level', (req, res) => {
+  if (!requireOwner(req, res)) return;
+  const ph = store.getPharmacy(req.params.id);
+  if (!ph) { res.status(404).json({ error: 'Officine introuvable.' }); return; }
+  const level = Number(req.body?.level);
+  if (![1, 2, 3].includes(level)) { res.status(400).json({ error: 'Niveau invalide (1, 2 ou 3).' }); return; }
+  ph.validationLevel = level as 1 | 2 | 3;
+  store.addAuditLog({ pharmacyId: ph.id, actorId: 'OWNER-01', actorName: store.getOwner().fullName, action: `Niveau de validation réglé à ${level}`, level: 'info' });
+  res.json({ ok: true });
+});
+
+app.get('/api/pharmacies/:id/users', (req, res) => {
+  if (!requirePharmacyOrOwner(req, res, req.params.id)) return;
+  res.json({ users: store.getPharmacyUsers(req.params.id).map(({ passwordHash: _h, ...u }) => u) });
+});
+
+// Le superviseur (ou le titulaire) saisit le code affiché par l'agent sur le PC de l'officine
+app.post('/api/pharmacies/:id/pair', (req, res) => {
+  if (rateLimited(req, res, 'pair')) return;
+  const actor = requirePharmacist(req, res, req.params.id);
+  if (!actor) return;
+  const ph = store.getPharmacy(req.params.id);
+  if (!ph) { res.status(404).json({ error: 'Officine introuvable.' }); return; }
+  purgePairings();
+  const code = String((req.body as { code?: string }).code ?? '').replace(/\D/g, '');
+  const pairing = [...pairings.values()].find((p) => p.code === code && !p.pharmacyId);
+  if (!pairing) {
+    recordFailure(req, 'pair');
+    res.status(404).json({ error: 'Code inconnu ou expiré. Vérifiez le code affiché sur l\'ordinateur.' });
+    return;
+  }
+  clearFailures(req, 'pair');
+  pairing.pharmacyId = ph.id;
+  store.addAuditLog({ pharmacyId: ph.id, actorId: actor.actor.id, actorName: actor.displayName, action: `Ordinateur appairé : ${pairing.hostname ?? 'inconnu'} (${pairing.os ?? '?'})`, level: 'info' });
+  res.json({ ok: true, hostname: pairing.hostname, os: pairing.os });
+});
+
+app.get('/api/pharmacies/:id/agent', (req, res) => {
+  if (!requirePharmacyOrOwner(req, res, req.params.id)) return;
+  const ph = store.getPharmacies().find((p) => p.id === req.params.id);
+  if (!ph) { res.status(404).json({ error: 'Officine introuvable.' }); return; }
+  const profile = store.getProfile(ph.id);
+  res.json({
+    presence: ph.agent ?? null,
+    profile: profile ? {
+      mode: profile.mode, erpUrl: profile.erpUrl, windowTitle: profile.windowTitle, recordedAt: profile.recordedAt,
+      filePath: profile.filePath ? profile.filePath.split(/[\\/]/).pop() : undefined,
+      headerSteps: profile.headerSteps.length, lineSteps: profile.lineSteps.length,
+      fields: [...new Set([...profile.headerSteps, ...profile.lineSteps].map((s) => s.field).filter(Boolean))],
+    } : null,
+    queue: store.getDrafts(ph.id).filter((d) => d.execution && d.status === 'approved').slice(0, 15).map((d) => ({
+      id: d.id, documentNumber: d.extractedData.documentNumber, supplier: d.extractedData.supplierOrOrg,
+      lines: d.extractedData.lineItems.length, execution: d.execution,
+    })),
+  });
+});
+
+// ─── Entraînement & Mémoire ───────────────────────────────
+
+app.get('/api/training/download/:type', (req, res) => {
+  if (req.params.type === 'memory' && !requireOwner(req, res)) return;
+  const memory = store.getMemory();
+  const wb = XLSX.utils.book_new();
+  let fileName: string;
+
+  if (req.params.type === 'memory') {
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+      memory.productAliases.map((a) => ({ 'Grossiste': a.supplier ?? '', 'Libellé Grossiste': a.rawLabel, 'Produit ERP': a.canonicalName, 'Utilisations': a.hits ?? 0 }))
+    ), 'Correspondances');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+      memory.columnRules.map((r) => ({ 'Champ Source (Agent)': r.sourceField, 'Colonne Cible (Logiciel)': r.targetColumn }))
+    ), 'Regles_Colonnes');
+    fileName = 'PharmAgent_Memoire_Agent.xlsx';
+  } else if (req.params.type === 'target') {
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([
+      { 'Date Réception': '', 'N° Bon Livraison': '', 'Fournisseur': '', 'Désignation Médicament': '', 'Quantité Reçue': '', 'N° Lot Fabricant': '', 'Date Péremption': '', 'Prix Achat Unitaire (FCFA)': '', 'Total Ligne (FCFA)': '', 'Statut Validation': 'BROUILLON - EN ATTENTE VALIDATION PHARMACIEN' },
+    ]), 'Modele_Reception_Stock');
+    fileName = 'PharmAgent_Modele_Cible_Stock.xlsx';
+  } else if (req.params.type === 'catalog_template') {
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([
+      { 'Désignation': 'AMOXICILLINE 500 MG GELULE B/12', 'CIP': '', 'Prix achat': 980, 'Prix de vente': 1350, 'Stock': 10 },
+    ]), 'Catalogue');
+    fileName = 'PharmAgent_Modele_Catalogue.xlsx';
+  } else {
+    res.status(404).json({ error: 'Type de modèle inconnu.' });
+    return;
+  }
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+  res.send(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }));
 });
 
 app.post('/api/training/rules', (req, res) => {
-  const { kind, key, value, category } = req.body as {
-    kind: 'product' | 'column';
-    key: string;
-    value: string;
-    category?: string;
-  };
-  if (!key?.trim() || !value?.trim()) {
-    res.status(400).json({ error: 'Les deux champs sont requis.' });
+  if (!requireOwner(req, res)) return;
+  const { type, rawLabel, canonicalName, sourceField, targetColumn } = req.body as Record<string, string>;
+  if (type === 'alias') {
+    if (!rawLabel || !canonicalName) { res.status(400).json({ error: 'rawLabel et canonicalName requis.' }); return; }
+    res.json({ alias: store.addProductAlias(rawLabel, canonicalName) });
     return;
   }
-  if (kind === 'product') {
-    store.addProductAliasRule({
-      rawLabel: key.trim(),
-      canonicalName: value.trim(),
-      category: category?.trim() || 'Officine',
-      learnedFrom: 'Ajout manuel Pharmacien',
-    });
-  } else {
-    store.addColumnMappingRule({
-      excelHeaderPattern: key.trim(),
-      targetSourceField: value.trim(),
-      learnedFrom: 'Ajout manuel Pharmacien',
-    });
+  if (type === 'column') {
+    if (!sourceField || !targetColumn) { res.status(400).json({ error: 'sourceField et targetColumn requis.' }); return; }
+    res.json({ rule: store.addColumnRule(sourceField, targetColumn) });
+    return;
   }
-  res.json({ learnedMemory: store.getMemory() });
+  res.status(400).json({ error: 'type doit être "alias" ou "column".' });
 });
 
 app.delete('/api/training/rules/:id', (req, res) => {
-  store.deleteMemoryRule(req.params.id);
-  res.json({ learnedMemory: store.getMemory() });
+  if (!requireOwner(req, res)) return;
+  if (req.query.type === 'alias') store.removeProductAlias(req.params.id);
+  else store.removeColumnRule(req.params.id);
+  res.json({ ok: true });
 });
 
-app.post('/api/training/software-profiles', (req, res) => {
-  const {
-    softwareName,
-    pharmacyId,
-    detectedSoftwareType,
-    elements,
-    injectionScript,
-  } = req.body as {
-    softwareName: string;
-    pharmacyId: string;
-    detectedSoftwareType: 'erp_form' | 'excel_grid' | 'desktop_app';
-    elements: GroundedTargetElement[];
-    injectionScript: string;
-  };
-
-  if (!softwareName?.trim() || !Array.isArray(elements)) {
-    res.status(400).json({ error: 'Nom du logiciel et éléments détectés requis.' });
-    return;
-  }
-
-  const profile = store.saveSoftwareProfile({
-    softwareName: softwareName.trim(),
-    pharmacyId,
-    detectedSoftwareType: detectedSoftwareType || 'erp_form',
-    elements,
-    injectionScript: injectionScript || '',
-  });
-
-  res.status(201).json({ profile, learnedMemory: store.getMemory() });
+app.post('/api/training/import-memory', (req, res) => {
+  if (!requireOwner(req, res)) return;
+  const { productAliases, columnRules } = req.body as { productAliases?: []; columnRules?: [] };
+  store.importMemoryFromJson({ productAliases, columnRules });
+  res.json({ ok: true, memory: store.getMemory() });
 });
 
-app.get('/api/pharmacies/:id/installer', (req, res) => {
-  const pharmacy = store.getPharmacy(req.params.id);
-  if (!pharmacy) {
-    res.status(404).json({ error: 'Officine introuvable.' });
-    return;
-  }
-  const serverOrigin =
-    process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
-  const localAgentPath = path.resolve(__dirname, 'backend-fastapi/pharmagent_local_agent.py');
-  const guardrailPath = path.resolve(__dirname, 'backend-fastapi/app/safety_guardrail.py');
-  const localCode = fs.existsSync(localAgentPath)
-    ? fs.readFileSync(localAgentPath, 'utf-8')
-    : '';
-  const guardrailCode = fs.existsSync(guardrailPath)
-    ? fs.readFileSync(guardrailPath, 'utf-8')
-    : '';
+// ─── Catalogue produits de l'officine ─────────────────────
 
-  const bundledScript = `"""
-====================================================================
-PHARMAGENT — INSTALLEUR AGENT LOCAL PRÉ-CONFIGURÉ
-Officine : ${pharmacy.name} (${pharmacy.city})
-Titulaire : ${pharmacy.pharmacist}
-Logiciel cible : ${pharmacy.targetSoftware}
-Clé d'appairage : ${pharmacy.agentKey}
-Serveur Central : ${serverOrigin}
-
-Lancement sur le PC de la pharmacie :
-  pip install requests pyautogui pillow
-  python pharmagent_${pharmacy.id}.py
-====================================================================
-"""
-
-import re
-import time
-import io
-import base64
-from dataclasses import dataclass
-from typing import List, Optional
-import requests
-import pyautogui
-from PIL import ImageGrab
-
-SERVER_URL = ${JSON.stringify(serverOrigin)}
-AGENT_KEY = ${JSON.stringify(pharmacy.agentKey)}
-
-# --- GARDE-FOU DE SÉCURITÉ ABSOLU (BROUILLON UNIQUEMENT) ---
-${guardrailCode.replace(/^import .*\n/gm, '').replace(/^from .*\n/gm, '')}
-
-def capture_screen_base64() -> str:
-    screenshot = ImageGrab.grab()
-    buf = io.BytesIO()
-    screenshot.save(buf, format="PNG")
-    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("utf-8")
-
-def run():
-    guardrail = DraftOnlyGuardrail()
-    screen_w, screen_h = pyautogui.size()
-    print(f"[PharmAgent] Poste ${pharmacy.name} connecté à {SERVER_URL} ({screen_w}x{screen_h})")
-    while True:
-        try:
-            resp = requests.get(f"{SERVER_URL.rstrip('/')}/api/agent-client/next-task", params={"agentKey": AGENT_KEY}, timeout=15)
-            payload = resp.json()
-            task = payload.get("task")
-            if not task:
-                time.sleep(4)
-                continue
-
-            profile = payload.get("softwareProfile")
-            if profile and profile.get("elements"):
-                print(f"[Profil mémorisé trouvé] Utilisation directe de '{profile['softwareName']}'")
-                elements = profile["elements"]
-            else:
-                print("[UI Grounding] Analyse de l'écran en direct via Gemini Vision...")
-                shot = capture_screen_base64()
-                gr = requests.post(
-                    f"{SERVER_URL.rstrip('/')}/api/agent/ground",
-                    json={"pharmacyId": task["pharmacyId"], "extractedData": task["extracted"], "screenshotBase64": shot, "mimeType": "image/png"},
-                    timeout=60,
-                )
-                elements = gr.json()["grounding"]["elements"]
-
-            for elem in elements:
-                if elem.get("safetyStatus") == "FORBIDDEN_BY_GUARDRAIL" or elem.get("elementRole") == "forbidden_final_button":
-                    print(f"[GARDE-FOU] Bouton final ignoré et verrouillé : {elem.get('detectedLabel')}")
-                    continue
-                guardrail.assert_element_safe(elem["elementRole"], elem["detectedLabel"], elem.get("safetyStatus"))
-                cx = int((elem["centerPoint"]["x"] / 1000.0) * screen_w)
-                cy = int((elem["centerPoint"]["y"] / 1000.0) * screen_h)
-                if elem["elementRole"] in ("input_field", "table_column") and elem.get("semanticMapping"):
-                    val = str(elem["semanticMapping"]["sampleValueToInsert"])
-                    pyautogui.click(cx, cy)
-                    pyautogui.write(val, interval=0.02)
-                elif elem["elementRole"] == "draft_button":
-                    pyautogui.click(cx, cy)
-                    break
-
-            requests.post(
-                f"{SERVER_URL.rstrip('/')}/api/agent-client/report",
-                json={"taskId": task["id"], "status": "BROUILLON_CREE_LOCALEMENT", "report": "Saisie exécutée. Arrêt strict au Brouillon."},
-                timeout=15,
-            )
-        except KeyboardInterrupt:
-            break
-        except Exception as exc:
-            print(f"[Info/Erreur] {exc}")
-            time.sleep(5)
-
-if __name__ == "__main__":
-    run()
-`;
-
-  const fileName = `pharmagent_${pharmacy.id}.py`;
-  res.setHeader('Content-Type', 'text/x-python; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-  res.send(bundledScript || localCode);
+app.get('/api/pharmacies/:id/catalog', (req, res) => {
+  if (!requirePharmacyOrOwner(req, res, req.params.id)) return;
+  const products = store.getCatalog(req.params.id);
+  res.json({ total: products.length, products: products.slice(0, 2000) });
 });
 
-app.post('/api/agent/run-task', async (req, res) => {
+app.post('/api/pharmacies/:id/catalog/import', (req, res) => {
+  const actor = requirePharmacist(req, res, req.params.id);
+  if (!actor) return;
+  const { fileBase64 } = req.body as { fileBase64?: string };
+  if (!fileBase64) { res.status(400).json({ error: 'Fichier requis (Excel ou CSV).' }); return; }
   try {
-    const {
-      pharmacyId,
-      taskPrompt,
-      documentHint = 'bon_livraison',
-      imageBase64,
-      sampleAssetPath,
-      mimeType,
-      targetMode = 'erp_live',
-      uploadedExcelBase64,
-      uploadedExcelName,
-    } = req.body as {
-      pharmacyId: string;
-      taskPrompt: string;
-      documentHint?: DocumentCategory;
-      imageBase64?: string;
-      sampleAssetPath?: string;
-      mimeType?: string;
-      targetMode?: TargetExecutionMode;
-      uploadedExcelBase64?: string;
-      uploadedExcelName?: string;
-    };
-
-    const pharmacy = store.getPharmacy(pharmacyId);
-    if (!pharmacy) {
-      res.status(404).json({ error: 'Officine introuvable.' });
+    const { rows, columns } = parseCatalogFile(fileBase64);
+    if (!columns.erpLabel) {
+      res.status(400).json({ error: 'Colonne « Désignation / Libellé / Produit » introuvable dans le fichier.' });
       return;
     }
-
-    const learnedMemory = store.getMemory();
-    const image = resolveImagePayload(imageBase64, sampleAssetPath, mimeType || 'image/jpeg');
-    const { data: extracted, tokensConsumed: extractTokens } = await extractDocumentWithGemini({
-      imageBase64: image.base64,
-      mimeType: image.mimeType,
-      documentHint,
-      taskPrompt,
-      learnedMemory,
-    });
-
-    let totalTokens = extractTokens;
-    store.recordVisionUsage(pharmacy.id, extractTokens, extracted.documentType || documentHint);
-
-    const draftId = `DRF-${Date.now().toString().slice(-6)}`;
-    let draftFileName: string | undefined;
-    let draftArtifactUrl: string | undefined;
-    let excelColumnsMapped: Array<{ excelColumn: string; sourceField: string }> | undefined;
-    let excelPreviewHeaders: string[] | undefined;
-    let excelPreviewRows: Array<Record<string, unknown>> | undefined;
-    let learnedColumnsCount = 0;
-
-    if (targetMode === 'excel_upload' && uploadedExcelBase64) {
-      const cleanB64 = uploadedExcelBase64.replace(/^data:[^;]+;base64,/, '');
-      const wb = XLSX.read(Buffer.from(cleanB64, 'base64'), { type: 'buffer' });
-      const firstSheetName = wb.SheetNames[0];
-      const ws = wb.Sheets[firstSheetName];
-      const existingRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: '' });
-      const headerMatrix = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1 });
-      const excelHeaders = (headerMatrix[0] || []).map((h) => String(h).trim()).filter(Boolean);
-
-      if (excelHeaders.length > 0) {
-        const mapped = await mapToRealExcelColumnsWithGemini({
-          excelColumns: excelHeaders,
-          extractedData: extracted,
-          learnedMemory,
-        });
-        totalTokens += mapped.tokensConsumed;
-        store.recordVisionUsage(pharmacy.id, mapped.tokensConsumed);
-        excelColumnsMapped = mapped.mappings;
-        learnedColumnsCount = store.learnFromExcelMappings(
-          mapped.mappings,
-          uploadedExcelName || 'Excel_Officine.xlsx'
-        );
-
-        const hasStatusColumn = mapped.mappings.some((m) => m.sourceField === 'draftStatus');
-        const newRows = extracted.lineItems.map((item) => {
-          const rowObj: Record<string, unknown> = {};
-          for (const col of excelHeaders) {
-            const match = mapped.mappings.find((m) => m.excelColumn === col);
-            rowObj[col] = match
-              ? resolveSourceFieldValue(extracted, item, match.sourceField)
-              : '';
-          }
-          if (!hasStatusColumn) {
-            rowObj['Statut PharmAgent'] = 'BROUILLON - EN ATTENTE VALIDATION PHARMACIEN';
-          }
-          return rowObj;
-        });
-
-        const finalHeaders = hasStatusColumn
-          ? excelHeaders
-          : [...excelHeaders, 'Statut PharmAgent'];
-        excelPreviewHeaders = finalHeaders;
-        excelPreviewRows = newRows;
-
-        const updatedWs = XLSX.utils.json_to_sheet([...existingRows, ...newRows]);
-        wb.Sheets[firstSheetName] = updatedWs;
-      } else {
-        const fallbackRows = extracted.lineItems.map((item) => ({
-          'N° Document': extracted.documentNumber,
-          Fournisseur: extracted.supplierOrOrg,
-          Date: extracted.documentDate,
-          Désignation: item.designation,
-          Quantité: item.quantity,
-          Lot: item.lotNumber || 'N/A',
-          Expiration: item.expiryDate || 'N/A',
-          'Prix Unitaire (FCFA)': item.unitPriceFCFA,
-          Statut: 'BROUILLON - EN ATTENTE VALIDATION PHARMACIEN',
-        }));
-        excelPreviewHeaders = Object.keys(fallbackRows[0] || {});
-        excelPreviewRows = fallbackRows;
-        wb.Sheets[firstSheetName] = XLSX.utils.json_to_sheet(fallbackRows);
-      }
-
-      const outBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
-      const baseName = (uploadedExcelName || 'Stock_Officine.xlsx').replace(/\.xlsx$/i, '');
-      draftFileName = `${baseName}_BROUILLON_${extracted.documentNumber.replace(/[^a-zA-Z0-9_-]/g, '_')}.xlsx`;
-      store.saveDraftArtifact(draftId, draftFileName, outBuffer);
-      draftArtifactUrl = `/api/drafts/${draftId}/download`;
-    } else {
-      const wb = XLSX.utils.book_new();
-      const rows = extracted.lineItems.map((item) => ({
-        'N° Document': extracted.documentNumber,
-        'Fournisseur / Organisme': extracted.supplierOrOrg,
-        Date: extracted.documentDate,
-        'Désignation Médicament': item.designation,
-        Quantité: item.quantity,
-        'N° Lot': item.lotNumber || 'N/A',
-        'Date Exp.': item.expiryDate || 'N/A',
-        'Prix Unitaire (FCFA)': item.unitPriceFCFA,
-        'Statut Saisie PharmAgent': 'BROUILLON - EN ATTENTE VALIDATION PHARMACIEN',
-      }));
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'BROUILLON_STOCK');
-      const outBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
-      draftFileName = `BROUILLON_${pharmacy.id}_${extracted.documentNumber.replace(/[^a-zA-Z0-9_-]/g, '_')}.xlsx`;
-      store.saveDraftArtifact(draftId, draftFileName, outBuffer);
-      draftArtifactUrl = `/api/drafts/${draftId}/download`;
-    }
-
-    if (targetMode === 'local_desktop') {
-      store.enqueueDesktopTask({
-        id: `TSK-${Date.now().toString().slice(-6)}`,
-        pharmacyId: pharmacy.id,
-        pharmacyName: pharmacy.name,
-        createdAt: new Date().toISOString(),
-        taskPrompt,
-        extracted,
-        status: 'EN_ATTENTE_AGENT_LOCAL',
-      });
-    }
-
-    const guardrailNote =
-      targetMode === 'local_desktop'
-        ? `Tâche transmise à l'agent desktop (${pharmacy.targetSoftware}) et brouillon sauvegardé. Validation finale bloquée.`
-        : targetMode === 'excel_upload'
-        ? `Lignes injectées dans votre classeur Excel avec statut BROUILLON${
-            learnedColumnsCount > 0 ? ` (+${learnedColumnsCount} nouvelle(s) colonne(s) mémorisée(s))` : ''
-          }. Validation finale bloquée.`
-        : `Brouillon enregistré dans ERP Officine Intégré pour ${pharmacy.name}. Validation finale réservée au pharmacien.`;
-
-    const draft: DraftRecord = {
-      id: draftId,
-      pharmacyId: pharmacy.id,
-      pharmacyName: pharmacy.name,
-      createdAt: new Date().toISOString(),
-      taskPrompt: taskPrompt || 'Extraction et mise en brouillon de réception.',
-      targetMode,
-      status: 'BROUILLON',
-      extracted: { ...extracted, tokensConsumed: totalTokens },
-      draftArtifactUrl,
-      draftFileName,
-      excelColumnsMapped,
-      excelPreviewHeaders,
-      excelPreviewRows,
-      guardrailNote,
-    };
-
-    store.saveDraft(draft);
-    store.recordExecutionOutcome({
-      pharmacyId: pharmacy.id,
-      documentNumber: extracted.documentNumber,
-      documentType: extracted.documentType || documentHint,
-      tokensUsed: totalTokens,
-      blocked: false,
-      guardrailMessage: guardrailNote,
-    });
-
-    res.json({ draft, tokensConsumed: totalTokens, learnedColumnsCount });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Erreur lors du traitement de la mission.';
-    res.status(500).json({ error: message });
+    const result = store.upsertCatalog(req.params.id, rows, 'import');
+    store.addAuditLog({ pharmacyId: req.params.id, actorId: actor.actor.id, actorName: actor.displayName, action: `Import catalogue : ${result.added} ajoutés, ${result.updated} mis à jour`, level: 'info' });
+    res.json({ ...result, columns, total: store.getCatalog(req.params.id).length });
+  } catch (err) {
+    res.status(400).json({ error: `Fichier illisible : ${(err as Error).message}` });
   }
+});
+
+// ─── Commande : journal des ventes → proposition → panier ─
+
+app.post('/api/pharmacies/:id/sales/import', (req, res) => {
+  const actor = requirePharmacist(req, res, req.params.id);
+  if (!actor) return;
+  const { fileBase64, fileName, periodDays } = req.body as { fileBase64?: string; fileName?: string; periodDays?: number };
+  if (!fileBase64) { res.status(400).json({ error: 'Fichier requis (export des ventes en Excel ou CSV).' }); return; }
+  const catalog = store.getCatalog(req.params.id);
+  if (!catalog.length) { res.status(400).json({ error: "Importez d'abord le catalogue avec le stock (Mon compte › Catalogue)." }); return; }
+  try {
+    const parsed = parseSalesJournal(Buffer.from(fileBase64.replace(/^data:[^,]+,/, ''), 'base64'), catalog, store.getAliasesForPharmacy(req.params.id));
+    const typed = Number(periodDays);
+    const fromDates = parsed.days && parsed.days > 0 ? parsed.days : undefined;
+    const days = fromDates ?? (typed > 0 && typed <= 366 ? Math.round(typed) : undefined);
+    if (!days) { res.status(400).json({ error: 'Pas de colonne Date dans le fichier : indiquez sur combien de jours portent ces ventes.' }); return; }
+    const summary: SalesSummary = {
+      pharmacyId: req.params.id, importedAt: new Date().toISOString(), fileName: String(fileName ?? '').slice(0, 120),
+      periodDays: days, periodSource: fromDates ? 'dates' : 'saisie', items: parsed.items, unmatched: parsed.unmatched.slice(0, 200),
+    };
+    store.setSales(summary);
+    store.addAuditLog({ pharmacyId: req.params.id, actorId: actor.actor.id, actorName: actor.displayName,
+      action: `Journal des ventes importé : ${parsed.items.length} produits sur ${days} jours (${parsed.unmatched.length} non reconnus)`, level: 'info' });
+    res.json({ periodDays: days, periodSource: summary.periodSource, products: parsed.items.length, unmatched: summary.unmatched });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+app.get('/api/pharmacies/:id/order-proposal', (req, res) => {
+  if (!requirePharmacyOrOwner(req, res, req.params.id)) return;
+  const sales = store.getSales(req.params.id);
+  if (!sales) { res.json({ sales: null, lines: [] }); return; }
+  const num = (v: unknown, d: number) => { const n = Number(v); return Number.isFinite(n) && n >= 0 && n <= 120 ? n : d; };
+  const params: OrderParams = {
+    coverDays: num(req.query.cover, DEFAULT_ORDER_PARAMS.coverDays), leadDays: num(req.query.lead, DEFAULT_ORDER_PARAMS.leadDays),
+    safetyDays: num(req.query.safety, DEFAULT_ORDER_PARAMS.safetyDays),
+  };
+  const { items: _items, ...info } = sales;
+  res.json({ sales: info, params, lines: proposeOrder(store.getCatalog(req.params.id), sales, params) });
+});
+
+app.post('/api/pharmacies/:id/order-proposal/export', (req, res) => {
+  if (!requirePharmacyOrOwner(req, res, req.params.id)) return;
+  const { lines, format } = req.body as { lines?: Array<{ label?: unknown; cip?: unknown; quantity?: unknown }>; format?: string };
+  const clean = (Array.isArray(lines) ? lines : []).slice(0, 2000).map((l) => ({
+    label: String(l.label ?? '').slice(0, 200), cip: l.cip ? String(l.cip).slice(0, 20) : undefined, quantity: Math.max(0, Math.round(Number(l.quantity) || 0)),
+  })).filter((l) => l.label && l.quantity > 0);
+  if (!clean.length) { res.status(400).json({ error: 'Panier vide.' }); return; }
+  const fmt = format === 'csv' ? 'csv' : 'xlsx';
+  const day = new Date().toISOString().slice(0, 10);
+  res.setHeader('Content-Type', fmt === 'csv' ? 'text/csv; charset=utf-8' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="commande-${day}.${fmt}"`);
+  res.send(orderFile(clean, fmt));
+});
+
+app.delete('/api/pharmacies/:id/catalog', (req, res) => {
+  if (!requireOwner(req, res)) return;
+  store.clearCatalog(req.params.id);
+  res.json({ ok: true });
+});
+
+// ─── Brouillons ───────────────────────────────────────────
+
+app.get('/api/pharmacies/:id/drafts', (req, res) => {
+  if (!requirePharmacyOrOwner(req, res, req.params.id)) return;
+  res.json({ drafts: store.getDrafts(req.params.id) });
+});
+
+app.get('/api/drafts/:draftId', (req, res) => {
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
+  if (!requirePharmacyOrOwner(req, res, draft.pharmacyId)) return;
+  res.json({ draft });
 });
 
 app.post('/api/drafts/:draftId/approve', (req, res) => {
-  try {
-    const { lineItems, pharmacistName } = req.body as {
-      lineItems?: ExtractedLineItem[];
-      pharmacistName?: string;
-    };
-    const updated = store.approveDraftByPharmacist(
-      req.params.draftId,
-      lineItems,
-      pharmacistName
-    );
-    res.json({ draft: updated });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Erreur lors de la validation humaine.';
-    res.status(400).json({ error: message });
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
+  if (draft.status !== 'pending') { res.status(400).json({ error: "Ce brouillon n'est plus en attente." }); return; }
+  if (draft.extractionStatus === 'processing' || draft.extractionStatus === 'error') { res.status(400).json({ error: "Analyse non terminée ou en échec : rien à approuver." }); return; }
+  const actor = requireApprover(req, res, draft.pharmacyId);
+  if (!actor) return;
+  const blocked = blockingReason(draft);
+  if (blocked) { res.status(400).json({ error: blocked }); return; }
+  const toReview = draft.extractedData.lineItems.filter((l) => l.match?.status === 'to_review').length;
+  if (toReview) {
+    res.status(400).json({ error: `${toReview} ligne(s) à vérifier : choisissez le produit ERP avant d'approuver.` });
+    return;
   }
+  // Approuver = confirmer les correspondances → mémorisées pour la prochaine fois
+  let learned = 0;
+  for (const l of draft.extractedData.lineItems) {
+    const m = l.match;
+    const isNewAuto = m?.status === 'auto' && m.method !== 'memory' && m.method !== 'cip';
+    if (!m?.erpLabel || !(isNewAuto || m.status === 'new_product')) continue;
+    store.learnMatch({
+      pharmacyId: draft.pharmacyId, supplier: draft.extractedData.supplierOrOrg, rawLabel: l.designation,
+      productId: m.productId, erpLabel: m.erpLabel, purchasePriceFCFA: l.unitPriceFCFA, salePriceFCFA: l.salePriceFCFA, cip: l.cip,
+    });
+    learned++;
+  }
+  const updated = store.updateDraftStatus(req.params.draftId, 'approved', actor.displayName);
+  store.addAuditLog({ pharmacyId: draft.pharmacyId, actorId: actor.actor.id, actorName: actor.displayName, action: `Brouillon ${draft.extractedData.documentNumber || draft.id} approuvé — envoyé à l'agent${learned ? ` — ${learned} correspondance(s) mémorisée(s)` : ''}`, level: 'approved' });
+  res.json({ ok: true, draft: updated });
 });
 
 app.post('/api/drafts/:draftId/reject', (req, res) => {
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
+  if (draft.status !== 'pending') { res.status(400).json({ error: "Ce brouillon n'est plus en attente." }); return; }
+  if (draft.extractionStatus === 'processing' || draft.extractionStatus === 'error') { res.status(400).json({ error: "Analyse non terminée ou en échec : rien à approuver." }); return; }
+  const actor = requireApprover(req, res, draft.pharmacyId);
+  if (!actor) return;
+  const { reason } = req.body as { reason?: string };
+  const updated = store.updateDraftStatus(req.params.draftId, 'rejected', actor.displayName, reason);
+  store.addAuditLog({ pharmacyId: draft.pharmacyId, actorId: actor.actor.id, actorName: actor.displayName, action: `Brouillon ${draft.extractedData.documentNumber || draft.id} rejeté`, level: 'rejected', details: reason });
+  res.json({ ok: true, draft: updated });
+});
+
+// Une saisie « en cours » depuis plus de 3 minutes est considérée comme bloquée (ordinateur éteint, agent arrêté)
+const STUCK_MS = 3 * 60 * 1000;
+const isFreshRun = (d: DraftRecord) => d.execution?.status === 'running' && Date.now() - Date.parse(d.execution.startedAt ?? d.execution.queuedAt) < STUCK_MS;
+
+app.post('/api/drafts/:draftId/reopen', (req, res) => {
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
+  const actor = requireApprover(req, res, draft.pharmacyId);
+  if (!actor) return;
+  if (isFreshRun(draft)) { res.status(400).json({ error: "Saisie en cours : attendez qu'elle se termine." }); return; }
+  const updated = store.reopenDraft(draft.id);
+  if (!updated) { res.status(400).json({ error: 'Seul un bon déjà envoyé peut être repris pour correction.' }); return; }
+  store.addAuditLog({ pharmacyId: draft.pharmacyId, actorId: actor.actor.id, actorName: actor.displayName, action: `Bon repris pour correction : ${draft.extractedData.documentNumber || draft.id}`, level: 'info' });
+  res.json({ draft: updated });
+});
+
+app.post('/api/drafts/:draftId/delete', (req, res) => {
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
+  const actor = requirePharmacist(req, res, draft.pharmacyId);   // l'Équipe ne supprime pas
+  if (!actor) return;
+  if (isFreshRun(draft)) { res.status(400).json({ error: "Saisie en cours : attendez qu'elle se termine." }); return; }
+  store.deleteDraft(draft.id);
+  store.addAuditLog({ pharmacyId: draft.pharmacyId, actorId: actor.actor.id, actorName: actor.displayName, action: `Bon supprimé : ${draft.extractedData.documentNumber || draft.id} (${draft.extractedData.supplierOrOrg || 'fournisseur inconnu'})`, level: 'warning' });
+  res.json({ ok: true });
+});
+
+app.post('/api/drafts/:draftId/requeue', (req, res) => {
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
+  const actor = requireApprover(req, res, draft.pharmacyId);
+  if (!actor) return;
+  if (isFreshRun(draft)) { res.status(400).json({ error: "Saisie en cours : attendez qu'elle se termine (ou 3 minutes si l'ordinateur ne répond plus)." }); return; }
+  const updated = store.requeueExecution(draft.id);
+  if (!updated) { res.status(400).json({ error: 'Seul un brouillon approuvé peut être renvoyé à l\'agent.' }); return; }
+  store.addAuditLog({ pharmacyId: draft.pharmacyId, actorId: actor.actor.id, actorName: actor.displayName, action: `Saisie relancée : ${draft.extractedData.documentNumber || draft.id}`, level: 'info' });
+  res.json({ ok: true, draft: updated });
+});
+
+// Le pharmacien tranche une ligne : choisit un produit, saisit le libellé ERP, ou marque « nouveau produit »
+app.post('/api/drafts/:draftId/lines/:index/match', (req, res) => {
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
+  if (!requirePharmacyOrOwner(req, res, draft.pharmacyId)) return;
+  if (draft.status !== 'pending') { res.status(400).json({ error: "Ce brouillon n'est plus en attente." }); return; }
+  const index = parseInt(req.params.index, 10);
+  const line = draft.extractedData.lineItems[index];
+  if (!line) { res.status(404).json({ error: 'Ligne introuvable.' }); return; }
+
+  const { productId, erpLabel, newProduct } = req.body as { productId?: string; erpLabel?: string; newProduct?: boolean };
+  const prev = line.match ?? { candidates: [] };
+
+  if (newProduct) {
+    line.match = { status: 'new_product', method: 'manual', score: 1, erpLabel: erpLabel?.trim() || line.designation, candidates: prev.candidates };
+  } else {
+    const fromCatalog = productId ? store.getCatalog(draft.pharmacyId).find((p) => p.id === productId) : undefined;
+    const label = fromCatalog?.erpLabel ?? erpLabel?.trim();
+    if (!label) { res.status(400).json({ error: 'productId ou erpLabel requis.' }); return; }
+    // Prix de la fiche AVANT mémorisation : l'écart éventuel reste visible jusqu'à l'approbation
+    const reference = fromCatalog ? { purchase: fromCatalog.purchasePriceFCFA, sale: fromCatalog.salePriceFCFA, stock: fromCatalog.stockQty } : undefined;
+    const product = store.learnMatch({
+      pharmacyId: draft.pharmacyId, supplier: draft.extractedData.supplierOrOrg, rawLabel: line.designation,
+      productId: fromCatalog?.id, erpLabel: label, purchasePriceFCFA: line.unitPriceFCFA, salePriceFCFA: line.salePriceFCFA, cip: line.cip,
+    });
+    line.match = { status: 'confirmed', method: 'manual', score: 1, productId: product.id, erpLabel: product.erpLabel, candidates: prev.candidates, reference };
+  }
+  store.updateDraftItems(draft.id, draft.extractedData.lineItems);
+  res.json({ draft: store.getDraft(draft.id) });
+});
+
+// Sans catalogue (ou produits absents du catalogue) : toutes les lignes « à vérifier » gardent le libellé du bon.
+// L'agent tapera ce libellé dans l'ERP et choisira le produit correspondant dans la liste, comme un humain.
+app.post('/api/drafts/:draftId/accept-labels', (req, res) => {
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
+  const actor = requirePharmacyOrOwner(req, res, draft.pharmacyId);
+  if (!actor) return;
+  if (draft.status !== 'pending') { res.status(400).json({ error: "Ce brouillon n'est plus en attente." }); return; }
+  let n = 0;
+  for (const line of draft.extractedData.lineItems) {
+    if (line.match?.status !== 'to_review') continue;
+    line.match = { status: 'confirmed', method: 'manual', score: 1, erpLabel: line.designation, candidates: line.match.candidates };
+    n++;
+  }
+  store.updateDraftItems(draft.id, draft.extractedData.lineItems);
+  store.addAuditLog({ pharmacyId: draft.pharmacyId, actorId: actor.actor.id, actorName: actor.displayName, action: `Brouillon ${draft.extractedData.documentNumber || draft.id} : ${n} libellé(s) du bon gardé(s) tels quels`, level: 'info' });
+  res.json({ draft: store.getDraft(draft.id) });
+});
+
+// Le pharmacien corrige une valeur lue sur le document (quantité, lot, prix…)
+app.patch('/api/drafts/:draftId/lines/:index', (req, res) => {
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
+  if (!requirePharmacyOrOwner(req, res, draft.pharmacyId)) return;
+  if (draft.status !== 'pending') { res.status(400).json({ error: "Ce brouillon n'est plus en attente." }); return; }
+  const line = draft.extractedData.lineItems[parseInt(req.params.index, 10)];
+  if (!line) { res.status(404).json({ error: 'Ligne introuvable.' }); return; }
+  const b = req.body as Partial<Record<'quantity' | 'unitPriceFCFA' | 'salePriceFCFA', number> & Record<'lotNumber' | 'expiryDate', string>>;
+  if (typeof b.quantity === 'number' && b.quantity >= 0) line.quantity = Math.round(b.quantity);
+  if (typeof b.unitPriceFCFA === 'number' && b.unitPriceFCFA >= 0) line.unitPriceFCFA = b.unitPriceFCFA;
+  if (typeof b.salePriceFCFA === 'number' && b.salePriceFCFA >= 0) line.salePriceFCFA = b.salePriceFCFA;
+  if (typeof b.lotNumber === 'string') line.lotNumber = b.lotNumber.trim().slice(0, 60);
+  if (typeof b.expiryDate === 'string') line.expiryDate = b.expiryDate.trim().slice(0, 20);
+  store.updateDraftItems(draft.id, draft.extractedData.lineItems);
+  res.json({ draft: store.getDraft(draft.id) });
+});
+
+// Relance la correspondance (ex. après import du catalogue) sans toucher aux choix du pharmacien
+app.post('/api/drafts/:draftId/rematch', async (req, res) => {
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
+  if (!requirePharmacyOrOwner(req, res, draft.pharmacyId)) return;
+  if (draft.status !== 'pending') { res.status(400).json({ error: "Ce brouillon n'est plus en attente." }); return; }
   try {
-    const updated = store.rejectDraft(req.params.draftId);
-    res.json({ draft: updated });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Erreur lors du rejet.';
-    res.status(400).json({ error: message });
+    const { lines } = await matchDocumentLines(draft.pharmacyId, draft.extractedData);
+    store.updateDraftItems(draft.id, lines);
+    res.json({ draft: store.getDraft(draft.id) });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
   }
 });
 
-app.get('/api/agent-client/next-task', (req, res) => {
-  const agentKey = String(req.query.agentKey || '');
-  if (!agentKey) {
-    res.status(400).json({ error: 'agentKey manquant.' });
-    return;
-  }
-  const pharmacy = store.getPharmacyByAgentKey(agentKey);
-  const task = store.getNextDesktopTask(agentKey);
-  const softwareProfile = pharmacy
-    ? (store.getMemory().softwareProfiles || []).find((p) => p.pharmacyId === pharmacy.id) || null
-    : null;
-  res.json({ task, softwareProfile });
-});
+function fillDraftWorkbook(draft: DraftRecord, buf: Buffer) {
+  const t = buildTaskPayload(draft);
+  return fillWorkbook(
+    buf,
+    { supplier: t.header.supplier, documentNumber: t.header.documentNumber, documentDate: t.header.documentDate },
+    t.lines.map((l, i) => ({ product: l.product, cip: l.cip, quantity: l.quantity, lotNumber: l.lotNumber, expiryDate: l.expiryDate, purchasePrice: l.purchasePrice, salePrice: l.salePrice,
+      freeUnits: l.freeUnits, discountPercent: draft.extractedData.lineItems[i]?.discountPercent ?? '', vatRate: draft.extractedData.lineItems[i]?.vatRate ?? '', lineTotal: l.lineTotal })),
+  );
+}
 
-app.post('/api/agent-client/report', (req, res) => {
-  const { taskId, status, report } = req.body as {
-    taskId: string;
-    status: 'BROUILLON_CREE_LOCALEMENT' | 'BLOQUE_GARDE_FOU';
-    report: string;
-  };
-  const updated = store.completeDesktopTask(taskId, status, report);
-  if (!updated) {
-    res.status(404).json({ error: 'Tâche introuvable.' });
-    return;
-  }
-  res.json({ task: updated });
-});
-
-app.post('/api/agent/extract', async (req, res) => {
+// Agent en mode « fichier » : il envoie le fichier de la pharmacie, reçoit le fichier rempli et l'enregistre à côté
+app.post('/api/agent-client/tasks/:draftId/fill-file', async (req, res) => {
+  const ph = requireAgent(req, res);
+  if (!ph) return;
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft || draft.pharmacyId !== ph.id) { res.status(404).json({ error: 'Bon introuvable.' }); return; }
+  const { fileBase64 } = req.body as { fileBase64?: string };
+  if (!fileBase64) { res.status(400).json({ error: 'Fichier requis.' }); return; }
   try {
-    const {
-      pharmacyId,
-      documentHint = 'bon_livraison',
-      imageBase64,
-      sampleAssetPath,
-      mimeType,
-      taskPrompt,
-    } = req.body as {
-      pharmacyId: string;
-      documentHint?: DocumentCategory;
-      imageBase64?: string;
-      sampleAssetPath?: string;
-      mimeType?: string;
-      taskPrompt?: string;
-    };
-
-    const image = resolveImagePayload(imageBase64, sampleAssetPath, mimeType || 'image/jpeg');
-    const { data, tokensConsumed } = await extractDocumentWithGemini({
-      imageBase64: image.base64,
-      mimeType: image.mimeType,
-      documentHint,
-      taskPrompt,
-      learnedMemory: store.getMemory(),
-    });
-
-    store.recordVisionUsage(pharmacyId, tokensConsumed, data.documentType || documentHint);
-
-    res.json({
-      extracted: data,
-      tokensConsumed,
-    });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Erreur lors de l’extraction Gemini Vision.';
-    res.status(500).json({ error: message });
+    const { buffer, report } = await fillDraftWorkbook(draft, Buffer.from(fileBase64.replace(/^data:[^,]+,/, ''), 'base64'));
+    res.json({ fileBase64: buffer.toString('base64'), report: { ...report, missingLabels: report.missing.map((f) => FIELD_LABELS[f]) } });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
   }
 });
 
-app.post('/api/agent/ground', async (req, res) => {
+app.post('/api/drafts/:draftId/fill-excel', async (req, res) => {
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
+  const actor = requirePharmacyOrOwner(req, res, draft.pharmacyId);
+  if (!actor) return;
+  if (draft.extractionStatus === 'processing' || draft.extractionStatus === 'error') { res.status(400).json({ error: 'Analyse non terminée : rien à écrire.' }); return; }
+  const { fileBase64 } = req.body as { fileBase64?: string };
+  if (!fileBase64) { res.status(400).json({ error: 'Fichier Excel requis (.xlsx).' }); return; }
   try {
-    const {
-      pharmacyId,
-      extractedData,
-      screenshotBase64,
-      sampleAssetPath,
-      mimeType,
-    } = req.body as {
-      pharmacyId: string;
-      extractedData: ExtractedDocumentData;
-      screenshotBase64?: string;
-      sampleAssetPath?: string;
-      mimeType?: string;
-    };
-
-    if (!extractedData) {
-      res.status(400).json({ error: 'Données extraites manquantes pour le UI Grounding.' });
-      return;
-    }
-
-    const screenshot = resolveImagePayload(
-      screenshotBase64,
-      sampleAssetPath,
-      mimeType || 'image/jpeg'
-    );
-
-    const { result, tokensConsumed } = await groundTargetInterfaceWithGemini({
-      screenshotBase64: screenshot.base64,
-      mimeType: screenshot.mimeType,
-      extractedData,
-    });
-
-    store.recordVisionUsage(pharmacyId, tokensConsumed);
-
-    res.json({
-      grounding: result,
-      tokensConsumed,
-    });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Erreur lors du UI Grounding.';
-    res.status(500).json({ error: message });
-  }
-});
-
-app.post('/api/agent/execute-draft', (req, res) => {
-  try {
-    const {
-      pharmacyId,
-      extractedData,
-      elements,
-      attemptFinalValidation = false,
-      targetSoftwareType = 'erp_form',
-    } = req.body as {
-      pharmacyId: string;
-      extractedData: ExtractedDocumentData;
-      elements: GroundedTargetElement[];
-      attemptFinalValidation?: boolean;
-      targetSoftwareType?: 'erp_form' | 'excel_grid' | 'desktop_app';
-    };
-
-    const pharmacy = store.getPharmacy(pharmacyId);
-    if (!pharmacy) {
-      res.status(404).json({ error: 'Officine introuvable.' });
-      return;
-    }
-
-    const runId = `RUN-${Date.now().toString().slice(-6)}`;
-    const steps: ExecutionStepLog[] = [];
-    let stepCounter = 1;
-    let guardrailTriggered = false;
-    let guardrailReport =
-      'Politique BROUILLON UNIQUEMENT respectée : arrêt strict avant toute validation finale.';
-
-    steps.push({
-      stepIndex: stepCounter++,
-      action: 'FOCUS_WINDOW',
-      targetLabel: pharmacy.targetSoftware,
-      status: 'EXECUTED',
-      message: `Fenêtre cible activée pour ${pharmacy.name} (${pharmacy.city}).`,
-      timestamp: new Date().toISOString(),
-    });
-
-    const inputElements = elements.filter(
-      (e) => e.elementRole === 'input_field' || e.elementRole === 'table_column'
-    );
-    const draftButtons = elements.filter((e) => e.elementRole === 'draft_button');
-    const forbiddenButtons = elements.filter(
-      (e) => e.elementRole === 'forbidden_final_button' || e.safetyStatus === 'FORBIDDEN_BY_GUARDRAIL'
-    );
-
-    const pythonLines: string[] = [
-      '# Script généré dynamiquement par PharmAgent UI Grounding',
-      'import pyautogui, time',
-      'from app.safety_guardrail import DraftOnlyGuardrail, SafetyViolationError',
-      '',
-      'guardrail = DraftOnlyGuardrail()',
-      `# Officine : ${pharmacy.name} (${pharmacy.city}) — Logiciel : ${pharmacy.targetSoftware}`,
-    ];
-
-    for (const el of inputElements) {
-      guardrail.assertElementSafe(el);
-      const value = el.semanticMapping?.sampleValueToInsert ?? '';
-      const px = Math.round((el.centerPoint.x / 1000) * 1920);
-      const py = Math.round((el.centerPoint.y / 1000) * 1080);
-
-      steps.push({
-        stepIndex: stepCounter++,
-        action: targetSoftwareType === 'excel_grid' ? 'WRITE_EXCEL_CELL' : 'CLICK_AND_TYPE',
-        targetLabel: el.detectedLabel,
-        coordinates: el.centerPoint,
-        valueInserted: value,
-        status: 'EXECUTED',
-        message: `Insertion de "${value}" dans [${el.detectedLabel}] aux coordonnées normalisées (${el.centerPoint.x}, ${el.centerPoint.y}).`,
-        timestamp: new Date().toISOString(),
-      });
-
-      pythonLines.push(
-        `pyautogui.click(${px}, ${py})  # ${el.detectedLabel}`,
-        `pyautogui.write(${JSON.stringify(value)}, interval=0.02)`
-      );
-    }
-
-    if (attemptFinalValidation) {
-      const targetForbidden = forbiddenButtons[0] ?? {
-        elementRole: 'forbidden_final_button' as const,
-        detectedLabel: 'Valider Définitivement',
-        safetyStatus: 'FORBIDDEN_BY_GUARDRAIL' as const,
-        centerPoint: { x: 900, y: 940 },
-      };
-
-      try {
-        guardrail.assertElementSafe(targetForbidden);
-      } catch (err) {
-        if (err instanceof SafetyViolationError) {
-          guardrailTriggered = true;
-          guardrailReport = err.message;
-          steps.push({
-            stepIndex: stepCounter++,
-            action: 'BLOCK_FINAL_VALIDATION',
-            targetLabel: targetForbidden.detectedLabel,
-            coordinates: targetForbidden.centerPoint,
-            status: 'BLOCKED_BY_GUARDRAIL',
-            message: err.message,
-            timestamp: new Date().toISOString(),
-          });
-          pythonLines.push(
-            '',
-            `# TENTATIVE DE VALIDATION FINALE INTERCEPTÉE :`,
-            `guardrail.assert_element_safe("forbidden_final_button", ${JSON.stringify(targetForbidden.detectedLabel)})  # -> Lève SafetyViolationError !`
-          );
-        }
-      }
-    } else {
-      const draftBtn = draftButtons[0];
-      const draftLabel = draftBtn?.detectedLabel ?? 'Enregistrer Brouillon';
-      if (draftBtn) {
-        guardrail.assertElementSafe(draftBtn);
-      }
-      steps.push({
-        stepIndex: stepCounter++,
-        action: 'CLICK_SAVE_DRAFT',
-        targetLabel: draftLabel,
-        coordinates: draftBtn?.centerPoint ?? { x: 730, y: 940 },
-        status: 'STOPPED_AT_DRAFT',
-        message: `Action "${draftLabel}" exécutée. Cycle agent terminé — validation définitive bloquée par défaut.`,
-        timestamp: new Date().toISOString(),
-      });
-
-      if (forbiddenButtons.length > 0) {
-        for (const fb of forbiddenButtons) {
-          steps.push({
-            stepIndex: stepCounter++,
-            action: 'BLOCK_FINAL_VALIDATION',
-            targetLabel: fb.detectedLabel,
-            coordinates: fb.centerPoint,
-            status: 'BLOCKED_BY_GUARDRAIL',
-            message: `Bouton "${fb.detectedLabel}" verrouillé par le Garde-Fou Absolu (validation pharmacien obligatoire).`,
-            timestamp: new Date().toISOString(),
-          });
-        }
-      }
-
-      pythonLines.push(
-        '',
-        `# ARRÊT STRICT AU STADE BROUILLON`,
-        `guardrail.assert_element_safe("draft_button", ${JSON.stringify(draftLabel)})`,
-        `# Clic sur "${draftLabel}" uniquement. Validation finale interdite.`
-      );
-    }
-
-    const wb = XLSX.utils.book_new();
-    const rows = (extractedData.lineItems || []).map((item) => ({
-      'N° Document': extractedData.documentNumber,
-      'Fournisseur / Organisme': extractedData.supplierOrOrg,
-      Date: extractedData.documentDate,
-      'Désignation Médicament': item.designation,
-      Quantité: item.quantity,
-      'N° Lot': item.lotNumber || 'N/A',
-      'Date Exp.': item.expiryDate || 'N/A',
-      'Prix Unitaire (FCFA)': item.unitPriceFCFA,
-      'Sous-total (FCFA)': item.quantity * item.unitPriceFCFA,
-      'Statut Saisie PharmAgent': 'BROUILLON - EN ATTENTE VALIDATION PHARMACIEN',
-    }));
-
-    const ws = XLSX.utils.json_to_sheet(rows);
-    XLSX.utils.book_append_sheet(wb, ws, 'BROUILLON_STOCK');
-    const xlsxBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
-
-    const draftFileName = `BROUILLON_${pharmacy.id}_${extractedData.documentNumber.replace(/[^a-zA-Z0-9_-]/g, '_')}.xlsx`;
-    store.saveDraftArtifact(runId, draftFileName, xlsxBuffer);
-
-    if (!guardrailTriggered) {
-      store.saveDraft({
-        id: runId,
-        pharmacyId: pharmacy.id,
-        pharmacyName: pharmacy.name,
-        createdAt: new Date().toISOString(),
-        taskPrompt: 'Saisie par UI Grounding sur capture écran cible.',
-        targetMode: 'erp_live',
-        status: 'BROUILLON',
-        extracted: extractedData,
-        draftArtifactUrl: `/api/drafts/${runId}/download`,
-        draftFileName,
-        guardrailNote: guardrailReport,
-      });
-    }
-
-    store.recordExecutionOutcome({
-      pharmacyId: pharmacy.id,
-      documentNumber: extractedData.documentNumber,
-      documentType: extractedData.documentType || 'bon_livraison',
-      tokensUsed: extractedData.tokensConsumed ?? 2100,
-      blocked: guardrailTriggered,
-      guardrailMessage: guardrailReport,
-    });
-
-    const result: ExecutionRunResult = {
-      runId,
-      pharmacyId: pharmacy.id,
-      pharmacyName: pharmacy.name,
-      documentNumber: extractedData.documentNumber,
-      finalState: guardrailTriggered ? 'SECURITY_VIOLATION_BLOCKED' : 'DRAFT_SAVED_ONLY',
-      draftArtifactUrl: `/api/drafts/${runId}/download`,
-      draftFileName,
-      steps,
-      guardrailTriggered,
-      guardrailReport,
-      pythonScriptPreview: pythonLines.join('\n'),
-    };
-
-    res.json(result);
-  } catch (err: unknown) {
-    if (err instanceof SafetyViolationError) {
-      res.status(403).json({ error: err.message, guardrailTriggered: true });
-      return;
-    }
-    const message = err instanceof Error ? err.message : 'Erreur d’exécution Brouillon.';
-    res.status(500).json({ error: message });
+    const { buffer, report } = await fillDraftWorkbook(draft, Buffer.from(fileBase64.replace(/^data:[^,]+,/, ''), 'base64'));
+    store.addAuditLog({ pharmacyId: draft.pharmacyId, actorId: actor.actor.id, actorName: actor.displayName, action: `Fichier Excel rempli : ${report.linesWritten} ligne(s) dans « ${report.sheet} »`, level: 'info' });
+    res.json({ fileBase64: buffer.toString('base64'), report: { ...report, missingLabels: report.missing.map((f) => FIELD_LABELS[f]) } });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: msg.startsWith('Aucune ligne') ? msg : `Fichier illisible : utilisez un fichier Excel (.xlsx), LibreOffice (.ods) ou CSV. Numbers : Fichier › Exporter vers › Excel. ${msg}` });
   }
 });
 
 app.get('/api/drafts/:draftId/download', (req, res) => {
-  const artifact = store.getDraftArtifact(req.params.draftId);
-  if (!artifact) {
-    res.status(404).json({ error: 'Fichier Brouillon introuvable ou expiré.' });
+  const draft = store.getDraft(req.params.draftId);
+  if (!draft) { res.status(404).json({ error: 'Brouillon introuvable.' }); return; }
+  if (!requirePharmacyOrOwner(req, res, draft.pharmacyId)) return;
+  const safeNumber = (draft.extractedData.documentNumber || draft.id).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="PharmAgent_${safeNumber}.xlsx"`);
+  res.send(buildDraftWorkbook(draft));
+});
+
+// ─── Agent IA : extraction document (image ou PDF) ───────
+
+app.post('/api/agent/extract', async (req, res) => {
+  const { pharmacyId, imageBase64, sampleAssetPath, documentHint, taskPrompt, zoomBase64, fileName } = req.body as {
+    pharmacyId?: string; imageBase64?: string; sampleAssetPath?: string; documentHint?: DocumentCategory; taskPrompt?: string; zoomBase64?: unknown; fileName?: string;
+  };
+
+  const owner = getOwnerSession(req);
+  const pharmacyUser = getPharmacySession(req);
+  if (!owner && !pharmacyUser) { res.status(401).json({ error: 'Connexion requise.' }); return; }
+
+  const effPharmacyId = pharmacyId ?? pharmacyUser?.pharmacyId;
+  if (!effPharmacyId || !store.getPharmacy(effPharmacyId)) { res.status(400).json({ error: 'Officine inconnue.' }); return; }
+  if (pharmacyUser && pharmacyUser.pharmacyId !== effPharmacyId) { res.status(403).json({ error: 'Accès interdit à une autre officine.' }); return; }
+  const quota = store.checkQuota(effPharmacyId);
+  if (!quota.ok) { res.status(429).json({ error: quota.reason }); return; }
+
+  let resolved: { base64: string; mimeType: string };
+  try {
+    resolved = resolveDocument(imageBase64, sampleAssetPath);
+  } catch (err: unknown) {
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Document invalide.' }); return;
+  }
+  // Tableur reconnu par son type ou son extension (certains navigateurs envoient application/octet-stream)
+  const isSheet = SHEET_MIME.test(resolved.mimeType) || /\.(csv|xlsx|xls|ods|numbers)$/i.test(fileName ?? '');
+  if (!isSheet && !/^(image\/(jpeg|png|webp|gif)|application\/pdf)$/.test(resolved.mimeType)) {
+    res.status(400).json({ error: /heic|heif/i.test(resolved.mimeType)
+      ? "Photo iPhone au format HEIC : ouvrez-la puis exportez-la en JPEG, ou importez-la depuis Safari (conversion automatique)."
+      : 'Format non pris en charge : PDF, Excel, CSV, ou image (JPG, PNG, WEBP).' }); return;
+  }
+
+  // Agrandissements facultatifs d'une photo (faits par le téléphone) : au plus 2, images uniquement
+  const zooms = (Array.isArray(zoomBase64) && resolved.mimeType !== 'application/pdf' ? zoomBase64 : []).slice(0, 2).flatMap((z) => {
+    const m = typeof z === 'string' ? /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(z) : null;
+    return m ? [{ mimeType: m[1], base64: m[2] }] : [];
+  });
+
+  const actorId = owner?.id ?? pharmacyUser!.id;
+  const actorName = owner?.fullName ?? pharmacyUser!.fullName;
+  const category = documentHint ?? 'bon_livraison';
+
+  // Créer le brouillon immédiatement (état « en cours ») pour éviter le timeout HTTP
+  const draft = store.createDraft({
+    pharmacyId: effPharmacyId, status: 'pending', extractionStatus: 'processing',
+    documentCategory: category,
+    extractedData: { documentType: category, documentNumber: '', supplierOrOrg: '', recipientPharmacy: '', documentDate: '', currency: 'FCFA', totalAmountFCFA: 0, lineItems: [] },
+    columnMapping: [], actorId, actorName, tokensConsumed: 0,
+  });
+  res.json({ draft });
+
+  // Traitement IA en arrière-plan (ne bloque plus la réponse HTTP)
+  (async () => {
+    try {
+      const params = { imageBase64: resolved.base64, mimeType: resolved.mimeType, documentHint: category, taskPrompt, zooms };
+      let extraction: { data: ExtractedDocumentData; tokensConsumed: number } | undefined;
+      let fromImage = false;
+      if (isSheet) {
+        // Fichier du grossiste : lu tel quel (exact). Colonnes non reconnues : l'IA lit le texte du tableau
+        const buf = Buffer.from(resolved.base64, 'base64');
+        const direct = sheetToDelivery(buf, fileName);
+        const images = direct?.lineItems.length ? [] : await sheetImages(buf);
+        if (direct?.lineItems.length) extraction = { data: direct, tokensConsumed: 0 };
+        else if (images.length) {
+          fromImage = true;
+          // Classeur qui contient la photo ou le scan du bon : lu comme une photo (les autres images servent d'agrandissements)
+          extraction = await extractDocument({ ...params, imageBase64: images[0].base64, mimeType: images[0].mimeType, zooms: images.slice(1, 3) });
+        } else {
+          const wb = readWorkbook(buf);
+          const text = wb.SheetNames.map((n) => XLSX.utils.sheet_to_csv(wb.Sheets[n], { FS: ';' })).join('\n').slice(0, 150_000);
+          extraction = await extractDocument({ ...params, imageBase64: text, mimeType: 'text/plain', zooms: [] });
+        }
+      }
+      extraction ??= await extractDocument(params);
+      // Total absent ou qui ne recoupe pas les lignes : une seconde lecture plus attentive, gardée si elle est cohérente
+      if (!isSheet && needsSecondLook(extraction.data)) {
+        try {
+          const second = await extractDocument({ ...params, effort: SECOND_LOOK_EFFORT });
+          extraction.tokensConsumed += second.tokensConsumed;
+          if (!needsSecondLook(second.data)) extraction.data = second.data;
+        } catch { /* la première lecture reste valable */ }
+      }
+      const data = extraction.data;
+      data.source = isSheet && !fromImage ? 'fichier' : resolved.mimeType === 'application/pdf' ? 'pdf' : 'photo';
+      data.lineItems = (data.lineItems ?? []).filter((l) => l.designation?.trim());
+      const matched = await matchDocumentLines(effPharmacyId, data);
+      data.lineItems = matched.lines;
+      const first: Record<string, unknown> = Object.fromEntries(Object.entries(data.lineItems[0] ?? {}).map(([k, v]) => [`item.${k}`, v]));
+      const sample: Record<string, unknown> = { ...data, ...first };
+      const columnMapping = store.getMemory().columnRules.map((r) => ({
+        sourceField: r.sourceField, targetColumn: r.targetColumn, exampleValue: String(sample[r.sourceField] ?? ''),
+      }));
+      store.finalizeExtraction(draft.id, data, columnMapping, extraction.tokensConsumed + matched.tokensConsumed);
+      const toReview = data.lineItems.filter((l) => l.match?.status === 'to_review').length;
+      store.addAuditLog({ pharmacyId: effPharmacyId, actorId, actorName,
+        action: `Extraction ${category} — ${data.lineItems.length} lignes (${data.lineItems.length - toReview} reconnues, ${toReview} à vérifier)`,
+        level: 'info' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erreur extraction.';
+      console.error('[PharmAgent] Extraction async :', msg);
+      store.failExtraction(draft.id, msg);
+    }
+  })();
+});
+
+// ─── Remplissage universel : n'importe quel tableau, n'importe quel document ─
+
+app.post('/api/tools/fill-any', async (req, res) => {
+  const { pharmacyId, documentBase64, documentName, templateBase64 } = req.body as {
+    pharmacyId?: string; documentBase64?: string; documentName?: string; templateBase64?: string;
+  };
+  const pid = pharmacyId ?? getPharmacySession(req)?.pharmacyId ?? '';
+  const actor = requirePharmacyOrOwner(req, res, pid);
+  if (!actor) return;
+  if (!documentBase64 || !templateBase64) { res.status(400).json({ error: 'Il faut le document à lire et le tableau à remplir.' }); return; }
+  try {
+    const { wb, converted } = await loadTemplate(Buffer.from(templateBase64.replace(/^data:[^,]+,/, ''), 'base64'));
+    const shape = templateShape(wb);
+    if (!shape) { res.status(400).json({ error: "Aucun tableau à remplir trouvé : il faut une ligne d'intitulés (au moins 3 colonnes) avec des lignes libres en dessous." }); return; }
+    // Document : image ou PDF tels quels ; tableur → texte du tableau ; image collée dans un Excel → l'image
+    const doc = resolveDocument(documentBase64);
+    let document = doc;
+    if (SHEET_MIME.test(doc.mimeType) || /\.(csv|xlsx|xls|ods|numbers)$/i.test(documentName ?? '')) {
+      const buf = Buffer.from(doc.base64, 'base64');
+      const rows = readWorkbook(buf);
+      const text = rows.SheetNames.map((n) => XLSX.utils.sheet_to_csv(rows.Sheets[n], { FS: ';' })).join('\n').trim();
+      const images = await sheetImages(buf);
+      document = text.replace(/[;\s]/g, '') ? { base64: text.slice(0, 150_000), mimeType: 'text/plain' } : images[0] ?? doc;
+    } else if (!/^(image\/(jpeg|png|webp|gif)|application\/pdf)$/.test(doc.mimeType)) {
+      res.status(400).json({ error: 'Document non pris en charge : PDF, image, Excel ou CSV.' }); return;
+    }
+    const ai = await fillTableFromDocument({ document, columns: shape.columns.map((c) => c.label), fields: shape.fields.map((f) => f.label) });
+    const report = writeRows(wb, shape, ai.rows, ai.fields);
+    store.addAuditLog({ pharmacyId: pid, actorId: actor.actor.id, actorName: actor.displayName,
+      action: `Tableau rempli par l'IA : ${report.linesWritten} ligne(s) dans « ${shape.sheet} »`, level: 'info' });
+    const out = await wb.xlsx.writeBuffer();
+    res.json({ fileBase64: Buffer.from(out as ArrayBuffer).toString('base64'),
+      report: { sheet: shape.sheet, columns: shape.columns.map((c) => c.label), converted, ...report } });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message || 'Remplissage impossible.' });
+  }
+});
+
+// ─── Agent IA : inspection d'interface ───────────────────
+
+app.post('/api/agent/ground-interface', async (req, res) => {
+  if (!requireOwner(req, res)) return;
+  const { imageBase64, targetSoftware } = req.body as { imageBase64?: string; targetSoftware?: TargetSoftwareType };
+  try {
+    const { base64, mimeType } = resolveDocument(imageBase64);
+    const result = await groundTargetInterface({ imageBase64: base64, mimeType, targetSoftware: targetSoftware ?? 'ERP Officine Intégré' });
+    store.addAuditLog({ pharmacyId: 'OWNER', actorId: 'OWNER-01', actorName: store.getOwner().fullName, action: `Inspection d'interface — ${result.overallSafe ? 'SÉCURISÉ' : 'ALERTE'}`, level: result.overallSafe ? 'info' : 'warning', details: result.observations });
+    res.json({ result });
+  } catch (err: unknown) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Erreur inspection.' });
+  }
+});
+
+// ─── Agent local : appairage ─────────────────────────────
+
+// ─── Aide à distance : l'agent envoie (sur clic de l'utilisateur) capture + état + journal, lisibles 1 h avec un code ─
+interface SupportPacket { pharmacyId: string; createdAt: number; screenshot?: Buffer; data: Record<string, unknown> }
+const supportPackets = new Map<string, SupportPacket>();
+const SUPPORT_TTL_MS = 60 * 60 * 1000;
+const purgeSupport = () => { for (const [c, p] of supportPackets) if (Date.now() - p.createdAt > SUPPORT_TTL_MS) supportPackets.delete(c); };
+
+app.post('/api/agent-client/support', (req, res) => {
+  const ph = requireAgent(req, res);
+  if (!ph) return;
+  purgeSupport();
+  const b = req.body as { screenshot?: string; state?: unknown; windows?: unknown; foreground?: unknown; logs?: unknown; code?: string };
+  const prev = b.code ? supportPackets.get(String(b.code)) : undefined;
+  const code = prev && prev.pharmacyId === ph.id ? String(b.code) : `${readableCode(4)}-${readableCode(4)}`;
+  const shot = typeof b.screenshot === 'string' && b.screenshot ? Buffer.from(b.screenshot, 'base64') : undefined;
+  supportPackets.set(code, {
+    pharmacyId: ph.id, createdAt: Date.now(), screenshot: shot && shot.length < 6_000_000 ? shot : undefined,
+    data: { pharmacy: ph.name, agent: ph.agent ?? store.getPharmacies().find((p) => p.id === ph.id)?.agent, state: b.state, windows: b.windows, foreground: b.foreground,
+      logs: Array.isArray(b.logs) ? b.logs.slice(-200).map((l) => String(l).slice(0, 300)) : [], profile: store.getProfile(ph.id) ?? null,
+      queue: store.getDrafts(ph.id).filter((d) => d.status === 'approved').slice(0, 10).map((d) => ({ id: d.id, n: d.extractedData.documentNumber, execution: d.execution })) },
+  });
+  store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent Floki', action: `Aide à distance : informations envoyées (code ${code})`, level: 'info' });
+  res.json({ code });
+});
+
+// Lecture par le support : le code (8 caractères, 1 h) est la seule clé ; essais limités contre la devinette
+app.get('/api/support/:code', (req, res) => {
+  if (rateLimited(req, res, 'support')) return;
+  purgeSupport();
+  const p = supportPackets.get(req.params.code.toUpperCase());
+  if (!p) { recordFailure(req, 'support'); res.status(404).json({ error: 'Code inconnu ou expiré.' }); return; }
+  res.json({ ...p.data, createdAt: new Date(p.createdAt).toISOString(), screenshot: p.screenshot ? `/api/support/${req.params.code.toUpperCase()}/screen.jpg` : null });
+});
+app.get('/api/support/:code/screen.jpg', (req, res) => {
+  if (rateLimited(req, res, 'support')) return;
+  const p = supportPackets.get(req.params.code.toUpperCase());
+  if (!p?.screenshot) { recordFailure(req, 'support'); res.status(404).end(); return; }
+  res.setHeader('Content-Type', 'image/jpeg');
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(p.screenshot);
+});
+
+app.post('/api/agent-client/pair/start', (req, res) => {
+  purgePairings();
+  if (pairings.size > 500) { res.status(503).json({ error: 'Trop de demandes en cours, réessayez.' }); return; }
+  const { hostname, os } = req.body as { hostname?: string; os?: string };
+  const active = new Set([...pairings.values()].map((p) => p.code));
+  let code: string;
+  do { code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0'); } while (active.has(code));
+  const pairing: Pairing = {
+    id: crypto.randomUUID(), secret: crypto.randomBytes(24).toString('base64url'), code, createdAt: Date.now(),
+    hostname: typeof hostname === 'string' ? hostname.slice(0, 80) : undefined,
+    os: typeof os === 'string' ? os.slice(0, 80) : undefined,
+  };
+  pairings.set(pairing.id, pairing);
+  res.json({ pairingId: pairing.id, secret: pairing.secret, code, expiresInSec: PAIRING_TTL_MS / 1000 });
+});
+
+app.get('/api/agent-client/pair/status', (req, res) => {
+  purgePairings();
+  const p = pairings.get(String(req.query.pairingId ?? ''));
+  const secret = String(req.query.secret ?? '');
+  if (!p || p.secret.length !== secret.length || !crypto.timingSafeEqual(Buffer.from(p.secret), Buffer.from(secret))) {
+    res.status(404).json({ status: 'expired' });
     return;
   }
-  res.setHeader(
-    'Content-Type',
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-  );
-  res.setHeader('Content-Disposition', `attachment; filename="${artifact.fileName}"`);
-  res.send(artifact.buffer);
+  if (!p.pharmacyId) { res.json({ status: 'pending' }); return; }
+  const ph = store.getPharmacy(p.pharmacyId);
+  pairings.delete(p.id);
+  if (!ph) { res.status(404).json({ status: 'expired' }); return; }
+  res.json({ status: 'paired', agentKey: ph.agentKey, pharmacyId: ph.id, pharmacyName: ph.name });
 });
 
-app.get('/api/fastapi-sources', (_req, res) => {
-  const fastapiDir = path.resolve(__dirname, 'backend-fastapi');
-  const relativeFiles = [
-    'requirements.txt',
-    'pharmagent_local_agent.py',
-    'app/main.py',
-    'app/vision_extractor.py',
-    'app/ui_grounding.py',
-    'app/safety_guardrail.py',
-    'app/executor.py',
-  ];
+// ─── Agent local : fonctionnement ────────────────────────
 
-  const files = relativeFiles
-    .map((rel) => {
-      const fullPath = path.join(fastapiDir, rel);
-      if (!fs.existsSync(fullPath)) return null;
-      return {
-        path: `backend-fastapi/${rel}`,
-        language: rel.endsWith('.py') ? 'python' : 'text',
-        content: fs.readFileSync(fullPath, 'utf-8'),
-      };
-    })
-    .filter(Boolean);
-
-  res.json({ files });
+app.post('/api/agent-client/heartbeat', (req, res) => {
+  const ph = requireAgent(req, res);
+  if (!ph) return;
+  const { hostname, os, version, state, mode, target, lastResult, lastError } = req.body as Record<string, string | undefined>;
+  const logs = (req.body as { logs?: unknown }).logs;
+  const str = (v: unknown, n: number) => (typeof v === 'string' ? v.slice(0, n) : undefined);
+  store.touchAgent(ph.id, {
+    hostname: str(hostname, 80), os: str(os, 80), version: str(version, 20), state: str(state, 120),
+    mode: str(mode, 20), target: str(target, 200), lastResult: str(lastResult, 400), lastError: str(lastError, 400),
+    logs: Array.isArray(logs) ? logs.slice(-25).map((l) => String(l).slice(0, 240)) : undefined,
+  });
+  res.json({ pharmacy: { id: ph.id, name: ph.name }, profile: store.getProfile(ph.id) ?? null });
 });
 
-async function startServer() {
+app.get('/api/agent-client/profile', (req, res) => {
+  const ph = requireAgent(req, res);
+  if (!ph) return;
+  res.json({ profile: store.getProfile(ph.id) ?? null });
+});
+
+app.put('/api/agent-client/profile', (req, res) => {
+  const ph = requireAgent(req, res);
+  if (!ph) return;
+  const b = req.body as Partial<AgentProfile>;
+  if (b.mode === 'file') {
+    // Fichier Excel / Numbers rempli directement : aucune démo, aucune frappe au clavier
+    const filePath = typeof b.filePath === 'string' ? b.filePath.slice(0, 1000) : '';
+    if (!filePath) { res.status(400).json({ error: 'Choisissez le fichier à remplir.' }); return; }
+    const profile = store.saveProfile({ pharmacyId: ph.id, mode: 'file', filePath, headerSteps: [], lineSteps: [], recordedAt: new Date().toISOString() });
+    store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent Floki', action: `Réglage : remplissage direct du fichier « ${filePath.split(/[\\/]/).pop()} »`, level: 'info' });
+    res.json({ profile });
+    return;
+  }
+  if (b.mode !== 'web' && b.mode !== 'desktop') { res.status(400).json({ error: 'mode doit être "web", "desktop" ou "file".' }); return; }
+  const header = sanitizeSteps(b.headerSteps);
+  const lines = sanitizeSteps(b.lineSteps);
+  const error = header.error ?? lines.error;
+  if (error) {
+    store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent Floki', action: 'Démo refusée par le garde-fou', level: 'blocked', details: error });
+    res.status(400).json({ error });
+    return;
+  }
+  if (!lines.steps.length) { res.status(400).json({ error: 'La démo ne contient aucune saisie de ligne.' }); return; }
+  const profile = store.saveProfile({
+    pharmacyId: ph.id,
+    mode: b.mode,
+    erpUrl: typeof b.erpUrl === 'string' ? b.erpUrl.slice(0, 500) : undefined,
+    formUrl: typeof b.formUrl === 'string' ? b.formUrl.slice(0, 1000) : undefined,
+    windowTitle: typeof b.windowTitle === 'string' ? b.windowTitle.slice(0, 200) : undefined,
+    headerSteps: header.steps,
+    lineSteps: lines.steps,
+    recordedAt: new Date().toISOString(),
+  });
+  store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent Floki', action: `Démo enregistrée (${b.mode === 'web' ? 'ERP web' : 'logiciel installé'}) — ${lines.steps.length} étapes par ligne`, level: 'info' });
+  res.json({ profile });
+});
+
+// Exemple réel à saisir pendant la démo (dernier bon de l'officine), sinon exemple générique
+app.get('/api/agent-client/sample', (req, res) => {
+  const ph = requireAgent(req, res);
+  if (!ph) return;
+  const draft = store.getDrafts(ph.id).find((d) => d.extractedData.lineItems.length > 0);
+  if (draft) {
+    const t = buildTaskPayload(draft);
+    res.json({ header: t.header, line: t.lines[0] });
+    return;
+  }
+  res.json({
+    header: { supplier: 'UBIPHARM', documentNumber: 'BL-DEMO-001', documentDate: new Date().toISOString().slice(0, 10), totalAmount: 9800 },
+    line: { index: 0, product: 'PARACETAMOL 500 MG CP B/20', cip: '', designation: 'PARACETAMOL 500MG CPR B20', quantity: 10, lotNumber: 'LOT2401', expiryDate: '2027-12-31', purchasePrice: 980, salePrice: 1350, lineTotal: 9800 },
+  });
+});
+
+app.post('/api/agent-client/claim', (req, res) => {
+  const ph = requireAgent(req, res);
+  if (!ph) return;
+  store.touchAgent(ph.id, {});
+  const draft = store.claimNextExecution(ph.id);
+  if (!draft) { res.json({ task: null }); return; }
+  store.addAuditLog({ pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent Floki', action: `Saisie démarrée : ${draft.extractedData.documentNumber || draft.id} (${draft.extractedData.lineItems.length} lignes)`, level: 'info' });
+  const payload = buildTaskPayload(draft);
+  res.json({ task: { ...payload, validationLevel: ph.validationLevel ?? 1 } });
+});
+
+app.post('/api/agent-client/tasks/:draftId/result', (req, res) => {
+  const ph = requireAgent(req, res);
+  if (!ph) return;
+  const b = req.body as { status?: string; message?: string; durationMs?: number; lines?: Array<{ index: number; ok: boolean; message?: string }> };
+  if (b.status !== 'done' && b.status !== 'failed') { res.status(400).json({ error: 'status doit être "done" ou "failed".' }); return; }
+  const lines = Array.isArray(b.lines)
+    ? b.lines.filter((l) => typeof l?.index === 'number').map((l) => ({ index: l.index, ok: !!l.ok, message: typeof l.message === 'string' ? l.message.slice(0, 300) : undefined }))
+    : undefined;
+  const draft = store.finishExecution(req.params.draftId, ph.id, {
+    status: b.status, message: typeof b.message === 'string' ? b.message : undefined,
+    durationMs: typeof b.durationMs === 'number' ? Math.round(b.durationMs) : undefined, lines,
+  });
+  if (!draft) { res.status(409).json({ error: 'Cette saisie n\'est pas en cours (déjà terminée ou relancée).' }); return; }
+  const okCount = lines?.filter((l) => l.ok).length ?? 0;
+  store.addAuditLog({
+    pharmacyId: ph.id, actorId: 'AGENT', actorName: 'Agent Floki',
+    action: b.status === 'done'
+      ? `Saisie terminée : ${draft.extractedData.documentNumber || draft.id} — ${okCount} ligne(s) en ${Math.round((b.durationMs ?? 0) / 1000)} s`
+      : `Saisie en échec : ${draft.extractedData.documentNumber || draft.id}`,
+    level: b.status === 'done' ? 'info' : 'warning',
+    details: b.message,
+  });
+  res.json({ ok: true });
+});
+
+// L'agent local envoie les produits lus dans l'ERP (réponses de la recherche produit)
+app.post('/api/agent-client/catalog', (req, res) => {
+  const ph = requireAgent(req, res);
+  if (!ph) return;
+  const { products } = req.body as { products?: CatalogRowInput[] };
+  if (!Array.isArray(products)) { res.status(400).json({ error: 'products doit être un tableau.' }); return; }
+  const result = store.upsertCatalog(ph.id, products.slice(0, 20000), 'erp_capture');
+  res.json({ ...result, total: store.getCatalog(ph.id).length });
+});
+
+// PharmSync : mapping automatique des champs ERP par IA
+app.post('/api/agent-client/map-fields', async (req, res) => {
+  const ph = requireAgent(req, res);
+  if (!ph) return;
+  const { survey, canonical } = req.body as { survey?: { fields?: unknown[]; title?: string }; canonical?: unknown };
+  if (!survey?.fields?.length) { res.status(400).json({ error: 'survey.fields manquant ou vide.' }); return; }
+  const fields = (survey.fields as Array<{ label: string; type: string; inLine: boolean; selectors: string[]; required?: boolean }>)
+    .slice(0, 80)
+    .map(f => `- "${f.label}" | type:${f.type} | ${f.inLine ? 'ligne' : 'entête'}${f.required ? ' *obligatoire*' : ''} | sélecteurs:${JSON.stringify(f.selectors)}`);
+  const prompt = `Tu analyses les champs de saisie d'un ERP pharmacie web (page : "${survey.title || 'inconnue'}").
+Champs trouvés :
+${fields.join('\n')}
+
+Champs canoniques d'un bon de livraison à mapper :
+${JSON.stringify(canonical, null, 2)}
+
+Pour chaque champ canonique, identifie le champ ERP le plus pertinent (ou null si absent).
+Un champ "product" est en général un champ texte avec autocomplete vers une liste de médicaments (isSearch:true).
+Réponds UNIQUEMENT en JSON valide, sans texte autour :
+{
+  "header": {
+    "supplier": {"label":"...","selectors":[...],"confidence":0.9} | null,
+    "documentNumber": ... | null,
+    "documentDate": ... | null
+  },
+  "line": {
+    "product": {"label":"...","selectors":[...],"isSearch":true,"confidence":0.95} | null,
+    "cip": ... | null,
+    "quantity": ... | null,
+    "lotNumber": ... | null,
+    "expiryDate": ... | null,
+    "purchasePrice": ... | null,
+    "salePrice": ... | null,
+    "freeUnits": ... | null
+  },
+  "addLineSelector": "..." | null,
+  "unmapped": ["champ1","champ2"]
+}`;
+  try {
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    const ai = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const msg = await ai.messages.create({
+      model: process.env.CLAUDE_MODEL || 'claude-haiku-5-5',
+      max_tokens: 1200,
+      messages: [{ role: 'user', content: prompt }],
+    });
+    const text = (msg.content[0] as { type: string; text: string }).text || '';
+    const m = text.match(/\{[\s\S]*\}/);
+    if (!m) { res.status(502).json({ error: 'Réponse IA non analysable.', raw: text.slice(0, 200) }); return; }
+    res.json(JSON.parse(m[0]));
+  } catch (e) {
+    res.status(502).json({ error: String(e) });
+  }
+});
+
+// ─── Installation de l'agent (public : aucun secret dedans) ─
+
+// ZIP d'un seul fichier, avec le droit d'exécution : un .command téléchargé tel quel n'est pas exécutable sur Mac.
+// Zip sans compression avec droits Unix (exécutable conservé à l'ouverture sur Mac). Les dossiers finissent par « / ».
+function zipFiles(entries: Array<{ name: string; content?: Buffer; mode?: number }>): Buffer {
+  const dosDate = ((2026 - 1980) << 9) | (1 << 5) | 1;
+  const locals: Buffer[] = []; const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const e of entries) {
+    const isDir = e.name.endsWith('/');
+    const content = isDir ? Buffer.alloc(0) : (e.content ?? Buffer.alloc(0));
+    const nameBuf = Buffer.from(e.name, 'utf-8');
+    const crc = zlib.crc32(content);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(10, 4); local.writeUInt16LE(0x0800, 6);
+    local.writeUInt16LE(dosDate, 12); local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(content.length, 18); local.writeUInt32LE(content.length, 22); local.writeUInt16LE(nameBuf.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE((3 << 8) | 20, 4); central.writeUInt16LE(10, 6); central.writeUInt16LE(0x0800, 8);
+    central.writeUInt16LE(dosDate, 14); central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(content.length, 20); central.writeUInt32LE(content.length, 24); central.writeUInt16LE(nameBuf.length, 28);
+    central.writeUInt32LE((((isDir ? 0o040000 : 0o100000) | (e.mode ?? (isDir ? 0o755 : 0o644))) << 16 | (isDir ? 0x10 : 0)) >>> 0, 38);
+    central.writeUInt32LE(offset, 42);
+    locals.push(local, nameBuf, content);
+    centrals.push(central, nameBuf);
+    offset += local.length + nameBuf.length + content.length;
+  }
+  const centralBuf = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralBuf.length, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, centralBuf, end]);
+}
+function agentFile(name: string): string {
+  return fs.readFileSync(path.join(AGENT_DIR, name), 'utf-8');
+}
+
+function sendScript(res: express.Response, body: string, fileName: string, type: string, crlf = false): void {
+  res.setHeader('Content-Type', `${type}; charset=utf-8`);
+  res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(crlf ? body.replace(/\r?\n/g, '\r\n') : body);
+}
+
+app.get('/install/windows', (req, res) => {
+  const base = publicBaseUrl(req);
+  sendScript(res, agentFile('PharmAgent-Installer.bat').replaceAll('__SERVER_URL__', base), 'PharmAgent-Installer.bat', 'application/octet-stream', true);
+});
+
+app.get('/install/windows.ps1', (req, res) => {
+  sendScript(res, agentFile('install.ps1').replaceAll('__SERVER_URL__', publicBaseUrl(req)), 'install.ps1', 'text/plain', true);
+});
+
+// Mac : une application « Installer PharmAgent » (double-clic, fenêtres de dialogue, aucun Terminal pendant l'installation)
+app.get('/install/mac.zip', (req, res) => {
+  const app = 'Installer PharmAgent.app/Contents/';
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleExecutable</key><string>PharmAgent</string>
+  <key>CFBundleIdentifier</key><string>com.pharmagent.installer</string>
+  <key>CFBundleName</key><string>Installer PharmAgent</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>${agentFile('pharmagent_agent.py').match(/^AGENT_VERSION\s*=\s*"([^"]+)"/m)?.[1] ?? '1.0'}</string>
+  <key>LSMinimumSystemVersion</key><string>10.15</string>
+</dict></plist>
+`;
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', 'attachment; filename="PharmAgent-Mac.zip"');
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(zipFiles([
+    { name: 'Installer PharmAgent.app/' }, { name: app }, { name: `${app}MacOS/` },
+    { name: `${app}Info.plist`, content: Buffer.from(plist, 'utf-8') },
+    { name: `${app}MacOS/PharmAgent`, content: Buffer.from(agentFile('mac-installer.sh').replaceAll('__SERVER_URL__', publicBaseUrl(req)), 'utf-8'), mode: 0o755 },
+  ]));
+});
+
+app.get('/install/mac', (req, res) => {
+  const base = publicBaseUrl(req);
+  sendScript(res, `#!/bin/bash\n# PharmAgent — installation macOS\ncurl -fsSL "${base}/install/install.sh" | bash\nread -n 1 -s -r -p "Appuyez sur une touche pour fermer cette fenêtre..."\n`, 'PharmAgent-Installer.command', 'application/octet-stream');
+});
+
+app.get('/install/install.sh', (req, res) => {
+  sendScript(res, agentFile('install.sh').replaceAll('__SERVER_URL__', publicBaseUrl(req)), 'install.sh', 'text/x-shellscript');
+});
+
+app.get('/agent/pharmagent_agent.py', (_req, res) => {
+  sendScript(res, agentFile('pharmagent_agent.py'), 'pharmagent_agent.py', 'text/x-python');
+});
+
+app.get('/agent/version', (_req, res) => {
+  const src = agentFile('pharmagent_agent.py');
+  const version = src.match(/^AGENT_VERSION\s*=\s*"([^"]+)"/m)?.[1] ?? '0';
+  res.json({ version, sha256: crypto.createHash('sha256').update(src).digest('hex') });
+});
+
+// ─── Logs d'audit ─────────────────────────────────────────
+
+app.get('/api/audit', (req, res) => {
+  if (!requireOwner(req, res)) return;
+  const { pharmacyId, limit } = req.query as { pharmacyId?: string; limit?: string };
+  res.json({ logs: store.getAuditLogs(pharmacyId, limit ? Math.min(1000, parseInt(limit, 10) || 100) : 100) });
+});
+
+app.get('/api/pharmacies/:id/audit', (req, res) => {
+  if (!requirePharmacyOrOwner(req, res, req.params.id)) return;
+  res.json({ logs: store.getAuditLogs(req.params.id) });
+});
+
+// ─── Démarrage serveur ────────────────────────────────────
+
+async function startServer(): Promise<void> {
+  await store.init();
   const isProd = process.env.NODE_ENV === 'production';
 
-  app.use('/api/*', (_req, res) => {
-    res.status(404).json({ error: 'Endpoint API introuvable.' });
+  app.use(['/api', '/install', '/agent'], (_req, res) => {
+    res.status(404).json({ error: 'Ressource introuvable.' });
   });
 
   if (!isProd) {
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
+    const { createServer: createVite } = await import('vite');
+    const vite = await createVite({ server: { middlewareMode: true }, appType: 'spa' });
     app.use(vite.middlewares);
   } else {
-    const distDir = path.resolve(__dirname, 'dist');
-    app.use(express.static(distDir));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.join(distDir, 'index.html'));
-    });
+    const dist = path.resolve(__dirname, 'dist');
+    app.use(express.static(dist, { index: false }));
+    app.get('*', (_req, res) => res.sendFile(path.join(dist, 'index.html')));
   }
 
   const port = Number(process.env.PORT) || 3000;
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`PharmAgent server listening on http://0.0.0.0:${port}`);
+  const server = app.listen(port, '0.0.0.0', () => {
+    console.log(`PharmAgent v2 — http://0.0.0.0:${port} (stockage : ${store.persistence})`);
   });
+
+  const stop = () => {
+    server.close();
+    store.shutdown().finally(() => process.exit(0));
+  };
+  process.on('SIGTERM', stop);
+  process.on('SIGINT', stop);
 }
 
-startServer();
+startServer().catch((err) => { console.error('Erreur démarrage serveur :', err); process.exit(1); });

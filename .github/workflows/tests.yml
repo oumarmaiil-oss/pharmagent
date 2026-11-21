@@ -1,0 +1,52 @@
+name: Tests
+
+on:
+  push:
+    branches: [rebuild/v2]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  linux:
+    name: Linux (serveur, interface, agent)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run build
+      - run: npm test
+      - run: pip install playwright openpyxl
+      - run: python -m playwright install --with-deps chromium
+      - run: python tests/agent_unit.py
+      - run: python tests/panel_ui.py
+      - run: python tests/api_smoke.py
+      - run: python tests/attack.py
+      - run: python tests/agent_file_e2e.py
+      - run: python tests/test_a_e2e.py
+      - run: python tests/web_ui.py
+      - run: python tests/ai_corpus.py  # ignoré sans clé ANTHROPIC_API_KEY
+
+  windows:
+    name: Windows (saisie clavier réelle dans le Bloc-notes)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pynput
+      - run: python tests/agent_unit.py
+      - run: python tests/windows_keyboard.py

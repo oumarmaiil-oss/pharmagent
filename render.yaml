@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: pharmagent
+    runtime: node
+    plan: free
+    branch: rebuild/v2
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: PHARMAGENT_OWNER_PASSWORD
+        sync: false
+      - key: PHARMAGENT_PHARMACY_DEFAULT_PASSWORD
+        sync: false
+      - key: PHARMAGENT_AUTH_SECRET
+        generateValue: true
