@@ -144,6 +144,18 @@ FORBIDDEN_RE = re.compile(
 ADD_ROW_RE = re.compile(r"ajouter|nouvelle\s*ligne|add\s*(a\s*)?(line|row|item)|\+|＋", re.I)
 
 
+def friendly_error(e: Exception) -> str:
+    """Traduit les pannes courantes de Playwright en une phrase qui dit quoi faire."""
+    text = str(e)
+    if "has been closed" in text or "Target closed" in text or "Target page" in text:
+        return ("La fenêtre de l'ERP a été fermée pendant la saisie. "
+                "Laissez la fenêtre ouverte, puis renvoyez le bon depuis PharmAgent.")
+    if "Timeout" in text or "timeout" in text:
+        return ("L'ERP n'a pas répondu à temps. Vérifiez que l'écran de réception est bien "
+                "ouvert, puis renvoyez le bon.")
+    return text.splitlines()[0][:300]
+
+
 def strip_accents(s: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
 
@@ -384,10 +396,24 @@ class Browser:
 
     @property
     def is_open(self) -> bool:
-        return bool(self.ctx and self.ctx.pages)
+        # Une fenêtre fermée par le pharmacien laisse un contexte mort derrière elle :
+        # sans ce contrôle, l'agent écrit dans une page qui n'existe plus.
+        try:
+            return bool(self.ctx and self.ctx.pages and not self.ctx.pages[0].is_closed())
+        except Exception:
+            return False
+
+    def _discard(self) -> None:
+        try:
+            if self.ctx:
+                self.ctx.close()
+        except Exception:
+            pass
+        self.ctx = None
 
     def open(self, url: Optional[str] = None):
         if not self.is_open:
+            self._discard()
             self._launch()
         page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
         if url:
@@ -716,7 +742,12 @@ class Engine:
         log.info("Saisie : %s (%d ligne(s)).", self.task["documentNumber"], len(lines))
         status, message, results = "done", "", []
         try:
-            page = self.browser.open(self.erp_url)
+            try:
+                page = self.browser.open(self.erp_url)
+            except Exception:
+                # Navigateur laissé dans un état inutilisable : on repart d'un neuf.
+                self.browser.close()
+                page = self.browser.open(self.erp_url)
             Browser._settle(page)
 
             def progress(i: int, total: int, label: str) -> None:
@@ -747,7 +778,7 @@ class Engine:
                 message = ("Rien n'a pu être rempli sur « %s » : les champs du formulaire n'ont pas été reconnus."
                            % (survey.get("url") or "")[:80])
         except Exception as e:
-            status, message = "failed", str(e)[:300]
+            status, message = "failed", friendly_error(e)
             log.info("Saisie en échec : %s", message)
         duration = int((time.time() - started) * 1000)
         self.task = None
