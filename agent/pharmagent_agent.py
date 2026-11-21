@@ -877,7 +877,9 @@ button{border:0;border-radius:10px;padding:11px 16px;font-size:14px;font-weight:
 button.sec{background:#1d2740;color:var(--ink)}
 button:disabled{opacity:.5;cursor:default}
 .row{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}
-.code{font:28px ui-monospace,Menlo,monospace;letter-spacing:7px;text-align:center;color:var(--ok);padding:16px;border:1px dashed var(--line);border-radius:12px;margin-top:10px}
+.code{flex:1 1 auto;min-width:0;font:28px ui-monospace,Menlo,monospace;letter-spacing:7px;text-align:center;color:var(--ok);padding:16px;border:1px dashed var(--line);border-radius:12px;user-select:all}
+.coderow{display:flex;gap:10px;align-items:stretch;margin-top:10px}
+.coderow button{flex:0 0 auto}
 .guard{font-size:13px;color:var(--mut);border-left:3px solid var(--ok);padding-left:12px}
 .err{color:var(--bad);font-size:13px;margin-top:10px}
 pre{background:#0e1527;border:1px solid var(--line);border-radius:10px;padding:12px;max-height:260px;overflow:auto;font:12px ui-monospace,Menlo,monospace;color:var(--mut);white-space:pre-wrap}
@@ -885,7 +887,18 @@ pre{background:#0e1527;border:1px solid var(--line);border-radius:10px;padding:1
 .bar i{display:block;height:100%;background:var(--ok)}
 </style></head><body><div class="wrap" id="app">Chargement…</div>
 <script>
-let S={},busy=false,urlDraft=null;
+let S={},busy=false,urlDraft=null,lastDraw='';
+function copyText(text,btn){
+  const done=()=>{const o=btn.textContent;btn.textContent='Copié';setTimeout(()=>{btn.textContent=o;},1600);};
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done,()=>selectText(btn));}
+  else selectText(btn);
+}
+function selectText(btn){
+  const el=btn.previousElementSibling;if(!el)return;
+  const r=document.createRange();r.selectNodeContents(el);
+  const s=window.getSelection();s.removeAllRanges();s.addRange(r);
+  const o=btn.textContent;btn.textContent='Sélectionné';setTimeout(()=>{btn.textContent=o;},1600);
+}
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 async function call(name,payload){
   busy=true;render();
@@ -903,16 +916,21 @@ async function tick(){
 function render(){
   const a=document.getElementById('app');
   if(!S.version){a.textContent='Chargement…';return;}
-  // Ne jamais redessiner pendant que l'utilisateur écrit : sinon le champ se vide sous ses doigts.
+  // Ne jamais redessiner pendant que l'utilisateur écrit ou sélectionne du texte :
+  // reconstruire le HTML lui arracherait sa saisie ou sa sélection.
   const act=document.activeElement;
   if(act&&act.tagName==='INPUT'&&a.contains(act))return;
+  const sel=window.getSelection();
+  if(sel&&!sel.isCollapsed&&sel.anchorNode&&a.contains(sel.anchorNode))return;
   const st=S.status;
   let h=`<div class="head"><div><h1>Agent Floki</h1><div class="sub">${esc(S.pharmacyName||'non appairé')} · v${esc(S.version)} · ${esc(S.os)}</div></div>
   <span class="pill ${S.serverOk?'ok':'bad'}">${S.serverOk?'Serveur OK':'Serveur injoignable'}</span></div>`;
 
   if(st==='pairing'){
+    const pc=S.pairingCode||'';
     h+=`<div class="card"><label>1. Appairage</label><p class="sub">Saisissez ce code dans PharmAgent › Agent local.</p>
-    <div class="code">${esc(S.pairingCode||'……')}</div></div>`;
+    <div class="coderow"><div class="code">${esc(pc||'……')}</div>
+    ${pc?`<button class="sec" onclick="copyText('${esc(pc)}',this)">Copier</button>`:''}</div></div>`;
   }else{
     h+=`<div class="card"><label>Adresse de l'écran de réception de l'ERP</label>
     <input id="url" oninput="urlDraft=this.value" value="${esc(urlDraft!==null?urlDraft:(S.erpUrl||''))}" placeholder="https://erp.mapharmacie.sn">
@@ -937,6 +955,10 @@ function render(){
 
   h+=`<div class="card"><label>Journal</label><pre>${S.logs.map(l=>esc(l.t+'  '+l.msg)).join('\n')}</pre>
   <div class="row"><button class="sec" onclick="if(confirm('Détacher cet ordinateur de la pharmacie ?'))call('unpair')">Détacher</button></div></div>`;
+  // Rien n'a bougé : on laisse le HTML tel quel plutôt que de le reconstruire pour rien.
+  const stamp=h+'|'+busy;
+  if(stamp===lastDraw)return;
+  lastDraw=stamp;
   a.innerHTML=h;
 }
 tick();setInterval(tick,1500);
