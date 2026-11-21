@@ -10,18 +10,55 @@ env:
   PYTHONUTF8: "1"
 
 jobs:
-  # ── Ce qui protège la pharmacie : appariement des médicaments et garde-fou ──
+  # ── L'agent, sur les machines qu'on trouve vraiment en officine ──────────
+  #
+  # Référence basse : le Mac de 2015, qui s'arrête à macOS Monterey. Sa pile est
+  # imposée — Playwright 1.45 et au-delà réclame macOS 13, et greenlet 2.0.2 n'a
+  # pas de paquet pour Python 3.12 : c'est donc Python 3.11 + Playwright 1.37.
+  # GitHub ne propose plus de runner macOS 12 ; macos-13 Intel en est le plus
+  # proche. On ne descend pas plus bas : rien de plus ancien n'est installé.
   agent:
-    name: Agent (appariement des médicaments, remplissage, garde-fou)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    name: Agent — ${{ matrix.nom }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - nom: "Mac 2015 (Intel, Python 3.11, Playwright 1.37)"
+            os: macos-13
+            python: "3.11"
+            playwright: "playwright==1.37.0"
+          - nom: "Mac récent (Apple Silicon)"
+            os: macos-latest
+            python: "3.12"
+            playwright: "playwright>=1.47"
+          - nom: "PC Windows d'officine (Python 3.11, Playwright 1.37)"
+            os: windows-2022
+            python: "3.11"
+            playwright: "playwright==1.37.0"
+          - nom: "PC Windows récent"
+            os: windows-latest
+            python: "3.12"
+            playwright: "playwright>=1.47"
+          - nom: "Linux récent"
+            os: ubuntu-latest
+            python: "3.12"
+            playwright: "playwright>=1.47"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - run: pip install "playwright>=1.47" openpyxl
-      - run: python -m playwright install --with-deps chromium
+          python-version: ${{ matrix.python }}
+      - name: Playwright et son navigateur
+        shell: bash
+        run: |
+          pip install "${{ matrix.playwright }}"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            python -m playwright install --with-deps chromium
+          else
+            python -m playwright install chromium
+          fi
       - name: Appariement des médicaments (doit refuser les mauvais produits)
         run: python tests/product_match.py
       - name: Remplissage d'une copie de l'ERP, garde-fou compris
@@ -32,7 +69,7 @@ jobs:
         run: python tests/diagnose.py
       - name: Mode essai sur l'ERP de démonstration
         run: python tests/demo_mode.py
-      - name: Trois ERP différents x trois bons, confrontés case par case
+      - name: Trois ERP différents x dix bons, confrontés case par case
         run: python tests/matrice_erp.py
 
   serveur:
@@ -50,36 +87,9 @@ jobs:
       - run: npm run build
       - run: npm test
 
-  # ── macOS : le Mac de l'officine tourne sous macOS 12, que GitHub ne propose
-  #    plus. macos-13 est le plus ancien disponible : il prouve le comportement
-  #    sur Mac, pas la compatibilité exacte de macOS 12, déjà vérifiée à la main.
-  macos:
-    name: macOS (appariement, remplissage, trois ERP)
-    runs-on: macos-13
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install "playwright>=1.47"
-      - run: python -m playwright install chromium
-      - name: Appariement des médicaments
-        run: python tests/product_match.py
-      - name: Remplissage d'une copie de l'ERP, garde-fou compris
-        run: python tests/test_erp_fill.py agent/demo-erp.html
-      - name: Reprise d'une saisie interrompue
-        run: python tests/resume.py
-      - name: Boîte « Un problème ? »
-        run: python tests/diagnose.py
-      - name: Mode essai
-        run: python tests/demo_mode.py
-      - name: Trois ERP différents sur Mac
-        run: python tests/matrice_erp.py
-
   # ── Windows : l'installeur est réellement exécuté, pas seulement relu ──
   windows:
-    name: Windows (installation réelle, puis saisie de bout en bout)
+    name: Windows — installation réelle et saisie de bout en bout
     runs-on: windows-latest
     timeout-minutes: 20
     env:
@@ -90,29 +100,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Appariement des médicaments
-        run: python tests/product_match.py
-
-      - name: Navigateur pour le test de remplissage
-        run: |
-          pip install "playwright>=1.47"
-          python -m playwright install chromium
-
-      - name: Remplissage d'une copie de l'ERP sous Windows, garde-fou compris
-        run: python tests/test_erp_fill.py agent/demo-erp.html
-
-      - name: Reprise d'une saisie interrompue sous Windows
-        run: python tests/resume.py
-
-      - name: Boîte « Un problème ? » sous Windows
-        run: python tests/diagnose.py
-
-      - name: Mode essai sous Windows
-        run: python tests/demo_mode.py
-
-      - name: Trois ERP différents sous Windows
-        run: python tests/matrice_erp.py
 
       # Sur Windows, le runner tue l'arbre de processus a la fin de chaque etape :
       # un serveur lance dans une etape est mort dans la suivante. Toute la
