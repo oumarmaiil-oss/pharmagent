@@ -18,3 +18,11 @@ services:
         sync: false
       - key: PHARMAGENT_AUTH_SECRET
         generateValue: true
+      # Coordonnées d'assistance : affichées sur la fiche d'installation et dans
+      # le panneau de l'agent. Tenues hors du dépôt, qui est public.
+      - key: PHARMAGENT_SUPPORT_NOM
+        sync: false
+      - key: PHARMAGENT_SUPPORT_TEL
+        sync: false
+      - key: PHARMAGENT_SUPPORT_MAIL
+        sync: false

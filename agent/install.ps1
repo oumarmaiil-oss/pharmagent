@@ -81,13 +81,21 @@ $Agent = "$AppDir\pharmagent_agent.py"
 Step '5/5 Raccourcis (Bureau + demarrage automatique)'
 $Pyw = "$AppDir\venv\Scripts\pythonw.exe"
 if (-not (Test-Path $Pyw)) { $Pyw = $Py }
+# Icône du raccourci : à défaut, Windows en met une générique.
+$IconPath = "$AppDir\pharmagent.ico"
+try {
+    Invoke-WebRequest "$Server/agent/pharmagent.ico" -OutFile "$IconPath" -UseBasicParsing
+} catch {
+    $IconPath = "$env:SystemRoot\System32\shell32.dll,43"
+}
+
 $Shell = New-Object -ComObject WScript.Shell
 function New-Link($Path, $Arguments) {
     $l = $Shell.CreateShortcut($Path)
     $l.TargetPath = $Pyw
     $l.Arguments = $Arguments
     $l.WorkingDirectory = $AppDir
-    $l.IconLocation = "$env:SystemRoot\System32\shell32.dll,43"
+    $l.IconLocation = $IconPath
     $l.Description = 'PharmAgent - agent local de saisie'
     $l.Save()
 }

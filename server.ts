@@ -1596,10 +1596,56 @@ app.get('/demo/erp', (_req, res) => {
   res.send(agentFile('demo-erp.html'));
 });
 
+// Icônes du raccourci Windows et de l'application macOS, téléchargées par les
+// installateurs : sans elles, le poste affiche une icône générique de Windows
+// ou l'applet grise d'AppleScript, et le logiciel a l'air bricolé.
+app.get('/agent/pharmagent.ico', (_req, res) => {
+  res.setHeader('Content-Type', 'image/x-icon');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.send(fs.readFileSync(path.join(AGENT_DIR, 'pharmagent.ico')));
+});
+
+app.get('/agent/pharmagent.icns', (_req, res) => {
+  res.setHeader('Content-Type', 'image/icns');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.send(fs.readFileSync(path.join(AGENT_DIR, 'pharmagent.icns')));
+});
+
 // Fiche d'installation : une page à imprimer et à laisser au titulaire.
+// Coordonnées d'assistance. Elles ne figurent pas dans le dépôt, qui est
+// public : elles viennent de l'environnement du serveur. Sans elles, les pages
+// restent valables et n'affichent simplement pas le bloc.
+function contactSupport(): { nom: string; tel: string; mail: string } {
+  return {
+    nom: (process.env.PHARMAGENT_SUPPORT_NOM ?? '').trim(),
+    tel: (process.env.PHARMAGENT_SUPPORT_TEL ?? '').trim(),
+    mail: (process.env.PHARMAGENT_SUPPORT_MAIL ?? '').trim(),
+  };
+}
+
+const htmlSafe = (v: string): string =>
+  v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+// Lue par l'agent local, qui l'affiche dans son panneau : le pharmacien doit
+// savoir qui appeler sans chercher un papier.
+app.get('/api/support-contact', (_req, res) => {
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.json(contactSupport());
+});
+
 app.get('/install/fiche', (_req, res) => {
+  const c = contactSupport();
+  const lignes = [c.nom && `<b>${htmlSafe(c.nom)}</b>`, c.tel && htmlSafe(c.tel), c.mail && htmlSafe(c.mail)]
+    .filter(Boolean);
+  const bloc = lignes.length ? lignes.join('<br>') : 'Coordonnées à compléter.';
+  const signature = [c.nom && `<b>${htmlSafe(c.nom)}</b>`,
+                     [c.tel && htmlSafe(c.tel), c.mail && htmlSafe(c.mail)].filter(Boolean).join(' &nbsp;·&nbsp; ')]
+    .filter(Boolean).join('<br>');
+  const html = agentFile('fiche-installation.html')
+    .replace('__SUPPORT_BLOC__', bloc)
+    .replace('__SUPPORT_SIGNATURE__', signature);
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.send(agentFile('fiche-installation.html'));
+  res.send(html);
 });
 
 app.get('/agent/version', (_req, res) => {
@@ -1638,7 +1684,27 @@ async function startServer(): Promise<void> {
   } else {
     const dist = path.resolve(__dirname, 'dist');
     app.use(express.static(dist, { index: false }));
-    app.get('*', (_req, res) => res.sendFile(path.join(dist, 'index.html')));
+
+    // Les aperçus de lien (WhatsApp, Slack, réseaux) veulent une adresse
+    // complète pour la vignette : une adresse relative ne marche pas chez
+    // plusieurs d'entre eux. On la complète au moment de servir la page, ce qui
+    // reste juste si un nom de domaine est ajouté plus tard.
+    let pageHtml = '';
+    const lirePage = (): string => {
+      if (!pageHtml) pageHtml = fs.readFileSync(path.join(dist, 'index.html'), 'utf-8');
+      return pageHtml;
+    };
+    app.get('*', (req, res) => {
+      try {
+        const base = publicBaseUrl(req);
+        const html = lirePage()
+          .replace(/(<meta (?:property|name)="(?:og:image|twitter:image)" content=")\//g, `$1${base}/`)
+          .replace('<meta property="og:type"', `<meta property="og:url" content="${base}${req.path}" />\n    <meta property="og:type"`);
+        res.type('html').send(html);
+      } catch {
+        res.sendFile(path.join(dist, 'index.html'));
+      }
+    });
   }
 
   const port = Number(process.env.PORT) || 3000;

@@ -1461,6 +1461,7 @@ class Engine:
             "lastResult": self.last_result, "lastError": self.last_error,
             "serverOk": self.server_ok, "server": self.api.server,
             "etapes": self.etapes(),
+            "support": self._contact(),
             "logs": list(LOG_LINES)[-60:],
         }
 
@@ -1971,6 +1972,27 @@ class Engine:
             self.server_ok = e.status != 0
             self.last_error = str(e)
 
+    def _contact(self) -> Dict[str, str]:
+        """Qui appeler, demandé au serveur et conservé.
+
+        Gardé sur le disque : une officine qui perd Internet est justement
+        celle qui a besoin du numéro.
+        """
+        garde = self.cfg.get("support") or {}
+        if garde and time.time() - float(garde.get("at") or 0) < 86400:
+            return garde
+        try:
+            r = self.api.call("GET", "/api/support-contact", timeout=10)
+            if isinstance(r, dict) and any(r.get(k) for k in ("nom", "tel", "mail")):
+                r = {k: str(r.get(k) or "")[:80] for k in ("nom", "tel", "mail")}
+                r["at"] = time.time()
+                self.cfg["support"] = r
+                self._persist()
+                return r
+        except Exception:
+            pass
+        return garde
+
     def _beat(self) -> None:
         try:
             self.api.call("POST", "/api/agent-client/heartbeat", {
@@ -2224,6 +2246,17 @@ function render(){
   <button class="sec" onclick="copyText('${esc(S.supportCode)}',this)">Copier</button></div>
   <p class="sub">Donnez ce code au support (valable 1 heure).</p>`:''}</div>`;
 
+  // Le pharmacien doit savoir qui appeler sans chercher un papier.
+  const sup=S.support||{};
+  if(sup.nom||sup.tel||sup.mail){
+    h+=`<div class="card"><label>Assistance</label>
+    <p class="sub">Essayez « Un problème ? » d'abord : l'agent répare souvent seul.</p>
+    <div class="coderow"><div>${sup.nom?`<b>${esc(sup.nom)}</b><br>`:''}
+    <span class="sub">${[sup.tel,sup.mail].filter(Boolean).map(esc).join(' · ')}</span></div>
+    ${sup.mail?`<button class="sec" onclick="copyText('${esc(sup.mail)}',this)">Copier le mail</button>`:''}
+    </div></div>`;
+  }
+
   h+=`<div class="card"><label>Journal</label><pre>${S.logs.map(l=>esc(l.t+'  '+l.msg)).join('\n')}</pre>
   <div class="row"><button class="sec" onclick="if(confirm('Détacher cet ordinateur de la pharmacie ?'))call('unpair')">Détacher</button></div></div>`;
   // Rien n'a bougé : on laisse le HTML tel quel plutôt que de le reconstruire pour rien.
@@ -2336,6 +2369,23 @@ def ensure_mac_app(server: str) -> None:
         for line in ['tell application "Terminal"', "activate", 'do script "%s"' % applescript, "end tell"]:
             args += ["-e", line]
         subprocess.run(args, check=True, capture_output=True, timeout=30)
+        # osacompile laisse l'applet grise d'AppleScript. On pose la vraie
+        # icône à sa place : sur le Dock d'une officine, ça change tout.
+        try:
+            icone = app / "Contents" / "Resources" / "applet.icns"
+            source = Path(__file__).resolve().parent / "pharmagent.icns"
+            donnees = source.read_bytes() if source.exists() else None
+            if donnees is None:
+                with urllib.request.urlopen(
+                        server.rstrip("/") + "/agent/pharmagent.icns", timeout=20) as r:
+                    donnees = r.read()
+            if donnees[:4] == b"icns":
+                icone.write_bytes(donnees)
+                # Le Finder garde l'ancienne icône tant que le paquet ne bouge
+                # pas : on le date pour qu'il la relise.
+                app.touch()
+        except Exception as e:
+            log.info("Icône de l'application non posée : %s", str(e)[:90])
         agents_dir = Path.home() / "Library" / "LaunchAgents"
         agents_dir.mkdir(parents=True, exist_ok=True)
         (agents_dir / "com.pharmagent.agent.plist").write_bytes(plistlib.dumps(

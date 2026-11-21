@@ -12,12 +12,18 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['icon.svg', 'apple-touch-icon.png'],
+      includeAssets: ['icon.svg', 'apple-touch-icon.png', 'favicon.ico',
+                      'favicon-32x32.png', 'favicon-192x192.png', 'og-image.png'],
       manifest: {
         id: '/',
-        name: 'PharmAgent — Supervision Multi-Officines',
+        name: 'PharmAgent — Saisie des bons de livraison',
         short_name: 'PharmAgent',
-        description: 'Plateforme SaaS de supervision pharmaceutique avec agents visuels IA.',
+        // « display: standalone » retire la barre d'adresse : une fois installée,
+        // l'application s'ouvre depuis son icône, sans lien à retaper.
+        description: "L'IA lit le bon de livraison, le pharmacien valide, l'agent saisit dans l'ERP de l'officine.",
+        lang: 'fr',
+        dir: 'ltr',
+        categories: ['medical', 'business', 'productivity'],
         theme_color: '#0a1628',
         background_color: '#0a1628',
         display: 'standalone',
