@@ -80,6 +80,41 @@ const DATABASE_URL = process.env.DATABASE_URL;
 // Une tâche « en saisie » depuis plus longtemps est considérée comme abandonnée
 const RUNNING_TIMEOUT_MS = 30 * 60 * 1000;
 
+// ─── Conservation ─────────────────────────────────────────
+//
+// Les plafonds sont PAR OFFICINE, jamais globaux. Un plafond global donne un
+// résultat absurde en multi-officines : la pharmacie la plus active efface
+// l'historique des autres. Et le journal d'audit sert justement à reconstituer
+// une erreur des semaines plus tard — le rogner trop tôt le vide de son sens.
+
+const entier = (nom: string, defaut: number): number => {
+  const v = Number(process.env[nom]);
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : defaut;
+};
+
+const RETENTION_BONS_JOURS = entier('PHARMAGENT_RETENTION_BONS_JOURS', 365);
+const RETENTION_AUDIT_JOURS = entier('PHARMAGENT_RETENTION_AUDIT_JOURS', 730);
+const MAX_BONS_PAR_OFFICINE = entier('PHARMAGENT_MAX_BONS_PAR_OFFICINE', 2000);
+const MAX_AUDIT_PAR_OFFICINE = entier('PHARMAGENT_MAX_AUDIT_PAR_OFFICINE', 5000);
+const JOUR_MS = 24 * 60 * 60 * 1000;
+
+/** Garde les « max » entrées les plus récentes de CHAQUE officine, et jette
+ *  celles qui dépassent l'âge autorisé. Renvoie le nombre d'entrées retirées. */
+function conserverParOfficine<T extends { pharmacyId: string }>(
+  liste: T[], dateDe: (e: T) => string, max: number, jours: number,
+): { gardees: T[]; retirees: number } {
+  const limite = Date.now() - jours * JOUR_MS;
+  const compte = new Map<string, number>();
+  const gardees = liste.filter((e) => {
+    const t = Date.parse(dateDe(e));
+    if (Number.isFinite(t) && t < limite) return false;
+    const n = (compte.get(e.pharmacyId) ?? 0) + 1;
+    compte.set(e.pharmacyId, n);
+    return n <= max;
+  });
+  return { gardees, retirees: liste.length - gardees.length };
+}
+
 // ─── Mots de passe provisoires ────────────────────────────
 
 const ownerPassword = process.env.PHARMAGENT_OWNER_PASSWORD ?? generateSecret();
@@ -267,6 +302,33 @@ class PharmAgentStore {
 
   get persistence(): 'postgres' | 'disk' {
     return this.pool ? 'postgres' : 'disk';
+  }
+
+  /** Retire ce qui a dépassé la durée de conservation.
+   *
+   *  Appelé au démarrage puis une fois par jour. Sans ce passage, une officine
+   *  qui s'arrête de travailler garderait ses bons indéfiniment : les plafonds
+   *  ne se déclenchent qu'à l'écriture suivante, qui ne vient jamais.
+   */
+  purgerAnciennes(): { bons: number; audit: number } {
+    const b = conserverParOfficine(
+      this.db.drafts, (d) => d.createdAt, MAX_BONS_PAR_OFFICINE, RETENTION_BONS_JOURS);
+    const a = conserverParOfficine(
+      this.db.auditLogs, (l) => l.timestamp, MAX_AUDIT_PAR_OFFICINE, RETENTION_AUDIT_JOURS);
+    if (b.retirees || a.retirees) {
+      this.db.drafts = b.gardees;
+      this.db.auditLogs = a.gardees;
+      this.persist();
+      console.log(`[PharmAgent] Conservation : ${b.retirees} bon(s) et ${a.retirees} ligne(s) de journal retirés.`);
+    }
+    return { bons: b.retirees, audit: a.retirees };
+  }
+
+  /** Lance la purge au démarrage, puis chaque jour. */
+  planifierPurge(): void {
+    this.purgerAnciennes();
+    const t = setInterval(() => this.purgerAnciennes(), JOUR_MS);
+    if (typeof t.unref === 'function') t.unref();   // n'empêche pas l'arrêt du serveur
   }
 
   private migrate(parsed: Database): Database {
@@ -563,7 +625,8 @@ class PharmAgentStore {
     this.db.drafts.unshift(draft);
     const ph = this.db.pharmacies.find((p) => p.id === params.pharmacyId);
     if (ph) { this.rollMonth(ph); ph.usedThisMonth += 1; }
-    if (this.db.drafts.length > 500) this.db.drafts = this.db.drafts.slice(0, 500);
+    this.db.drafts = conserverParOfficine(
+      this.db.drafts, (d) => d.createdAt, MAX_BONS_PAR_OFFICINE, RETENTION_BONS_JOURS).gardees;
     this.persist();
     return draft;
   }
@@ -749,7 +812,8 @@ class PharmAgentStore {
       details: params.details,
       timestamp: now(),
     });
-    if (this.db.auditLogs.length > 1000) this.db.auditLogs = this.db.auditLogs.slice(0, 1000);
+    this.db.auditLogs = conserverParOfficine(
+      this.db.auditLogs, (l) => l.timestamp, MAX_AUDIT_PAR_OFFICINE, RETENTION_AUDIT_JOURS).gardees;
     this.persist();
   }
 

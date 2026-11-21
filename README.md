@@ -103,6 +103,10 @@ python3 tests/product_match.py   # appariement des médicaments
 | `PHARMAGENT_SUPPORT_NOM` | Qui appeler, affiché sur la fiche et dans l'agent. |
 | `PHARMAGENT_SUPPORT_TEL` | Numéro d'assistance. **Tenu hors du dépôt, qui est public.** |
 | `PHARMAGENT_SUPPORT_MAIL` | Adresse d'assistance, même raison. |
+| `PHARMAGENT_RETENTION_BONS_JOURS` | Durée de conservation des bons. 365 par défaut. |
+| `PHARMAGENT_RETENTION_AUDIT_JOURS` | Durée de conservation du journal d'audit. 730 par défaut. |
+| `PHARMAGENT_MAX_BONS_PAR_OFFICINE` | Plafond de bons **par officine**. 2000 par défaut. |
+| `PHARMAGENT_MAX_AUDIT_PAR_OFFICINE` | Plafond de lignes de journal **par officine**. 5000 par défaut. |
 
 ## Pile technique
 

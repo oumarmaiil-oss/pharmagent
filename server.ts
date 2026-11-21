@@ -1707,6 +1707,9 @@ async function startServer(): Promise<void> {
     });
   }
 
+  // Conservation : on passe un coup au démarrage, puis chaque jour.
+  store.planifierPurge();
+
   const port = Number(process.env.PORT) || 3000;
   const server = app.listen(port, '0.0.0.0', () => {
     console.log(`PharmAgent v2 — http://0.0.0.0:${port} (stockage : ${store.persistence})`);
