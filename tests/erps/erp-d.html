@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>OfficinePlus — Réception</title>
+<style>
+ body{font-family:system-ui,sans-serif;margin:20px;font-size:14px}
+ table{border-collapse:collapse;margin-top:10px}td,th{border:1px solid #ccc;padding:3px}
+ th{background:#eee;font-size:12px}
+</style></head>
+<body>
+<h3>OfficinePlus — Réception</h3>
+<p>
+  <label for="g">Fournisseur</label><input id="g" name="g" type="text">
+  <label for="r">Référence BL</label><input id="r" name="r" type="text">
+  <label for="d">Date réception</label><input id="d" name="d" type="text" placeholder="JJ/MM/AAAA">
+</p>
+<table>
+ <!-- La derniere colonne n'a AUCUN intitule : ni <th>, ni placeholder, ni name
+      parlant. Seul son type « month » dit ce qu'elle attend. Cas vu en vrai sur
+      des ERP vieillissants dont la colonne a ete ajoutee apres coup. -->
+ <thead><tr><th>Désignation produit</th><th>N° de lot</th><th>Qté reçue</th><th>Prix d'achat</th><th></th></tr></thead>
+ <tbody id="b"></tbody>
+</table>
+<button type="button" id="add">Ajouter une ligne</button>
+<button type="button" id="val">Valider la réception</button>
+<script>
+let n = 0;
+document.getElementById('add').addEventListener('click', () => {
+  n++;
+  const tr = document.createElement('tr');
+  tr.innerHTML =
+    '<td><input name="c1_'+n+'" type="text"></td>' +
+    '<td><input name="c2_'+n+'" type="text"></td>' +
+    '<td><input name="c3_'+n+'" type="text"></td>' +
+    '<td><input name="c4_'+n+'" type="text"></td>' +
+    '<td><input name="c5_'+n+'" type="month"></td>';
+  document.getElementById('b').appendChild(tr);
+});
+</script>
+</body></html>

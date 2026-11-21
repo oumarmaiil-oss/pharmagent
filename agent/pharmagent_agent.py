@@ -382,62 +382,245 @@ def norm(s: Any) -> str:
 # ─── Vocabulaire : libellé d'ERP → champ du bon de livraison ────────────────
 
 # Chaque champ : (synonymes, mots qui disqualifient)
+# Chaque donnée du bon est décrite par ses appellations en français ET en
+# anglais, puis par les mots qui la disqualifient. Les ERP d'officine mélangent
+# les deux langues, abrègent, et inventent leurs propres tournures : ajouter une
+# appellation ici suffit à la faire reconnaître partout.
+#
+# Les mots qui disqualifient comptent autant que les synonymes : sans « vente »
+# dans la liste d'exclusion du prix d'achat, l'agent écrirait un prix de vente
+# dans la colonne du prix d'achat, et la marge de l'officine serait fausse.
+
 HEADER_VOCAB: Dict[str, Tuple[List[str], List[str]]] = {
-    "supplier": (["fournisseur", "supplier", "grossiste", "laboratoire", "labo",
-                  "vendeur", "expediteur", "repartiteur", "vendor", "wholesaler"], []),
-    "documentNumber": (["reference bl", "ref bl", "reference bon", "numero bl", "n bl", "no bl",
-                        "numero bon", "numero du bon", "n du bon", "no du bon", "num bon",
-                        "n bon", "n piece", "bon de livraison", "reference livraison",
-                        "reference", "bl", "numero piece", "numero document",
-                        "delivery note", "delivery note no", "note no", "document no",
-                        "receipt no", "invoice no", "grn"], ["interne", "commande"]),
-    "documentDate": (["date reception", "date de reception", "date livraison", "date du bon",
-                      "date entree", "date d entree", "date bl", "date document", "date",
-                      "receipt date", "delivery date", "posting date"],
-                     ["peremption", "expiration", "commande", "expiry"]),
+    "supplier": ([
+        # français
+        "fournisseur", "grossiste", "laboratoire", "labo", "repartiteur",
+        "vendeur", "expediteur", "depositaire",
+        # anglais
+        "supplier", "vendor", "wholesaler", "distributor", "shipper",
+    ], ["client", "customer", "livre a", "ship to"]),
+
+    "documentNumber": ([
+        # français
+        "reference bl", "ref bl", "reference bon", "numero bl", "n bl", "no bl",
+        "numero bon", "numero du bon", "n du bon", "no du bon", "num bon", "n bon",
+        "bon de livraison", "reference livraison", "numero piece", "n piece",
+        "numero document", "reference", "bl",
+        # anglais
+        "delivery note", "delivery note no", "delivery number", "note no",
+        "document no", "document number", "receipt no", "invoice no", "grn",
+        "dispatch note", "waybill",
+    ], ["interne", "commande", "order", "internal"]),
+
+    "documentDate": ([
+        # français
+        "date reception", "date de reception", "date livraison", "date du bon",
+        "date entree", "date d entree", "date bl", "date document", "date",
+        # anglais
+        "receipt date", "delivery date", "posting date", "date received",
+        "document date", "grn date",
+    ], ["peremption", "expiration", "commande", "expiry", "expiration date", "order date"]),
 }
 
 LINE_VOCAB: Dict[str, Tuple[List[str], List[str]]] = {
-    # « nom » seul est trop vague : « Nom du fournisseur » n'est pas une désignation de produit.
-    "designation": (["designation produit", "designation", "nom du produit", "nom commercial",
-                     "produit", "article", "libelle", "medicament", "denomination", "description",
-                     "product", "product name", "item", "drug", "medicine"],
-                    ["code", "cip", "fournisseur", "grossiste", "laboratoire", "supplier", "vendor"]),
-    "lotNumber": (["numero de lot", "n lot", "no lot", "numero lot", "lot", "batch",
-                   "batch no", "batch number", "lot no"], []),
-    "quantity": (["quantite recue", "qte recue", "quantite", "qte", "qty", "quantity",
-                  "nombre", "recu", "qty received", "received"],
-                 ["commandee", "gratuit", "restant", "ordered"]),
-    "purchasePrice": (["prix d achat", "prix achat", "px achat", "prix unitaire", "pu ht", "pu",
-                       "prix", "tarif", "cout", "unit price", "unit cost", "purchase price",
-                       "cost price", "price"],
-                      ["vente", "public", "total", "ttc", "selling", "retail", "sale"]),
-    "salePrice": (["prix de vente", "prix vente", "prix public", "ppc", "pv"], ["achat"]),
-    "expiryDate": (["date de peremption", "date peremption", "peremption", "date expiration",
-                    "expiration", "dlc", "dluo", "exp", "perime",
-                    "expiry", "expiry date", "expires", "best before"], []),
-    "cip": (["code cip", "cip", "ean", "code barre", "code produit", "reference produit",
-             "code article"], []),
+    # « nom » seul est trop vague : « Nom du fournisseur » n'est pas une désignation
+    # de produit. C'est ce qui faisait écraser le fournisseur à chaque ligne.
+    "designation": ([
+        # français
+        "designation produit", "designation", "nom du produit", "nom commercial",
+        "produit", "article", "libelle", "medicament", "denomination", "description",
+        "specialite",
+        # anglais
+        "product", "product name", "item", "item name", "drug", "medicine",
+        "description of goods",
+    ], ["code", "cip", "ean", "fournisseur", "grossiste", "laboratoire",
+        "supplier", "vendor", "barcode"]),
+
+    "lotNumber": ([
+        "numero de lot", "n lot", "no lot", "numero lot", "lot",
+        "batch", "batch no", "batch number", "lot no", "lot number", "serial",
+    ], []),
+
+    "quantity": ([
+        # français
+        "quantite recue", "qte recue", "quantite livree", "qte livree",
+        "quantite", "qte", "nombre", "recu",
+        # anglais
+        "qty received", "quantity received", "qty delivered", "qty", "quantity",
+        "received", "delivered",
+    ], ["commandee", "commande", "gratuit", "restant", "ordered", "free",
+        "backorder", "reliquat"]),
+
+    "purchasePrice": ([
+        # français
+        "prix d achat", "prix achat", "px achat", "prix unitaire", "pu ht", "pu",
+        "prix", "tarif", "cout",
+        # anglais
+        "unit price", "unit cost", "purchase price", "cost price", "buying price",
+        "price", "cost",
+    ], ["vente", "public", "total", "ttc", "selling", "retail", "sale",
+        "sales", "line total", "amount"]),
+
+    "expiryDate": ([
+        # français
+        "date de peremption", "date peremption", "peremption", "date expiration",
+        "expiration", "dlc", "dluo", "exp", "perime",
+        # anglais
+        "expiry", "expiry date", "expiration date", "expires", "best before",
+        "use by", "shelf life",
+    ], ["reception", "livraison", "receipt", "delivery"]),
+
+    # ── Champs que l'agent sait reconnaître sans forcément les remplir ──────
+    #
+    # Les déclarer sert à deux choses : les remplir le jour où le bon les porte,
+    # et surtout les empêcher d'être pris pour autre chose. Sans « code article »
+    # ici, la colonne du code serait candidate à la désignation du médicament.
+
+    "cip": ([
+        "code cip", "cip", "code article", "code produit", "code ean", "ean",
+        "reference article", "ref article",
+        "product code", "item code", "article code", "barcode", "sku",
+    ], ["lot", "batch"]),
+
+    "salePrice": ([
+        "prix de vente", "prix vente", "prix public", "ppc", "pv", "ptt",
+        "selling price", "retail price", "sale price", "public price",
+    ], ["achat", "purchase", "cost"]),
+
+    "discount": ([
+        "remise", "ristourne", "rabais", "taux de remise",
+        "discount", "rebate", "discount %",
+    ], []),
+
+    "freeQuantity": ([
+        "quantite gratuite", "qte gratuite", "gratuit", "unite gratuite", "ug",
+        "free qty", "free quantity", "bonus",
+    ], []),
+
+    "orderedQuantity": ([
+        "quantite commandee", "qte commandee", "commande",
+        "qty ordered", "quantity ordered", "ordered",
+    ], ["recue", "received", "livree", "delivered"]),
+}
+
+# Ces colonnes se calculent toutes seules dans l'ERP. L'agent les reconnaît pour
+# ne pas s'y tromper, mais n'y écrit jamais : le total est l'affaire de l'ERP,
+# et sa vérification celle du pharmacien.
+CALCULE_PAR_L_ERP = {"lineTotal", "vat"}
+
+LINE_VOCAB["lineTotal"] = ([
+    "total ligne", "montant ligne", "montant ht", "total ht", "total",
+    "montant", "line total", "amount", "extended price", "net amount",
+], [])
+LINE_VOCAB["vat"] = ([
+    "tva", "taux tva", "taux de tva", "vat", "vat rate", "tax", "tax rate",
+], [])
+
+
+# ─── Forme attendue d'un champ ──────────────────────────────────────────────
+#
+# Quand le vocabulaire ne reconnaît pas un intitulé — un ERP qui écrit « Péremp. »
+# ou rien du tout — il reste un indice : la forme du champ. Un champ de date ne
+# ressemble pas à un champ de quantité. On s'en sert pour deviner, puis on relit
+# pour vérifier, plutôt que de laisser la colonne vide sans rien dire.
+
+_NOMBRE_RE = re.compile(r"^[\s0-9.,]*$")
+_DATE_INDICE_RE = re.compile(r"\bjj\b|\bdd\b|\bmm\b|\baa\b|\byy\b|\baaaa\b|\byyyy\b|date")
+
+
+def forme_du_champ(field: Dict[str, Any]) -> str:
+    """« date », « nombre » ou « texte » : ce que ce champ a l'air d'attendre."""
+    itype = str(field.get("type") or "").lower()
+    if itype in ("date", "month"):
+        return "date"
+    if itype == "number":
+        return "nombre"
+    indice = norm(str(field.get("placeholder") or "") + " " +
+                  str(field.get("label") or "") + " " + str(field.get("name") or ""))
+    if _DATE_INDICE_RE.search(indice):
+        return "date"
+    ph = str(field.get("placeholder") or "").strip()
+    if ph and _NOMBRE_RE.match(ph) and any(c.isdigit() for c in ph):
+        return "nombre"
+    return "texte"
+
+
+# Forme attendue par chaque donnée du bon. La désignation n'y figure pas : on ne
+# devine jamais où va le nom d'un médicament.
+FORME_ATTENDUE = {
+    "documentDate": "date", "expiryDate": "date",
+    "quantity": "nombre", "purchasePrice": "nombre", "salePrice": "nombre",
+    "discount": "nombre", "freeQuantity": "nombre", "orderedQuantity": "nombre",
+    "supplier": "texte", "documentNumber": "texte", "lotNumber": "texte", "cip": "texte",
 }
 
 
-# Noms affichés au pharmacien dans l'écran de vérification
-BL_LABELS = {
-    "supplier": "Fournisseur", "documentNumber": "N° du bon", "documentDate": "Date de réception",
-    "designation": "Désignation du produit", "lotNumber": "N° de lot", "quantity": "Quantité reçue",
-    "purchasePrice": "Prix d'achat", "expiryDate": "Date de péremption",
-    "cip": "Code CIP", "salePrice": "Prix de vente",
-}
+def deduire(mapping: Dict[str, Dict[str, Any]], fields: List[Dict[str, Any]],
+            data: Dict[str, Any],
+            interdits: Optional[set] = None) -> Dict[str, Dict[str, Any]]:
+    """Propose un champ pour chaque donnée que le vocabulaire n'a pas placée.
+
+    Prudent par construction : jamais pour la désignation du médicament, et
+    seulement quand un seul champ libre a la bonne forme. S'il y a deux
+    candidats, on ne devine pas — on laisse vide, ce qui se voit et se corrige.
+
+    Et jamais pour une donnée dont le pharmacien a dit qu'elle n'a pas de champ
+    dans son ERP : deviner par-dessus son avis reviendrait à le contredire.
+    """
+    pris = {f["sel"] for f in mapping.values()}
+    libres = [f for f in fields if f["sel"] not in pris]
+    propositions: Dict[str, Dict[str, Any]] = {}
+    for canonical, forme in FORME_ATTENDUE.items():
+        if canonical in mapping or canonical in CALCULE_PAR_L_ERP:
+            continue
+        if canonical in (interdits or set()):
+            continue
+        if not str(data.get(canonical) or "").strip():
+            continue                      # le bon ne porte pas cette donnée
+        candidats = [f for f in libres
+                     if f["sel"] not in {g["sel"] for g in propositions.values()}
+                     and forme_du_champ(f) == forme]
+        if len(candidats) == 1:
+            propositions[canonical] = candidats[0]
+    return propositions
+
+
+def identite_champ(field: Dict[str, Any], cle: str) -> str:
+    """Comment nommer ce champ pour le retrouver la prochaine fois.
+
+    Les colonnes de ligne changent de sélecteur à chaque rangée : on les repère
+    par leur intitulé. Une colonne muette — il y en a — se repère par son rang,
+    qui, lui, ne bouge pas.
+    """
+    valeur = str(field.get(cle) or "").strip()
+    if valeur:
+        return valeur
+    if field.get("col") is not None:
+        return "#colonne-%d" % field["col"]
+    return ""
 
 
 def resolve(fields: List[Dict[str, Any]], vocab: Dict[str, Tuple[List[str], List[str]]],
-            overrides: Optional[Dict[str, str]], key: str) -> Dict[str, Dict[str, Any]]:
-    """Association automatique, puis corrections du pharmacien par-dessus.
+            overrides: Optional[Dict[str, str]], key: str,
+            appris: Optional[Dict[str, str]] = None) -> Dict[str, Dict[str, Any]]:
+    """Association automatique, ce que l'agent a appris, puis les corrections.
 
     « key » vaut « sel » pour l'en-tête (champs stables) et « label » pour les
     colonnes de ligne, dont le sélecteur change à chaque nouvelle ligne.
+
+    Trois couches, dans cet ordre : le vocabulaire place ce qu'il reconnaît ; ce
+    que l'agent a appris sur CET ERP comble les trous ; les corrections du
+    pharmacien passent par-dessus tout, car lui seul connaît son logiciel.
     """
     mapping = assign(fields, vocab)
+    pris = {f["sel"] for f in mapping.values()}
+    for canonical, identite in (appris or {}).items():
+        if canonical in mapping:
+            continue
+        match = next((f for f in fields if identite_champ(f, key) == identite), None)
+        if match and match["sel"] not in pris:
+            mapping[canonical] = match
+            pris.add(match["sel"])
     for canonical, chosen in (overrides or {}).items():
         if chosen == "":
             mapping.pop(canonical, None)       # le pharmacien a dit : ce champ n'existe pas
@@ -837,16 +1020,28 @@ class Filler:
         # vient de la lecture du bon, de l'approbation, ou de la saisie.
         self.written: List[Dict[str, str]] = []
         self.header_used: set = set()
+        # Ce que l'agent savait déjà de cet ERP, et ce qu'il vient d'y apprendre.
+        self.appris: Dict[str, Dict[str, str]] = {
+            "header": dict((self.overrides.get("apprisHeader") or {})),
+            "line": dict((self.overrides.get("apprisLine") or {})),
+        }
+        self.nouveau: Dict[str, Dict[str, str]] = {"header": {}, "line": {}}
 
     def survey(self) -> Dict[str, Any]:
         return self.page.evaluate(SURVEY_JS)
 
-    def write(self, field: Dict[str, Any], value: Any, pick: bool = False) -> bool:
+    def write(self, field: Dict[str, Any], value: Any, pick: bool = False,
+              canonical: str = "") -> bool:
         """Remplit un champ. Jamais de touche Entrée (elle pourrait valider).
 
         « pick » : champ produit, où l'ERP peut ouvrir une liste de suggestions
         qu'il faut cliquer plutôt que de laisser le texte libre.
         """
+        # Les totaux et la TVA se calculent dans l'ERP. L'agent les reconnaît
+        # pour ne pas s'y tromper de colonne, mais n'y touche jamais : leur
+        # vérification revient au pharmacien.
+        if canonical in CALCULE_PAR_L_ERP:
+            return False
         text = "" if value is None else str(value)
         if text == "" or text.strip() == "":
             return False
@@ -971,18 +1166,56 @@ class Filler:
         return raw
 
     def fill_header(self, header: Dict[str, Any], survey: Dict[str, Any]) -> None:
-        mapping = resolve(survey.get("header") or [], HEADER_VOCAB, self.overrides.get("header"), "sel")
-        self.header_used = {f["sel"] for f in mapping.values()}
-        if not mapping:
+        champs = survey.get("header") or []
+        mapping = resolve(champs, HEADER_VOCAB, self.overrides.get("header"), "sel",
+                          self.appris["header"])
+        if not mapping and not champs:
             log.info("Aucun champ d'en-tête reconnu sur cette page.")
+        _, manques = self.ecrire_champs(mapping, header, champs, "header", "sel")
+        self.skipped.extend(manques)
+        self.header_used = {f["sel"] for f in mapping.values()}
+
+    def ecrire_champs(self, mapping: Dict[str, Dict[str, Any]], data: Dict[str, Any],
+                      fields: List[Dict[str, Any]], zone: str, cle: str,
+                      pick_designation: bool = False) -> Tuple[int, List[str]]:
+        """Écrit les champs, devine ceux qui manquent, retient ce qui a marché.
+
+        Une donnée que le vocabulaire n'a pas su placer n'est plus abandonnée :
+        on cherche le seul champ libre dont la forme convient, on écrit, et on
+        relit. Si l'ERP a bien repris la valeur, l'association est retenue pour
+        cet ERP — la prochaine fois elle sera immédiate, sans deviner.
+        """
+        # Le pharmacien a pu dire d'un champ qu'il n'existe pas chez lui : on ne
+        # le redevine surtout pas derrière son dos.
+        interdits = {c for c, v in (self.overrides.get(zone) or {}).items() if v == ""}
+        devines = deduire(mapping, fields, data, interdits)
+        for canonical, field in devines.items():
+            mapping[canonical] = field
+            log.info("Champ « %s » non reconnu : essai sur « %s » (%s).", canonical,
+                     field.get("label") or field.get("name") or field["sel"],
+                     forme_du_champ(field))
+        ecrits, manques = 0, []
         for name, field in mapping.items():
-            value = self.value_for(name, header, field)
+            value = self.value_for(name, data, field)
             label = field.get("label") or field.get("name") or name
-            if not self.write(field, value):
-                if str(value or "").strip():
-                    self.skipped.append(label)
-            else:
-                log.info("En-tête : %s = %s", label, value)
+            avant = len(self.written)
+            if self.write(field, value, pick=(pick_designation and name == "designation"),
+                          canonical=name):
+                ecrits += 1
+                # Déduction confirmée par la relecture : on la retient.
+                if name in devines:
+                    trace = self.written[avant:]
+                    if trace and not any(t.get("affiche") for t in trace):
+                        identite = identite_champ(field, cle)
+                        if identite:
+                            self.appris[zone][name] = identite
+                            self.nouveau[zone][name] = identite
+                            log.info("Appris : « %s » se saisit dans « %s ».", name, identite)
+            elif str(value or "").strip() and name not in CALCULE_PAR_L_ERP:
+                manques.append(label)
+                if name in devines:
+                    mapping.pop(name, None)   # l'essai n'a rien donné : on l'oublie
+        return ecrits, manques
 
     def add_row_button(self, survey: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         for b in survey.get("buttons") or []:
@@ -1030,7 +1263,10 @@ class Filler:
         # Un champ déjà reconnu comme appartenant à l'en-tête du bon n'est pas un champ
         # de ligne : sans cela l'agent écraserait le fournisseur avec le nom du produit.
         rest = [f for f in header if f["sel"] != chooser["sel"] and f["sel"] not in self.header_used]
-        fields = resolve(rest, LINE_VOCAB, self.overrides.get("line"), "label")
+        for rang, champ in enumerate(rest):
+            champ["col"] = rang
+        fields = resolve(rest, LINE_VOCAB, self.overrides.get("line"), "label",
+                         self.appris["line"])
         button = None
         for b in survey.get("buttons") or []:
             text = b.get("text") or ""
@@ -1078,11 +1314,8 @@ class Filler:
                 continue
             data = dict(line)
             data.setdefault("designation", wanted)
-            missed: List[str] = []
-            for name, field in cat["fields"].items():
-                value = self.value_for(name, data, field)
-                if not self.write(field, value) and str(value or "").strip():
-                    missed.append(field.get("label") or name)
+            _, missed = self.ecrire_champs(cat["fields"], data, list(cat["fields"].values()),
+                                           "line", "label")
             before = len(self.survey().get("rows") or [])
             if not self._click(adder, "Ajout au bon"):
                 results.append({"index": idx, "ok": False,
@@ -1115,10 +1348,14 @@ class Filler:
             self.on_progress(position, len(lines), label)
             mark = len(self.written)
             fields = self.ensure_row(position)
+            if fields is not None:
+                for rang, champ in enumerate(fields):
+                    champ["col"] = rang
             if fields is None:
                 results.append({"index": idx, "ok": False, "message": "Impossible d'ajouter une ligne dans l'ERP."})
                 continue
-            mapping = resolve(fields, LINE_VOCAB, self.overrides.get("line"), "label")
+            mapping = resolve(fields, LINE_VOCAB, self.overrides.get("line"), "label",
+                              self.appris["line"])
             if not mapping:
                 results.append({"index": idx, "ok": False, "message": "Aucune colonne de saisie reconnue."})
                 continue
@@ -1126,14 +1363,8 @@ class Filler:
             data.setdefault("designation", line.get("product") or "")
             if not data.get("designation"):
                 data["designation"] = line.get("product") or ""
-            wrote = 0
-            missed: List[str] = []
-            for name, field in mapping.items():
-                value = self.value_for(name, data, field)
-                if self.write(field, value, pick=(name == "designation")):
-                    wrote += 1
-                elif str(value or "").strip():
-                    missed.append(field.get("label") or name)
+            wrote, missed = self.ecrire_champs(mapping, data, fields, "line", "label",
+                                               pick_designation=True)
             results.append({
                 "index": idx,
                 "ok": wrote > 0,
@@ -1454,8 +1685,12 @@ class Engine:
                 # Tableau vide : on crée une ligne pour voir ses colonnes, puis on l'enlève.
                 if filler.ensure_row(0) is not None:
                     row_fields = (filler.survey().get("rows") or [[]])[0]
-            head_map = resolve(head_fields, HEADER_VOCAB, over.get("header"), "sel")
-            line_map = resolve(row_fields, LINE_VOCAB, over.get("line"), "label")
+            for rang, champ in enumerate(row_fields):
+                champ["col"] = rang
+            head_map = resolve(head_fields, HEADER_VOCAB, over.get("header"), "sel",
+                               over.get("apprisHeader"))
+            line_map = resolve(row_fields, LINE_VOCAB, over.get("line"), "label",
+                               over.get("apprisLine"))
             self.check = {
                 "url": page.url,
                 "login": looks_like_login(survey),
@@ -1487,7 +1722,12 @@ class Engine:
             if not self.check:
                 raise ValueError("Lancez d'abord « Vérifier l'ERP ».")
             key = map_key(self.check.get("url") or self.erp_url)
-            self.mappings[key] = {"header": dict(p.get("header") or {}), "line": dict(p.get("line") or {})}
+            garde = self.mappings.get(key) or {}
+            self.mappings[key] = {
+                "header": dict(p.get("header") or {}), "line": dict(p.get("line") or {}),
+                "apprisHeader": dict(garde.get("apprisHeader") or {}),
+                "apprisLine": dict(garde.get("apprisLine") or {}),
+            }
             self.check = None
             self._persist()
             log.info("Correspondance des champs enregistrée pour %s", key[:70])
@@ -1499,7 +1739,7 @@ class Engine:
             self.mappings.pop(map_key(self.check.get("url") if self.check else self.erp_url), None)
             self.check = None
             self._persist()
-            log.info("Corrections effacées : retour à la détection automatique.")
+            log.info("Corrections et apprentissage effacés : retour à la détection automatique.")
             return True
         if name == "support":
             # Envoi volontaire : état, journal, et surtout ce que l'agent voit de l'ERP.
@@ -1620,6 +1860,16 @@ class Engine:
                     ", ".join("%s (« %s » → « %s »)" % (a["champ"], a["voulu"], a["obtenu"])
                               for a in filler.altered[:4]))
             message += " Vérifiez puis validez dans l'ERP."
+            # Ce que l'agent vient de comprendre de CET ERP est conservé : la
+            # prochaine livraison n'aura pas à le redécouvrir.
+            if filler.nouveau["header"] or filler.nouveau["line"]:
+                cle = map_key(page.url)
+                memoire = self.mappings.setdefault(cle, {})
+                memoire.setdefault("apprisHeader", {}).update(filler.nouveau["header"])
+                memoire.setdefault("apprisLine", {}).update(filler.nouveau["line"])
+                self._persist()
+                log.info("Retenu pour %s : %s", cle[:50],
+                         ", ".join(list(filler.nouveau["header"]) + list(filler.nouveau["line"])))
             try:
                 page.screenshot(path=str(HOME / "derniere_saisie.png"), full_page=True)
             except Exception:
