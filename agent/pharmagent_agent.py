@@ -149,24 +149,133 @@ ADD_ROW_RE = re.compile(r"ajouter|nouvelle\s*ligne|add\s*(a\s*)?(line|row|item)|
 PRODUCT_LIST_RE = re.compile(r"produit|article|medicament|catalogue|designation|specialite")
 
 
+# ─── Appariement des produits ───────────────────────────────────────────────
+#
+# Un médicament ne se reconnaît PAS à la ressemblance de ses lettres.
+# « AMOXICILLINE 500MG GELULE B/12 » et « DOXYCYCLINE 100MG GELULE B/10 » se
+# ressemblent à 78 % caractère par caractère, et ce sont deux antibiotiques de
+# familles différentes : la doxycycline est contre-indiquée avant 8 ans et chez
+# la femme enceinte. Choisir l'un pour l'autre fausserait le stock de l'officine.
+#
+# On exige donc trois accords : la dénomination, le dosage, la forme. Au moindre
+# doute — ou si deux articles du catalogue conviennent également — on refuse et
+# le pharmacien saisit la ligne lui-même. Refuser coûte une minute ; se tromper
+# coûte bien davantage.
+
+# Formes galéniques : abréviations rencontrées -> forme canonique
+FORMS = {
+    "cp": "comprime", "cpr": "comprime", "cprs": "comprime", "comp": "comprime",
+    "comprime": "comprime", "comprimes": "comprime", "tab": "comprime", "tablet": "comprime",
+    "gelule": "gelule", "gelules": "gelule", "caps": "gelule", "capsule": "gelule",
+    "capsules": "gelule",
+    "susp": "suspension", "suspension": "suspension", "sirop": "suspension",
+    "buvable": "suspension",
+    "sol": "solution", "solution": "solution",
+    "supp": "suppositoire", "suppo": "suppositoire", "suppositoire": "suppositoire",
+    "inj": "injectable", "injectable": "injectable", "amp": "injectable",
+    "ampoule": "injectable", "ampoules": "injectable", "flacon": "injectable",
+    "pommade": "topique", "creme": "topique", "gel": "topique", "lotion": "topique",
+    "collyre": "collyre", "sachet": "sachet", "sachets": "sachet",
+    "ovule": "ovule", "ovules": "ovule", "poudre": "poudre",
+    "patch": "patch", "spray": "spray", "aerosol": "spray",
+}
+
+# Mots de conditionnement : ils ne font pas partie de la dénomination
+PACK_WORDS = {"b", "bte", "boite", "boites", "de", "pack", "lot", "x", "plq", "plaquette"}
+
+# Unités de dosage, ramenées à une unité de base pour que 1 g = 1000 mg
+UNITS = {
+    "mg": ("mg", 1.0), "g": ("mg", 1000.0), "gr": ("mg", 1000.0),
+    "mcg": ("mg", 0.001), "ug": ("mg", 0.001),
+    "ml": ("ml", 1.0), "cl": ("ml", 10.0), "l": ("ml", 1000.0),
+    "ui": ("ui", 1.0), "iu": ("ui", 1.0), "mui": ("ui", 1e6),
+    "pc": ("pc", 1.0), "mmol": ("mmol", 1.0), "meq": ("meq", 1.0),
+}
+DOSE_RE = re.compile(
+    r"(\d+(?:[.,]\d+)?)\s*(mg|mcg|ug|gr|g|ml|cl|l|ui|iu|mui|pc|mmol|meq)(?![a-z])")
+
+
+def _dose_text(s: Any) -> str:
+    """Minuscules sans accents, en gardant « % » pour les dosages en pourcentage."""
+    t = strip_accents(str(s or "")).lower().replace("%", " pc ")
+    t = re.sub(r"[^a-z0-9.,]+", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def parse_product(label: Any) -> Dict[str, Any]:
+    """Décompose un libellé de médicament en dénomination, dosages et forme."""
+    text = _dose_text(label)
+    doses = set()
+    for value, unit in DOSE_RE.findall(text):
+        base, factor = UNITS[unit]
+        try:
+            doses.add((base, round(float(value.replace(",", ".")) * factor, 6)))
+        except ValueError:
+            pass
+    forms = set()
+    name_tokens: List[str] = []
+    name_closed = False
+    for token in text.split():
+        if token in FORMS:
+            forms.add(FORMS[token])
+            name_closed = True
+            continue
+        if token in PACK_WORDS or re.fullmatch(r"[\d.,]+", token) or DOSE_RE.fullmatch(token):
+            name_closed = True
+            continue
+        if DOSE_RE.match(token):
+            name_closed = True
+            continue
+        if not name_closed:
+            name_tokens.append(token)
+    return {"name": " ".join(name_tokens), "doses": doses, "forms": forms,
+            "full": re.sub(r"[^a-z0-9 ]+", " ", text).strip()}
+
+
+def _names_agree(a: str, b: str) -> bool:
+    """La dénomination doit être la même molécule, pas une molécule voisine."""
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    # Les quatre premières lettres distinguent déjà amoxicilline de doxycycline.
+    if a[:4] != b[:4]:
+        return False
+    return difflib.SequenceMatcher(None, a, b).ratio() >= 0.90
+
+
+def products_match(wanted: str, option: str) -> bool:
+    """Le libellé du catalogue désigne-t-il sûrement le produit demandé ?"""
+    w, o = parse_product(wanted), parse_product(option)
+    if w["full"] and w["full"] == o["full"]:
+        return True
+    if not _names_agree(w["name"], o["name"]):
+        return False
+    # Dosages : s'ils sont donnés des deux côtés, ils doivent concorder.
+    if w["doses"] and o["doses"] and w["doses"] != o["doses"]:
+        return False
+    # Forme galénique : un comprimé n'est pas une suspension.
+    if w["forms"] and o["forms"] and not (w["forms"] & o["forms"]):
+        return False
+    return True
+
+
 def best_option(target: str, options: List[str]) -> Optional[str]:
     """L'entrée de la liste qui correspond au produit cherché, ou rien si le doute subsiste."""
-    t = norm(target)
-    if not t:
+    if not norm(target):
         return None
-    best, score = None, 0.0
-    for opt in options:
-        o = norm(opt)
-        if not o:
-            continue
-        if o == t:
-            return opt
-        r = difflib.SequenceMatcher(None, t, o).ratio()
-        if t in o or o in t:
-            r = max(r, 0.92)
-        if r > score:
-            best, score = opt, r
-    return best if score >= 0.72 else None
+    exact = [o for o in options if o and norm(o) == norm(target)]
+    if exact:
+        return exact[0]
+    retained = [o for o in options if o and products_match(target, o)]
+    if not retained:
+        return None
+    # Deux articles distincts qui conviennent autant : on ne devine pas.
+    if len({norm(o) for o in retained}) > 1:
+        log.info("Produit « %s » ambigu dans le catalogue (%s) : non choisi.",
+                 str(target)[:40], " / ".join(r[:30] for r in retained[:3]))
+        return None
+    return retained[0]
 
 
 def same_value(wanted: Any, got: Any) -> bool:

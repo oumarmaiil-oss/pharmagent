@@ -10,8 +10,25 @@ env:
   PYTHONUTF8: "1"
 
 jobs:
-  linux:
-    name: Linux (serveur, interface, agent)
+  # ── Ce qui protège la pharmacie : appariement des médicaments et garde-fou ──
+  agent:
+    name: Agent (appariement des médicaments, remplissage, garde-fou)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "playwright>=1.47" openpyxl
+      - run: python -m playwright install --with-deps chromium
+      - name: Appariement des médicaments (doit refuser les mauvais produits)
+        run: python tests/product_match.py
+      - name: Remplissage d'une copie de l'ERP, garde-fou compris
+        run: python tests/test_erp_fill.py tests/mock-erp/mock-erp.html
+
+  serveur:
+    name: Serveur et interface
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -20,33 +37,117 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npm run build
       - run: npm test
-      - run: pip install playwright openpyxl
-      - run: python -m playwright install --with-deps chromium
-      - run: python tests/agent_unit.py
-      - run: python tests/panel_ui.py
-      - run: python tests/api_smoke.py
-      - run: python tests/attack.py
-      - run: python tests/agent_file_e2e.py
-      - run: python tests/test_a_e2e.py
-      - run: python tests/web_ui.py
-      - run: python tests/ai_corpus.py  # ignoré sans clé ANTHROPIC_API_KEY
 
+  # ── Windows : l'installeur est réellement exécuté, pas seulement relu ──
   windows:
-    name: Windows (saisie clavier réelle dans le Bloc-notes)
+    name: Windows (installation réelle, puis saisie de bout en bout)
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
+    env:
+      PHARMAGENT_HEADLESS: "1"
+      PORT: "8099"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pynput
-      - run: python tests/agent_unit.py
-      - run: python tests/windows_keyboard.py
+
+      - name: Appariement des médicaments
+        run: python tests/product_match.py
+
+      - name: Navigateur pour le test de remplissage
+        run: |
+          pip install "playwright>=1.47"
+          python -m playwright install chromium
+
+      - name: Remplissage d'une copie de l'ERP sous Windows, garde-fou compris
+        run: python tests/test_erp_fill.py tests/mock-erp/mock-erp.html
+
+      - name: Lancer le faux serveur PharmAgent
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'resultat.json'
+          "RESULT_FILE=$out" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Start-Process -FilePath python `
+            -ArgumentList "tests/fake_server.py","--port","$env:PORT","--out","$out" `
+            -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'serveur.log') `
+            -RedirectStandardError  (Join-Path $env:RUNNER_TEMP 'serveur.err') `
+            -WindowStyle Hidden
+          foreach ($i in 1..20) {
+            try { Invoke-RestMethod "http://127.0.0.1:$env:PORT/ci/state" -TimeoutSec 2 | Out-Null; break }
+            catch { Start-Sleep -Seconds 1 }
+          }
+          Invoke-RestMethod "http://127.0.0.1:$env:PORT/ci/state" | ConvertTo-Json -Compress
+
+      - name: Pointer l'agent vers la copie de l'ERP
+        shell: pwsh
+        run: |
+          # L'agent lit son ERP dans sa configuration : on l'écrit avant l'installation.
+          $dir = Join-Path $env:APPDATA 'PharmAgent'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          @{ erpUrl = "http://127.0.0.1:$env:PORT/erp"
+             server = "http://127.0.0.1:$env:PORT" } |
+            ConvertTo-Json | Set-Content -Path (Join-Path $dir 'config.json') -Encoding utf8
+          Get-Content (Join-Path $dir 'config.json')
+
+      - name: Exécuter install.ps1 (comme sur le poste d'une officine)
+        shell: pwsh
+        run: |
+          # Le vrai serveur remplace ce marqueur au téléchargement ; ici, nous.
+          $script = Get-Content agent/install.ps1 -Raw
+          $script = $script.Replace('__SERVER_URL__', "http://127.0.0.1:$env:PORT")
+          $path = Join-Path $env:RUNNER_TEMP 'install.ps1'
+          Set-Content -Path $path -Value $script -Encoding utf8
+          & $path
+
+      - name: Vérifier ce que l'installeur a produit
+        shell: pwsh
+        run: python tests/install_windows_check.py
+
+      - name: Attendre que l'agent saisisse le bon de livraison
+        shell: pwsh
+        run: |
+          $deadline = (Get-Date).AddMinutes(5)
+          while ((Get-Date) -lt $deadline -and -not (Test-Path $env:RESULT_FILE)) {
+            Start-Sleep -Seconds 3
+          }
+          if (-not (Test-Path $env:RESULT_FILE)) {
+            Write-Host 'Aucun compte rendu : la chaine ne va pas jusqu''au bout.'
+            exit 1
+          }
+          $r = Get-Content $env:RESULT_FILE -Raw | ConvertFrom-Json
+          Write-Host "Compte rendu : $($r.status) - $($r.message)"
+          $r.lines | ForEach-Object { Write-Host ("  ligne {0} : {1} {2}" -f $_.index, $_.ok, $_.message) }
+          if ($r.status -ne 'done') { Write-Host 'La saisie a echoue.'; exit 1 }
+          $rates = @($r.lines | Where-Object { -not $_.ok })
+          if ($rates.Count -gt 0) { Write-Host "$($rates.Count) ligne(s) non saisie(s)."; exit 1 }
+          Write-Host 'Installation, appairage, saisie et compte rendu : verifies sur Windows.'
+
+      - name: Journaux en cas d'échec
+        if: failure()
+        shell: pwsh
+        run: |
+          # L'agent n'ecrit pas de fichier : son journal se lit dans son panneau.
+          Write-Host '===== journal de l''agent (panneau 127.0.0.1:8765) ====='
+          try {
+            $s = Invoke-RestMethod 'http://127.0.0.1:8765/api/state' -TimeoutSec 5
+            Write-Host ("version {0} | etat {1} | appaire {2} | serveur joignable {3}" -f `
+                        $s.version, $s.status, $s.paired, $s.serverOk)
+            Write-Host ("ERP vise : {0}" -f $s.erpUrl)
+            if ($s.lastError)  { Write-Host ("derniere erreur : {0}" -f $s.lastError) }
+            if ($s.lastResult) { Write-Host ("dernier resultat : {0}" -f $s.lastResult.message) }
+            $s.logs | ForEach-Object { Write-Host ("  {0}  {1}" -f $_.t, $_.msg) }
+          } catch {
+            Write-Host "Le panneau ne repond pas : $($_.Exception.Message)"
+          }
+          foreach ($f in @((Join-Path $env:RUNNER_TEMP 'serveur.log'),
+                           (Join-Path $env:RUNNER_TEMP 'serveur.err'))) {
+            if (Test-Path $f) { Write-Host "===== $f ====="; Get-Content $f -Tail 80 }
+          }
+          Write-Host '===== contenu du dossier de l''agent ====='
+          Get-ChildItem (Join-Path $env:LOCALAPPDATA 'PharmAgent') -Recurse -Depth 1 `
+            -ErrorAction SilentlyContinue | Select-Object FullName, Length | Format-Table -AutoSize

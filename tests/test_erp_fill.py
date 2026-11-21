@@ -2,13 +2,20 @@
 # -*- coding: utf-8 -*-
 """Test réel : l'agent remplit-il l'ERP en ligne sans toucher à Valider ?"""
 import json
+import pathlib
 import sys
 
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "agent"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "agent"))
 import pharmagent_agent as A  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
 
-ERP = sys.argv[1] if len(sys.argv) > 1 else "https://oumarmaiil-oss.github.io/ERP/"
+# Accepte une URL ou un fichier local. En CI on prend la copie de l'ERP qui est
+# dans le dépôt : le test ne dépend alors d'aucun site en ligne.
+TARGET = sys.argv[1] if len(sys.argv) > 1 else "https://oumarmaiil-oss.github.io/ERP/"
+if "://" not in TARGET:
+    ERP = pathlib.Path(TARGET).resolve().as_uri()
+else:
+    ERP = TARGET
 
 TASK = {
     "header": {
@@ -28,8 +35,17 @@ TASK = {
 }
 
 with sync_playwright() as pw:
-    browser = pw.chromium.launch(headless=True, executable_path="/opt/pw-browsers/chromium",
-                                 args=["--no-sandbox"])
+    # Sur Windows et macOS, Playwright trouve son navigateur seul ; dans ce
+    # conteneur Linux il faut lui indiquer celui qui est préinstallé.
+    kw = {"headless": True, "args": ["--no-sandbox"]}
+    if pathlib.Path("/opt/pw-browsers/chromium").exists():
+        kw["executable_path"] = "/opt/pw-browsers/chromium"
+    try:
+        browser = pw.chromium.launch(**kw)
+    except Exception:
+        # Pas de Chromium téléchargé : on se rabat sur le navigateur du système.
+        kw.pop("executable_path", None)
+        browser = pw.chromium.launch(channel="msedge", **kw)
     page = browser.new_page(viewport={"width": 1440, "height": 1000})
     page.goto(ERP, wait_until="domcontentloaded", timeout=60000)
     try:
@@ -70,7 +86,7 @@ with sync_playwright() as pw:
     print("DANS LA PAGE :")
     print(json.dumps(got, indent=2, ensure_ascii=False))
 
-    page.screenshot(path="/tmp/erp_rempli.png", full_page=True)
+    page.screenshot(path=str(pathlib.Path(__file__).parent / "erp_rempli.png"), full_page=True)
 
     # ── Contrôles ──
     ok = True
