@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>LogiPharm — Entrée de marchandise</title>
+<style>
+ body{font-family:system-ui,sans-serif;margin:20px;font-size:14px}
+ table{border-collapse:collapse;width:100%;margin-top:8px}
+ td,th{border:1px solid #bbb;padding:3px}
+ th{background:#eee;font-weight:600;font-size:12px}
+ input{width:100%;box-sizing:border-box;border:0;padding:3px}
+ .hdr{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;max-width:760px}
+ .hdr label{display:block;font-size:12px;color:#555}
+</style></head>
+<body>
+<h3>LogiPharm — Entrée de marchandise</h3>
+
+<!-- Pas de <label for>, les intitules sont au-dessus dans un <div> -->
+<div class="hdr">
+  <div><label>Grossiste</label><input id="f1" name="grossiste" type="text"></div>
+  <div><label>N° du bon</label><input id="f2" name="num_bon" type="text"></div>
+  <div><label>Date d'entrée</label><input id="f3" name="date_entree" type="text" placeholder="JJ/MM/AAAA"></div>
+</div>
+
+<!-- Dix lignes fixes, toujours presentes : aucun bouton « Ajouter une ligne » -->
+<table>
+ <thead><tr><th>Désignation</th><th>Lot</th><th>Qté</th><th>P.U. HT</th><th>Péremption (MM/AA)</th></tr></thead>
+ <tbody id="corps"></tbody>
+</table>
+<button type="button" id="cloture">Clôturer l'entrée</button>
+
+<script>
+const corps = document.getElementById('corps');
+for (let i = 1; i <= 10; i++) {
+  const tr = document.createElement('tr');
+  tr.innerHTML =
+    '<td><input name="des_' + i + '" type="text"></td>' +
+    '<td><input name="lot_' + i + '" type="text"></td>' +
+    '<td><input name="qte_' + i + '" type="text"></td>' +
+    '<td><input name="pu_' + i + '" type="text"></td>' +
+    '<td><input name="per_' + i + '" type="text" placeholder="MM/AA"></td>';
+  corps.appendChild(tr);
+}
+// Le prix est affiche a la francaise, avec virgule
+corps.addEventListener('change', (e) => {
+  if (!/^pu_/.test(e.target.name)) return;
+  const v = parseFloat(String(e.target.value).replace(',', '.'));
+  if (!isNaN(v)) e.target.value = v.toFixed(2).replace('.', ',');
+});
+</script>
+</body></html>

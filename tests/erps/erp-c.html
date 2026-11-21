@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>PharmaWin — Goods Receipt</title>
+<style>
+ body{font-family:system-ui,sans-serif;margin:20px;font-size:14px}
+ table{border-collapse:collapse;margin-top:10px}
+ td{border:1px solid #ccc;padding:3px}
+ /* En-tete du tableau en <td>, pas en <th> */
+ tr.head td{background:#f0f0f0;font-weight:700;font-size:12px}
+ input,select{border:1px solid #ddd;padding:3px}
+ .ac{position:absolute;background:#fff;border:1px solid #888;z-index:60;margin:0;padding:0;list-style:none;max-height:170px;overflow:auto}
+ .ac li{padding:4px 9px;cursor:pointer}
+</style></head>
+<body>
+<h3>PharmaWin — Goods Receipt</h3>
+
+<!-- Aucun intitule textuel : seulement des placeholders. Le fournisseur est une liste. -->
+<p>
+  <select id="sup" name="supplier">
+    <option value="">-- Supplier --</option>
+    <option>UBIPHARM SENEGAL</option>
+    <option>LABOREX SENEGAL</option>
+    <option>SODIPHARM</option>
+  </select>
+  <input id="dn" name="delivery_note" type="text" placeholder="Delivery note no.">
+  <input id="dt" name="receipt_date" type="text" placeholder="YYYY-MM-DD">
+</p>
+
+<table>
+ <tbody id="tb">
+   <tr class="head"><td>Product</td><td>Batch</td><td>Qty</td><td>Unit price</td><td>Expiry</td></tr>
+ </tbody>
+</table>
+<button type="button" id="add">New row</button>
+<button type="button" id="post">Post receipt</button>
+
+<script>
+const CAT = ["COTRIMOXAZOLE 480MG CP B/20","METRONIDAZOLE 500MG SUPP B/10","QUININE 500MG CP B/20",
+ "ARTESUNATE 100MG CP B/12","PARACETAMOL 250MG SUPP B/10","AMOXICILLINE 250MG/5ML SUSP 100ML",
+ "ACIDE FOLIQUE 5MG CP B/30","FER SULFATE 200MG CP B/30","ALBENDAZOLE 400MG CP",
+ "DOXYCYCLINE 100MG GELULE B/10","MEBENDAZOLE 100MG CP B/6"];
+let n = 0;
+document.getElementById('add').addEventListener('click', () => {
+  n++;
+  const tr = document.createElement('tr');
+  tr.innerHTML =
+    '<td style="position:relative"><input name="p_'+n+'" type="text" autocomplete="off" placeholder="Product"></td>' +
+    '<td><input name="b_'+n+'" type="text" placeholder="Batch"></td>' +
+    '<td><input name="q_'+n+'" type="text" placeholder="Qty"></td>' +
+    '<td><input name="u_'+n+'" type="text" placeholder="Unit price"></td>' +
+    '<td><input name="e_'+n+'" type="text" placeholder="YYYY-MM"></td>';
+  document.getElementById('tb').appendChild(tr);
+
+  const input = tr.querySelector('[name^=p_]');
+  let list = null;
+  const close = () => { if (list) { list.remove(); list = null; } };
+  input.addEventListener('blur', () => setTimeout(close, 10));
+  input.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') close(); });
+  input.addEventListener('input', () => {
+    close();
+    const q = input.value.trim().toUpperCase();
+    if (q.length < 3) return;
+    const hits = CAT.filter((p) => p.includes(q.slice(0, 8)));
+    if (!hits.length) return;
+    list = document.createElement('ul');
+    list.className = 'ac';
+    list.style.left = '0px'; list.style.top = input.offsetHeight + 'px';
+    for (const h of hits) {
+      const li = document.createElement('li');
+      li.textContent = h;
+      li.addEventListener('mousedown', (ev) => { ev.preventDefault(); input.value = h; close(); });
+      list.appendChild(li);
+    }
+    input.parentElement.appendChild(list);
+  });
+});
+</script>
+</body></html>

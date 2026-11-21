@@ -143,7 +143,10 @@ FORBIDDEN_RE = re.compile(
     re.I,
 )
 # Boutons qui ajoutent une ligne au tableau : eux, on a le droit.
-ADD_ROW_RE = re.compile(r"ajouter|nouvelle\s*ligne|add\s*(a\s*)?(line|row|item)|\+|＋", re.I)
+ADD_ROW_RE = re.compile(
+    r"ajouter|nouvelle\s*ligne|ligne\s*suppl|"
+    r"(add|new|insert|create)\s*(a\s*)?(line|row|item|product|article|entry)|"
+    r"\+|＋", re.I)
 
 
 PRODUCT_LIST_RE = re.compile(r"produit|article|medicament|catalogue|designation|specialite")
@@ -381,27 +384,38 @@ def norm(s: Any) -> str:
 # Chaque champ : (synonymes, mots qui disqualifient)
 HEADER_VOCAB: Dict[str, Tuple[List[str], List[str]]] = {
     "supplier": (["fournisseur", "supplier", "grossiste", "laboratoire", "labo",
-                  "vendeur", "expediteur", "repartiteur"], []),
+                  "vendeur", "expediteur", "repartiteur", "vendor", "wholesaler"], []),
     "documentNumber": (["reference bl", "ref bl", "reference bon", "numero bl", "n bl", "no bl",
-                        "numero bon", "numero du bon", "bon de livraison", "reference livraison",
-                        "reference", "bl", "numero piece", "numero document"], ["interne", "commande"]),
+                        "numero bon", "numero du bon", "n du bon", "no du bon", "num bon",
+                        "n bon", "n piece", "bon de livraison", "reference livraison",
+                        "reference", "bl", "numero piece", "numero document",
+                        "delivery note", "delivery note no", "note no", "document no",
+                        "receipt no", "invoice no", "grn"], ["interne", "commande"]),
     "documentDate": (["date reception", "date de reception", "date livraison", "date du bon",
-                      "date bl", "date document", "date"], ["peremption", "expiration", "commande"]),
+                      "date entree", "date d entree", "date bl", "date document", "date",
+                      "receipt date", "delivery date", "posting date"],
+                     ["peremption", "expiration", "commande", "expiry"]),
 }
 
 LINE_VOCAB: Dict[str, Tuple[List[str], List[str]]] = {
     # « nom » seul est trop vague : « Nom du fournisseur » n'est pas une désignation de produit.
     "designation": (["designation produit", "designation", "nom du produit", "nom commercial",
-                     "produit", "article", "libelle", "medicament", "denomination", "description"],
-                    ["code", "cip", "fournisseur", "grossiste", "laboratoire"]),
-    "lotNumber": (["numero de lot", "n lot", "no lot", "numero lot", "lot", "batch"], []),
+                     "produit", "article", "libelle", "medicament", "denomination", "description",
+                     "product", "product name", "item", "drug", "medicine"],
+                    ["code", "cip", "fournisseur", "grossiste", "laboratoire", "supplier", "vendor"]),
+    "lotNumber": (["numero de lot", "n lot", "no lot", "numero lot", "lot", "batch",
+                   "batch no", "batch number", "lot no"], []),
     "quantity": (["quantite recue", "qte recue", "quantite", "qte", "qty", "quantity",
-                  "nombre", "recu"], ["commandee", "gratuit", "restant"]),
+                  "nombre", "recu", "qty received", "received"],
+                 ["commandee", "gratuit", "restant", "ordered"]),
     "purchasePrice": (["prix d achat", "prix achat", "px achat", "prix unitaire", "pu ht", "pu",
-                       "prix", "tarif", "cout"], ["vente", "public", "total", "ttc"]),
+                       "prix", "tarif", "cout", "unit price", "unit cost", "purchase price",
+                       "cost price", "price"],
+                      ["vente", "public", "total", "ttc", "selling", "retail", "sale"]),
     "salePrice": (["prix de vente", "prix vente", "prix public", "ppc", "pv"], ["achat"]),
     "expiryDate": (["date de peremption", "date peremption", "peremption", "date expiration",
-                    "expiration", "dlc", "dluo", "exp", "perime"], []),
+                    "expiration", "dlc", "dluo", "exp", "perime",
+                    "expiry", "expiry date", "expires", "best before"], []),
     "cip": (["code cip", "cip", "ean", "code barre", "code produit", "reference produit",
              "code article"], []),
 }
@@ -510,8 +524,18 @@ def format_date(value: str, field: Dict[str, Any]) -> str:
         return "%04d-%02d-%02d" % (year, month, day or 1)
     if itype == "month":
         return "%04d-%02d" % (year, month)
+    # L'ERP dit lui-même ce qu'il attend, dans son indice de saisie : « JJ/MM/AAAA »,
+    # « MM/AA », « YYYY-MM-DD »... On écrit dans sa langue, pas dans la nôtre.
     hint = norm(str(field.get("placeholder") or "") + " " + str(field.get("label") or ""))
     wants_day = bool(re.search(r"\bjj\b|\bdd\b", hint))
+    # « AAAA » et « YYYY » ne doivent pas être pris pour « AA » / « YY ».
+    year2 = bool(re.search(r"\baa\b|\byy\b", hint))
+    iso = bool(re.search(r"(aaaa|yyyy)\s+mm", hint))
+    if iso:
+        return ("%04d-%02d-%02d" % (year, month, day or 1)) if wants_day else ("%04d-%02d" % (year, month))
+    if year2:
+        return ("%02d/%02d/%02d" % (day or 1, month, year % 100)) if wants_day \
+            else ("%02d/%02d" % (month, year % 100))
     only_month = bool(re.search(r"\bmm\b", hint) and re.search(r"\baaaa\b|\byyyy\b", hint) and not wants_day)
     if only_month or (day is None and not wants_day):
         return "%02d/%04d" % (month, year)
@@ -571,8 +595,26 @@ SURVEY_JS = r"""() => {
       if (tr && table) {
         const i = Array.from(tr.children).indexOf(td);
         const head = table.querySelector('thead tr');
-        if (head && head.children[i]) return head.children[i].textContent.trim();
+        if (head && head.children[i]) {
+          const t = head.children[i].textContent.trim();
+          if (t) return t;
+        }
+        // Beaucoup d'ERP n'ont pas de <thead> : leur ligne d'intitules est une
+        // ligne ordinaire, faite de <td>, qui ne contient aucun champ de saisie.
+        for (const row of table.querySelectorAll('tr')) {
+          if (row === tr) break;
+          if (row.querySelector('input, select, textarea')) continue;
+          const cell = row.children[i];
+          const t = cell ? cell.textContent.trim() : '';
+          if (t) return t;
+        }
       }
+    }
+    // Dernier recours : un intitule place juste avant le champ, sans « for ».
+    const prev = el.previousElementSibling;
+    if (prev && /^(LABEL|SPAN|B|STRONG|DIV|P)$/.test(prev.tagName)) {
+      const t = prev.textContent.trim();
+      if (t && t.length < 60) return t;
     }
     return '';
   };
