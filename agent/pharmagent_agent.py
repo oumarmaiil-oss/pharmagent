@@ -2104,6 +2104,12 @@ pre{background:#0e1527;border:1px solid var(--line);border-radius:10px;padding:1
 </style></head><body><div class="wrap" id="app">Chargement…</div>
 <script>
 let S={},busy=false,urlDraft=null,lastDraw='';
+// Les valeurs à copier voyagent par un attribut, jamais dans du code : une
+// donnée ne peut plus devenir une instruction, quel que soit son contenu.
+document.addEventListener('click',(ev)=>{
+  const b=ev.target.closest('[data-copie]');
+  if(b) copyText(b.getAttribute('data-copie'),b);
+});
 function copyText(text,btn){
   const done=()=>{const o=btn.textContent;btn.textContent='Copié';setTimeout(()=>{btn.textContent=o;},1600);};
   if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done,()=>selectText(btn));}
@@ -2133,7 +2139,9 @@ function selectText(btn){
   const s=window.getSelection();s.removeAllRanges();s.addRange(r);
   const o=btn.textContent;btn.textContent='Sélectionné';setTimeout(()=>{btn.textContent=o;},1600);
 }
-const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+// L'apostrophe compte autant que les chevrons : sans elle, une valeur placée
+// dans un attribut sort de sa chaîne et devient du code.
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function call(name,payload){
   busy=true;render();
   try{
@@ -2178,7 +2186,7 @@ function render(){
     // La consigne est déjà portée par l'étape 1 : ici, seulement le code.
     h+=`<div class="card"><label>Code d'appairage</label>
     <div class="coderow"><div class="code">${esc(pc||'……')}</div>
-    ${pc?`<button class="sec" onclick="copyText('${esc(pc)}',this)">Copier</button>`:''}</div></div>`;
+    ${pc?`<button class="sec" data-copie="${esc(pc)}">Copier</button>`:''}</div></div>`;
   }else{
     h+=`<div class="card"><label>Adresse de l'écran de réception de l'ERP</label>
     <input id="url" oninput="urlDraft=this.value" value="${esc(urlDraft!==null?urlDraft:(S.erpUrl||''))}" placeholder="https://erp.mapharmacie.sn">
@@ -2243,7 +2251,7 @@ function render(){
   <p class="sub">Envoie au support l'état de l'agent, son journal, et ce qu'il voit de l'ERP. Rien n'est envoyé sans ce clic.</p>
   <div class="row"><button class="sec" ${busy?'disabled':''} onclick="call('support')">Envoyer au support</button></div>
   ${S.supportCode?`<div class="coderow"><div class="code">${esc(S.supportCode)}</div>
-  <button class="sec" onclick="copyText('${esc(S.supportCode)}',this)">Copier</button></div>
+  <button class="sec" data-copie="${esc(S.supportCode)}">Copier</button></div>
   <p class="sub">Donnez ce code au support (valable 1 heure).</p>`:''}</div>`;
 
   // Le pharmacien doit savoir qui appeler sans chercher un papier.
@@ -2253,7 +2261,7 @@ function render(){
     <p class="sub">Essayez « Un problème ? » d'abord : l'agent répare souvent seul.</p>
     <div class="coderow"><div>${sup.nom?`<b>${esc(sup.nom)}</b><br>`:''}
     <span class="sub">${[sup.tel,sup.mail].filter(Boolean).map(esc).join(' · ')}</span></div>
-    ${sup.mail?`<button class="sec" onclick="copyText('${esc(sup.mail)}',this)">Copier le mail</button>`:''}
+    ${sup.mail?`<button class="sec" data-copie="${esc(sup.mail)}">Copier le mail</button>`:''}
     </div></div>`;
   }
 
@@ -2275,8 +2283,40 @@ class Panel(BaseHTTPRequestHandler):
     def log_message(self, *_args: Any) -> None:  # silence
         pass
 
+    # Noms sous lesquels le panneau accepte d'être appelé. Tout le reste est
+    # refusé, même si la requête arrive bien de cette machine.
+    HOTES_ADMIS = frozenset({
+        "127.0.0.1:%d" % PANEL_PORT, "localhost:%d" % PANEL_PORT,
+        "[::1]:%d" % PANEL_PORT, "::1:%d" % PANEL_PORT,
+    })
+
     def _local_only(self) -> bool:
-        return self.client_address[0] in ("127.0.0.1", "::1")
+        """Le panneau n'obéit qu'à cette machine, et sous son vrai nom.
+
+        Vérifier l'adresse source ne suffit pas. Un site malveillant peut faire
+        pointer son propre nom de domaine vers 127.0.0.1 (réassociation DNS) :
+        la requête part alors du navigateur du pharmacien, arrive bien de
+        127.0.0.1, et le navigateur la considère comme de même origine — donc
+        sans aucune protection. Ce site pourrait lire le journal et le code de
+        support, faire envoyer une capture de l'ERP, ou rebrancher l'agent sur
+        un faux ERP.
+
+        On exige donc que la requête soit adressée à « 127.0.0.1 » ou
+        « localhost » : un nom de domaine détourné ne passe pas.
+        """
+        if self.client_address[0] not in ("127.0.0.1", "::1"):
+            return False
+        hote = (self.headers.get("Host") or "").strip().lower()
+        if hote not in self.HOTES_ADMIS:
+            log.info("Requête refusée : adressée à « %s », qui n'est pas ce poste.", hote[:60])
+            return False
+        # Une page web qui appellerait le panneau annoncerait son origine.
+        origine = (self.headers.get("Origin") or "").strip().lower()
+        if origine and origine not in ("null",) and \
+                not any(origine.endswith(h) for h in self.HOTES_ADMIS):
+            log.info("Requête refusée : vient de la page « %s ».", origine[:60])
+            return False
+        return True
 
     def _send(self, code: int, body: bytes, ctype: str) -> None:
         self.send_response(code)

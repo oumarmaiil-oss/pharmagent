@@ -80,6 +80,8 @@ jobs:
         run: python tests/apprentissage.py
       - name: Le parcours du premier jour en officine
         run: python tests/premier_jour.py
+      - name: Le panneau de l'agent face à un site malveillant
+        run: python tests/securite_agent.py
 
   serveur:
     name: Serveur et interface
