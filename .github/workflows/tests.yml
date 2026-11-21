@@ -15,8 +15,13 @@ jobs:
   # Référence basse : le Mac de 2015, qui s'arrête à macOS Monterey. Sa pile est
   # imposée — Playwright 1.45 et au-delà réclame macOS 13, et greenlet 2.0.2 n'a
   # pas de paquet pour Python 3.12 : c'est donc Python 3.11 + Playwright 1.37.
-  # GitHub ne propose plus de runner macOS 12 ; macos-13 Intel en est le plus
-  # proche. On ne descend pas plus bas : rien de plus ancien n'est installé.
+  #
+  # Aucun runner GitHub ne tourne sous macOS 12 : l'image macos-13 a été retirée
+  # en décembre 2025, et un job qui la demande attend indéfiniment une machine
+  # qui n'existe plus. macos-15-intel est la dernière image Intel publiée,
+  # maintenue jusqu'en août 2027 : elle couvre l'architecture du Mac de 2015 et,
+  # avec Python 3.11 et Playwright 1.37, sa pile logicielle exacte. Ce qu'elle ne
+  # couvre pas, c'est macOS 12 lui-même — seul le Mac de l'officine le vérifie.
   agent:
     name: Agent — ${{ matrix.nom }}
     runs-on: ${{ matrix.os }}
@@ -26,7 +31,7 @@ jobs:
       matrix:
         include:
           - nom: "Mac 2015 (Intel, Python 3.11, Playwright 1.37)"
-            os: macos-13
+            os: macos-15-intel
             python: "3.11"
             playwright: "playwright==1.37.0"
           - nom: "Mac récent (Apple Silicon)"
