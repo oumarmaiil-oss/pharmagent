@@ -205,6 +205,15 @@ def looks_like_login(survey: Dict[str, Any]) -> bool:
     return bool(re.search(r"se\s*connecter|connexion|s'identifier|sign\s*in|log\s*in", texts, re.I))
 
 
+def map_key(url: str) -> str:
+    """Les corrections sont rangées par écran d'ERP, sans tenir compte des paramètres."""
+    try:
+        u = urlparse(url or "")
+        return ("%s://%s%s" % (u.scheme, u.netloc, u.path)).rstrip("/").lower()
+    except Exception:
+        return (url or "").lower()
+
+
 def friendly_error(e: Exception) -> str:
     """Traduit les pannes courantes de Playwright en une phrase qui dit quoi faire."""
     text = str(e)
@@ -257,6 +266,33 @@ LINE_VOCAB: Dict[str, Tuple[List[str], List[str]]] = {
     "cip": (["code cip", "cip", "ean", "code barre", "code produit", "reference produit",
              "code article"], []),
 }
+
+
+# Noms affichés au pharmacien dans l'écran de vérification
+BL_LABELS = {
+    "supplier": "Fournisseur", "documentNumber": "N° du bon", "documentDate": "Date de réception",
+    "designation": "Désignation du produit", "lotNumber": "N° de lot", "quantity": "Quantité reçue",
+    "purchasePrice": "Prix d'achat", "expiryDate": "Date de péremption",
+    "cip": "Code CIP", "salePrice": "Prix de vente",
+}
+
+
+def resolve(fields: List[Dict[str, Any]], vocab: Dict[str, Tuple[List[str], List[str]]],
+            overrides: Optional[Dict[str, str]], key: str) -> Dict[str, Dict[str, Any]]:
+    """Association automatique, puis corrections du pharmacien par-dessus.
+
+    « key » vaut « sel » pour l'en-tête (champs stables) et « label » pour les
+    colonnes de ligne, dont le sélecteur change à chaque nouvelle ligne.
+    """
+    mapping = assign(fields, vocab)
+    for canonical, chosen in (overrides or {}).items():
+        if chosen == "":
+            mapping.pop(canonical, None)       # le pharmacien a dit : ce champ n'existe pas
+            continue
+        match = next((f for f in fields if (f.get(key) or "") == chosen), None)
+        if match:
+            mapping[canonical] = match
+    return mapping
 
 
 def score_field(haystack: str, synonyms: List[str], avoid: List[str]) -> int:
@@ -600,9 +636,10 @@ class Browser:
 class Filler:
     """Écrit l'en-tête et les lignes du bon dans le formulaire ouvert."""
 
-    def __init__(self, page, on_progress=None):
+    def __init__(self, page, on_progress=None, overrides: Optional[Dict[str, Any]] = None):
         self.page = page
         self.on_progress = on_progress or (lambda *_: None)
+        self.overrides = overrides or {}
         self.filled = 0
         self.skipped: List[str] = []
         self.altered: List[Dict[str, str]] = []
@@ -736,7 +773,7 @@ class Filler:
         return raw
 
     def fill_header(self, header: Dict[str, Any], survey: Dict[str, Any]) -> None:
-        mapping = assign(survey.get("header") or [], HEADER_VOCAB)
+        mapping = resolve(survey.get("header") or [], HEADER_VOCAB, self.overrides.get("header"), "sel")
         self.header_used = {f["sel"] for f in mapping.values()}
         if not mapping:
             log.info("Aucun champ d'en-tête reconnu sur cette page.")
@@ -795,7 +832,7 @@ class Filler:
         # Un champ déjà reconnu comme appartenant à l'en-tête du bon n'est pas un champ
         # de ligne : sans cela l'agent écraserait le fournisseur avec le nom du produit.
         rest = [f for f in header if f["sel"] != chooser["sel"] and f["sel"] not in self.header_used]
-        fields = assign(rest, LINE_VOCAB)
+        fields = resolve(rest, LINE_VOCAB, self.overrides.get("line"), "label")
         button = None
         for b in survey.get("buttons") or []:
             text = b.get("text") or ""
@@ -873,7 +910,7 @@ class Filler:
             if fields is None:
                 results.append({"index": idx, "ok": False, "message": "Impossible d'ajouter une ligne dans l'ERP."})
                 continue
-            mapping = assign(fields, LINE_VOCAB)
+            mapping = resolve(fields, LINE_VOCAB, self.overrides.get("line"), "label")
             if not mapping:
                 results.append({"index": idx, "ok": False, "message": "Aucune colonne de saisie reconnue."})
                 continue
@@ -916,6 +953,8 @@ class Engine:
         self.paused = bool(self.cfg.get("paused"))
         self.pairing: Optional[Dict[str, Any]] = None
         self.support_code: str = ""
+        self.mappings: Dict[str, Any] = dict(self.cfg.get("mappings") or {})
+        self.check: Optional[Dict[str, Any]] = None
         self.task: Optional[Dict[str, Any]] = None
         self.last_result: Optional[Dict[str, Any]] = self.cfg.get("lastResult")
         self.last_error = ""
@@ -942,7 +981,7 @@ class Engine:
             "version": AGENT_VERSION, "os": SYSTEM, "status": status, "paired": paired,
             "pharmacyName": self.cfg.get("pharmacyName", ""), "erpUrl": self.erp_url,
             "pairingCode": (self.pairing or {}).get("code"), "task": self.task,
-            "supportCode": self.support_code,
+            "supportCode": self.support_code, "check": self.check,
             "lastResult": self.last_result, "lastError": self.last_error,
             "serverOk": self.server_ok, "server": self.api.server,
             "logs": list(LOG_LINES)[-60:],
@@ -970,7 +1009,7 @@ class Engine:
     def _persist(self) -> None:
         self.cfg.update({
             "server": self.api.server, "agentKey": self.api.key, "erpUrl": self.erp_url,
-            "paused": self.paused, "lastResult": self.last_result,
+            "paused": self.paused, "lastResult": self.last_result, "mappings": self.mappings,
         })
         save_config(self.cfg)
 
@@ -1008,6 +1047,60 @@ class Engine:
             for k in ("agentKey", "pharmacyId", "pharmacyName"):
                 self.cfg.pop(k, None)
             self._persist()
+            return True
+        if name == "check_erp":
+            if not self.erp_url:
+                raise ValueError("Indiquez d'abord l'adresse de l'ERP.")
+            page = self.browser.open(self.erp_url)
+            Browser._settle(page)
+            over = self.mappings.get(map_key(page.url)) or {}
+            filler = Filler(page, overrides=over)
+            survey = filler.survey()
+            head_fields = survey.get("header") or []
+            row_fields = (survey.get("rows") or [[]])[0]
+            if not row_fields and survey.get("hasLineTable"):
+                # Tableau vide : on crée une ligne pour voir ses colonnes, puis on l'enlève.
+                if filler.ensure_row(0) is not None:
+                    row_fields = (filler.survey().get("rows") or [[]])[0]
+            head_map = resolve(head_fields, HEADER_VOCAB, over.get("header"), "sel")
+            line_map = resolve(row_fields, LINE_VOCAB, over.get("line"), "label")
+            self.check = {
+                "url": page.url,
+                "login": looks_like_login(survey),
+                "header": {
+                    "choices": [{"key": f["sel"], "label": f.get("label") or f.get("name") or f["sel"]}
+                                for f in head_fields],
+                    "mapping": {c: f["sel"] for c, f in head_map.items()},
+                },
+                "line": {
+                    "choices": [{"key": f.get("label") or f.get("name") or f["sel"],
+                                 "label": f.get("label") or f.get("name") or f["sel"]} for f in row_fields],
+                    "mapping": {c: (f.get("label") or f.get("name") or f["sel"]) for c, f in line_map.items()},
+                },
+                "buttons": [{"texte": b.get("text"), "interdit": bool(b.get("forbidden"))}
+                            for b in survey.get("buttons") or []],
+                "catalogue": bool(filler.catalogue(survey)),
+            }
+            log.info("Vérification de l'ERP : %d champ(s) d'en-tête, %d colonne(s) de ligne.",
+                     len(head_fields), len(row_fields))
+            return self.check
+        if name == "save_mapping":
+            if not self.check:
+                raise ValueError("Lancez d'abord « Vérifier l'ERP ».")
+            key = map_key(self.check.get("url") or self.erp_url)
+            self.mappings[key] = {"header": dict(p.get("header") or {}), "line": dict(p.get("line") or {})}
+            self.check = None
+            self._persist()
+            log.info("Correspondance des champs enregistrée pour %s", key[:70])
+            return True
+        if name == "close_check":
+            self.check = None
+            return True
+        if name == "forget_mapping":
+            self.mappings.pop(map_key(self.check.get("url") if self.check else self.erp_url), None)
+            self.check = None
+            self._persist()
+            log.info("Corrections effacées : retour à la détection automatique.")
             return True
         if name == "support":
             # Envoi volontaire : état, journal, et surtout ce que l'agent voit de l'ERP.
@@ -1066,7 +1159,7 @@ class Engine:
                 self.task["done"] = i
                 self.task["current"] = label
 
-            filler = Filler(page, progress)
+            filler = Filler(page, progress, self.mappings.get(map_key(page.url)) or {})
             survey = filler.survey()
             if looks_like_login(survey):
                 raise RuntimeError(
@@ -1239,6 +1332,10 @@ button:disabled{opacity:.5;cursor:default}
 .code{flex:1 1 auto;min-width:0;font:28px ui-monospace,Menlo,monospace;letter-spacing:7px;text-align:center;color:var(--ok);padding:16px;border:1px dashed var(--line);border-radius:12px;user-select:all}
 .coderow{display:flex;gap:10px;align-items:stretch;margin-top:10px}
 .coderow button{flex:0 0 auto}
+.l2{display:block;font-size:12px;color:var(--mut);margin:16px 0 8px;text-transform:uppercase;letter-spacing:.06em}
+.maprow{display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+.maprow span{flex:0 0 165px;font-size:13px}
+.maprow select{flex:1 1 180px;min-width:0;padding:9px 11px;border-radius:9px;border:1px solid var(--line);background:#0e1527;color:var(--ink);font-size:14px}
 .guard{font-size:13px;color:var(--mut);border-left:3px solid var(--ok);padding-left:12px}
 .err{color:var(--bad);font-size:13px;margin-top:10px}
 pre{background:#0e1527;border:1px solid var(--line);border-radius:10px;padding:12px;max-height:260px;overflow:auto;font:12px ui-monospace,Menlo,monospace;color:var(--mut);white-space:pre-wrap}
@@ -1251,6 +1348,24 @@ function copyText(text,btn){
   const done=()=>{const o=btn.textContent;btn.textContent='Copié';setTimeout(()=>{btn.textContent=o;},1600);};
   if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done,()=>selectText(btn));}
   else selectText(btn);
+}
+const LBL={supplier:"Fournisseur",documentNumber:"N° du bon",documentDate:"Date de réception",
+  designation:"Désignation du produit",lotNumber:"N° de lot",quantity:"Quantité reçue",
+  purchasePrice:"Prix d'achat",expiryDate:"Date de péremption",cip:"Code CIP",salePrice:"Prix de vente"};
+const HORDER=['supplier','documentNumber','documentDate'];
+const LORDER=['designation','lotNumber','quantity','purchasePrice','expiryDate','cip','salePrice'];
+function mapRows(kind,data){
+  const order=kind==='header'?HORDER:LORDER, cur=data.mapping||{}, ch=data.choices||[];
+  return order.map(c=>{
+    const opts=['<option value="">— aucun —</option>'].concat(
+      ch.map(o=>`<option value="${esc(o.key)}"${o.key===cur[c]?' selected':''}>${esc(o.label)}</option>`));
+    return `<div class="maprow"><span>${esc(LBL[c])}</span><select data-kind="${kind}" data-canon="${c}">${opts.join('')}</select></div>`;
+  }).join('');
+}
+function collectMapping(){
+  const out={header:{},line:{}};
+  document.querySelectorAll('#app select[data-canon]').forEach(s=>{out[s.dataset.kind][s.dataset.canon]=s.value;});
+  return out;
 }
 function selectText(btn){
   const el=btn.previousElementSibling;if(!el)return;
@@ -1278,7 +1393,7 @@ function render(){
   // Ne jamais redessiner pendant que l'utilisateur écrit ou sélectionne du texte :
   // reconstruire le HTML lui arracherait sa saisie ou sa sélection.
   const act=document.activeElement;
-  if(act&&act.tagName==='INPUT'&&a.contains(act))return;
+  if(act&&(act.tagName==='INPUT'||act.tagName==='SELECT')&&a.contains(act))return;
   const sel=window.getSelection();
   if(sel&&!sel.isCollapsed&&sel.anchorNode&&a.contains(sel.anchorNode))return;
   const st=S.status;
@@ -1295,7 +1410,25 @@ function render(){
     <input id="url" oninput="urlDraft=this.value" value="${esc(urlDraft!==null?urlDraft:(S.erpUrl||''))}" placeholder="https://erp.mapharmacie.sn">
     <div class="row"><button ${busy?'disabled':''} onclick="call('set_url',{erpUrl:document.getElementById('url').value})">Enregistrer</button>
     <button class="sec" ${busy?'disabled':''} onclick="call('open_erp')">Ouvrir l'ERP</button>
-    <button class="sec" ${busy?'disabled':''} onclick="call('pause')">${S.status==='paused'?'Reprendre':'Mettre en pause'}</button></div></div>`;
+    <button class="sec" ${busy?'disabled':''} onclick="call('check_erp')">Vérifier l'ERP</button>
+    <button class="sec" ${busy?'disabled':''} onclick="call('pause')">${S.status==='paused'?'Reprendre':'Mettre en pause'}</button></div>
+    <p class="sub">« Vérifier l'ERP » montre ce que l'agent a compris de votre écran de réception. Facultatif : sans cela, il se débrouille seul.</p></div>`;
+  }
+
+  if(S.check){
+    const c=S.check;
+    h+=`<div class="card"><label>Ce que l'agent a compris de votre ERP</label>
+    <p class="sub">${esc(c.url)}</p>
+    ${c.login?`<div class="err">Cette page demande une connexion. Connectez-vous dans la fenêtre Agent Floki, puis relancez la vérification.</div>`:''}
+    <div class="l2">En-tête du bon</div>${mapRows('header',c.header)}
+    <div class="l2">Colonnes des lignes</div>${mapRows('line',c.line)}
+    ${c.catalogue?`<p class="sub">Catalogue déroulant détecté : les produits seront choisis dans la liste plutôt que tapés.</p>`:''}
+    <div class="l2">Boutons vus sur la page</div>
+    <pre>${(c.buttons||[]).map(b=>esc((b.interdit?'JAMAIS CLIQUÉ   ':'utilisable      ')+(b.texte||''))).join('\n')}</pre>
+    <p class="sub">Les boutons de validation ne sont jamais cliqués par l'agent : cette liste est en lecture seule.</p>
+    <div class="row"><button ${busy?'disabled':''} onclick="call('save_mapping',collectMapping())">Enregistrer les corrections</button>
+    <button class="sec" ${busy?'disabled':''} onclick="call('close_check')">Fermer</button>
+    <button class="sec" ${busy?'disabled':''} onclick="call('forget_mapping')">Revenir à la détection automatique</button></div></div>`;
   }
 
   if(S.task){
@@ -1364,7 +1497,8 @@ class Panel(BaseHTTPRequestHandler):
         if not self._local_only() or self.headers.get("X-PharmAgent") != "1":
             return self._json(403, {"error": "Accès refusé."})
         name = self.path[5:] if self.path.startswith("/api/") else ""
-        if name not in ("set_url", "open_erp", "pause", "unpair", "support", "quit"):
+        if name not in ("set_url", "open_erp", "pause", "unpair", "support", "quit",
+                        "check_erp", "save_mapping", "close_check", "forget_mapping"):
             return self._json(404, {"error": "Commande inconnue."})
         length = min(int(self.headers.get("Content-Length") or 0), 100000)
         try:
